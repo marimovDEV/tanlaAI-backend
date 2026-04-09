@@ -1,4 +1,4 @@
-from .auth import AdminLoginView, auth_login, is_staff
+from .auth import auth_login, is_staff
 from .admin_views import (
     admin_banner_create,
     admin_banner_delete,

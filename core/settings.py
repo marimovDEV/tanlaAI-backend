@@ -228,6 +228,11 @@ GOOGLE_APPLICATION_CREDENTIALS = os.path.join(BASE_DIR, env('GOOGLE_APPLICATION_
 VERTEX_AI_PROJECT = env('VERTEX_AI_PROJECT', default='ai-image-editor-492616')
 VERTEX_AI_LOCATION = env('VERTEX_AI_LOCATION', default='us-central1')
 
+# Admin deploy actions
+ALLOW_ADMIN_DEPLOY_ACTIONS = env.bool('ALLOW_ADMIN_DEPLOY_ACTIONS', default=False)
+ADMIN_RESTART_COMMAND = env('ADMIN_RESTART_COMMAND', default='sudo systemctl restart tanla-ai.service')
+ADMIN_STATUS_COMMAND = env('ADMIN_STATUS_COMMAND', default='sudo systemctl status tanla-ai.service --no-pager')
+
 # REST Framework Settings
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [

@@ -2,11 +2,10 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
-
-from shop.views import admin_dashboard_home
+from django.views.generic import RedirectView
 
 urlpatterns = [
-    path('admin/', admin_dashboard_home, name='admin_dashboard_home_redirect'),
+    path('admin/', RedirectView.as_view(url='/adminka/login', permanent=False), name='admin_dashboard_home_redirect'),
     path('', include('shop.urls')),
 ]
 

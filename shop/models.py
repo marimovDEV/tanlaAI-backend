@@ -174,3 +174,19 @@ class Subscription(models.Model):
 
     def __str__(self):
         return f"{self.company.name} — {self.get_plan_display()}"
+
+
+class SystemSetting(models.Model):
+    telegram_bot_token = models.CharField(max_length=255, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "System Setting"
+        verbose_name_plural = "System Settings"
+
+    def __str__(self):
+        return "System settings"
+
+    @classmethod
+    def get_solo(cls):
+        return cls.objects.first() or cls.objects.create()

@@ -1,6 +1,8 @@
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+import shlex
+import subprocess
 
 from django.db import models
 from django.utils import timezone
@@ -9,10 +11,11 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.conf import settings
 from django.shortcuts import get_object_or_404
+from django.contrib.auth import authenticate, login, logout
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from ..models import (
     AIResult, Category, Company, HomeBanner, LeadRequest,
-    Product, Subscription, TelegramUser, Wishlist,
+    Product, Subscription, TelegramUser, Wishlist, SystemSetting,
 )
 from .serializers import (
     AIResultSerializer, CategorySerializer, CompanySerializer,
@@ -411,3 +414,107 @@ class AIResultViewSet(viewsets.ReadOnlyModelViewSet):
         if tg_user is None:
             return AIResult.objects.none()
         return AIResult.objects.filter(user_id=tg_user.id).select_related('product', 'product__category', 'product__company')
+
+
+class AdminLoginApiView(views.APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        username = (request.data.get('username') or '').strip()
+        password = request.data.get('password') or ''
+        user = authenticate(request, username=username, password=password)
+        if not user or not user.is_staff:
+            return Response({'status': 'error', 'message': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        login(request, user)
+        return Response({'status': 'ok', 'username': user.username})
+
+
+class AdminLogoutApiView(views.APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        logout(request)
+        return Response({'status': 'ok'})
+
+
+class AdminMeApiView(views.APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        if not request.user.is_authenticated or not request.user.is_staff:
+            return Response({'is_authenticated': False}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({
+            'is_authenticated': True,
+            'username': request.user.username,
+        })
+
+
+class AdminSystemSettingsApiView(views.APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def _check_admin(self, request):
+        if not request.user.is_authenticated or not request.user.is_staff:
+            raise PermissionDenied('Admin authentication required')
+
+    def get(self, request):
+        self._check_admin(request)
+        setting = SystemSetting.get_solo()
+        deploy_enabled = str(getattr(settings, 'ALLOW_ADMIN_DEPLOY_ACTIONS', False)).lower() in ('1', 'true', 'yes', 'on')
+        return Response({
+            'telegram_bot_token': setting.telegram_bot_token,
+            'deploy_enabled': deploy_enabled,
+        })
+
+    def post(self, request):
+        self._check_admin(request)
+        setting = SystemSetting.get_solo()
+        setting.telegram_bot_token = (request.data.get('telegram_bot_token') or '').strip()
+        setting.save(update_fields=['telegram_bot_token', 'updated_at'])
+        return Response({'status': 'ok'})
+
+
+class AdminRunActionApiView(views.APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        if not request.user.is_authenticated or not request.user.is_staff:
+            return Response({'status': 'error', 'message': 'Admin authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        deploy_enabled = str(getattr(settings, 'ALLOW_ADMIN_DEPLOY_ACTIONS', False)).lower() in ('1', 'true', 'yes', 'on')
+        if not deploy_enabled:
+            return Response({'status': 'error', 'message': 'Deploy actions disabled'}, status=status.HTTP_403_FORBIDDEN)
+
+        action = request.data.get('action')
+        command_map = {
+            'git_pull': ['git', 'pull', 'origin', 'main'],
+            'migrate': ['python', 'manage.py', 'migrate'],
+            'collectstatic': ['python', 'manage.py', 'collectstatic', '--noinput'],
+            'restart_service': shlex.split(getattr(settings, 'ADMIN_RESTART_COMMAND', 'sudo systemctl restart tanla-ai.service')),
+            'status_service': shlex.split(getattr(settings, 'ADMIN_STATUS_COMMAND', 'sudo systemctl status tanla-ai.service --no-pager')),
+        }
+        command = command_map.get(action)
+        if not command:
+            return Response({'status': 'error', 'message': 'Unknown action'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(settings.BASE_DIR),
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return Response({'status': 'error', 'message': 'Command timed out after 120s'}, status=status.HTTP_504_GATEWAY_TIMEOUT)
+        except Exception as exc:
+            return Response({'status': 'error', 'message': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        output = (completed.stdout or '') + (('\n' + completed.stderr) if completed.stderr else '')
+        return Response({
+            'status': 'ok' if completed.returncode == 0 else 'error',
+            'exit_code': completed.returncode,
+            'command': ' '.join(command),
+            'output': output.strip(),
+        })

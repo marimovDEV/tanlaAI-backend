@@ -77,6 +77,9 @@ class AIService:
                 f.seek(0)
                 image_bytes = f.read()
 
+            print(f"DEBUG: [AI Service] Calling Gemini Imagen API for Product {product.id}...")
+            
+            # Use HttpOptions for timeout (120 seconds)
             response = client.models.edit_image(
                 model='imagen-3.0-capability-001',
                 prompt="Isolate the door product. Output a clean version of the door centered on a pure white background suitable for an e-commerce catalog.",
@@ -87,15 +90,17 @@ class AIService:
                     )
                 ],
                 config=types.EditImageConfig(
-                    edit_mode='EDIT_MODE_INPAINT_REMOVAL',  # Full enum string
+                    edit_mode='EDIT_MODE_INPAINT_REMOVAL',
                     number_of_images=1,
-                    output_mime_type='image/png'
+                    output_mime_type='image/png',
+                    http_options=types.HttpOptions(timeout=120000) # 120 seconds in ms
                 )
             )
 
             if not response.generated_images:
                 raise ValueError("Gemini failed to generate isolated image.")
 
+            print(f"DEBUG: [AI Service] API Response received. Saving images for Product {product.id}...")
             generated_img = response.generated_images[0]
             img_data = io.BytesIO(generated_img.image.image_bytes)
 
@@ -152,8 +157,9 @@ class AIService:
                         )
                     ],
                     config=types.EditImageConfig(
-                        edit_mode='EDIT_MODE_INPAINT_INSERTION',  # Full enum string
-                        number_of_images=1
+                        edit_mode='EDIT_MODE_INPAINT_INSERTION',
+                        number_of_images=1,
+                        http_options=types.HttpOptions(timeout=120000)
                     )
                 )
 

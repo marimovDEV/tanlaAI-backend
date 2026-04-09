@@ -23,22 +23,10 @@ class AIService:
         with open(key_path, 'r', encoding='utf-8') as f:
             info = json.load(f)
 
-        # Robust PEM normalization to handle common paste/formatting issues
+        # Use raw key from JSON, only fixing literal \n if they exist
         pk = info['private_key']
-        # Handle literal "\n" strings that might result from manual file creation
-        pk = pk.replace('\\n', '\n')
-        
-        # Extract the base64 body and re-format it with 64-char lines
-        match = re.search(r'-----BEGIN PRIVATE KEY-----(.*)-----END PRIVATE KEY-----', pk, re.DOTALL)
-        if match:
-            # Strip all whitespace and literal newline characters from the body
-            body = "".join(re.findall(r'[A-Za-z0-9+/=]', match.group(1)))
-            formatted_body = "\n".join(body[i:i+64] for i in range(0, len(body), 64))
-            info['private_key'] = f"-----BEGIN PRIVATE KEY-----\n{formatted_body}\n-----END PRIVATE KEY-----\n"
-        else:
-            # If no tags found, assume the whole thing needs clean up (less likely but safer)
-            info['private_key'] = pk
-
+        info['private_key'] = pk.replace('\\n', '\n')
+ 
         credentials = service_account.Credentials.from_service_account_info(
             info, 
             scopes=['https://www.googleapis.com/auth/cloud-platform']

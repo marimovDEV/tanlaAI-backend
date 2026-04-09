@@ -15,7 +15,9 @@ from ..models import (
     HomeBanner, LeadRequest, AIResult, Subscription,
 )
 from rest_framework import serializers as drf_serializers
-    HomeBannerSerializer, CategorySerializer,
+from .serializers import (
+    ProductSerializer, CategorySerializer, TelegramUserSerializer,
+    HomeBannerSerializer,
 )
 
 

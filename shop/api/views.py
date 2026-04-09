@@ -59,7 +59,7 @@ def get_tg_user(request):
     if not tg_user_id:
         init_data = request.headers.get('X-Telegram-Init-Data')
         if init_data:
-            user_data = verify_telegram_webapp_data(init_data, settings.BOT_TOKEN)
+            user_data = verify_telegram_webapp_data(init_data, settings.TELEGRAM_BOT_TOKEN)
             if user_data:
                 tg_user_id = user_data.get('id')
     

@@ -224,7 +224,7 @@ TELEGRAM_BOT_TOKEN = env('TELEGRAM_BOT_TOKEN')
 
 # AI Settings
 GEMINI_API_KEY = env('GEMINI_API_KEY', default='')
-AI_AUTO_PROCESS_CATEGORIES = ["Eshiklar"]
+AI_AUTO_PROCESS_CATEGORIES = ["Eshiklar", "eshiklar", "Eshik", "eshik", "Doors", "doors"]
 GOOGLE_APPLICATION_CREDENTIALS = os.path.join(BASE_DIR, env('GOOGLE_APPLICATION_CREDENTIALS', default='google-cloud-key.json'))
 VERTEX_AI_PROJECT = env('VERTEX_AI_PROJECT', default='ai-image-editor-492616')
 VERTEX_AI_LOCATION = env('VERTEX_AI_LOCATION', default='us-central1')

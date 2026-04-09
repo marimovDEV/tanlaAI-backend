@@ -13,7 +13,8 @@ def trigger_ai_processing(sender, instance, created, **kwargs):
     if the category belongs to the target categories (e.g., 'Eshiklar').
     Uses AIService for clean separation of concerns.
     """
-    if (instance.category and instance.category.name in getattr(settings, 'AI_AUTO_PROCESS_CATEGORIES', []) 
+    auto_process_categories = [c.lower() for c in getattr(settings, 'AI_AUTO_PROCESS_CATEGORIES', [])]
+    if (instance.category and instance.category.name.lower() in auto_process_categories 
         and instance.ai_status == 'none' and instance.image):
         
         def start_thread():

@@ -31,8 +31,9 @@ def test_ai():
         
         print("\nStep 2: Testing connection...")
         # A simple operation to test connectivity
-        models = client.models.list_models()
-        print("SUCCESS: Connection established. Models listed.")
+        for model in client.models.list(config={'page_size': 1}):
+            print(f"SUCCESS: Connection established. Found model: {model.name}")
+            break
         
         print("\nStep 3: Testing local background removal (rembg)...")
         import rembg

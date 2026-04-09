@@ -15,10 +15,27 @@ from ..models import (
     HomeBanner, LeadRequest, AIResult, Subscription,
 )
 from rest_framework import serializers as drf_serializers
-from .serializers import (
-    ProductSerializer, CategorySerializer, TelegramUserSerializer,
-    HomeBannerSerializer,
+    HomeBannerSerializer, CategorySerializer,
 )
+
+
+class AdminLeadRequestSerializer(drf_serializers.ModelSerializer):
+    company_name = drf_serializers.CharField(source='company.name', read_only=True)
+    user_name = drf_serializers.CharField(source='user.first_name', read_only=True)
+    product_name = drf_serializers.CharField(source='product.name', read_only=True)
+
+    class Meta:
+        model = LeadRequest
+        fields = '__all__'
+
+
+class AdminAIResultSerializer(drf_serializers.ModelSerializer):
+    user_name = drf_serializers.CharField(source='user.first_name', read_only=True)
+    product_name = drf_serializers.CharField(source='product.name', read_only=True)
+
+    class Meta:
+        model = AIResult
+        fields = '__all__'
 
 
 class AdminCompanySerializer(drf_serializers.ModelSerializer):
@@ -204,3 +221,35 @@ class AdminBannerViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return HomeBanner.objects.all().order_by('order', '-created_at')
+
+
+# ── Leads ───────────────────────────────────────────────────
+class AdminLeadViewSet(viewsets.ModelViewSet):
+    serializer_class = AdminLeadRequestSerializer
+    permission_classes = [IsAdminUser]
+    http_method_names = ['get', 'head', 'options', 'patch', 'delete']
+
+    def get_queryset(self):
+        qs = LeadRequest.objects.select_related('user', 'product', 'company').order_by('-created_at')
+        status = self.request.query_params.get('status')
+        if status == 'unprocessed':
+            qs = qs.filter(is_processed=False)
+        elif status == 'processed':
+            qs = qs.filter(is_processed=True)
+        return qs
+
+    @action(detail=True, methods=['post'], url_path='toggle-processed')
+    def toggle_processed(self, request, pk=None):
+        lead = self.get_object()
+        lead.is_processed = not lead.is_processed
+        lead.save(update_fields=['is_processed'])
+        return Response(AdminLeadRequestSerializer(lead).data)
+
+
+# ── AI Results ──────────────────────────────────────────────
+class AdminAIResultViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = AdminAIResultSerializer
+    permission_classes = [IsAdminUser]
+
+    def get_queryset(self):
+        return AIResult.objects.select_related('user', 'product').order_by('-created_at')

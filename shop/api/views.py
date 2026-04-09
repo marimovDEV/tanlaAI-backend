@@ -55,13 +55,26 @@ def run_api_ai_background(product_id, room_path, result_path, tg_user_id):
 def get_tg_user(request):
     tg_user_id = request.session.get('tg_user_id')
     
-    # Fallback to header-based authentication
+    # Fallback to header-based authentication and auto-registration
     if not tg_user_id:
         init_data = request.headers.get('X-Telegram-Init-Data')
         if init_data:
             user_data = verify_telegram_webapp_data(init_data, settings.TELEGRAM_BOT_TOKEN)
             if user_data:
-                tg_user_id = user_data.get('id')
+                # Auto-sync/register user
+                user_id = user_data.get('id')
+                user, created = TelegramUser.objects.update_or_create(
+                    id=user_id,
+                    defaults={
+                        'first_name': user_data.get('first_name', ''),
+                        'last_name': user_data.get('last_name', ''),
+                        'username': user_data.get('username'),
+                        'language_code': user_data.get('language_code'),
+                    }
+                )
+                tg_user_id = user.id
+                # Update session for subsequent requests
+                request.session['tg_user_id'] = tg_user_id
     
     if not tg_user_id:
         return None

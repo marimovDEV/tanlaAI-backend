@@ -17,6 +17,32 @@ from pathlib import Path
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+
+def env_list(name, default=None):
+    values = env.list(name, default=default or [])
+    return [value.strip() for value in values if value and value.strip()]
+
+
+def merge_lists(*groups):
+    seen = set()
+    merged = []
+    for group in groups:
+        for item in group:
+            if item not in seen:
+                seen.add(item)
+                merged.append(item)
+    return merged
+
+
+def normalize_allowed_hosts(hosts):
+    normalized = []
+    for host in hosts:
+        value = host.strip()
+        if value.startswith('*.'):
+            value = f'.{value[2:]}'
+        normalized.append(value)
+    return normalized
+
 # Environment variables
 env = environ.Env(
     DEBUG=(bool, False),
@@ -30,22 +56,49 @@ SECRET_KEY = env('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env('DEBUG')
 
-ALLOWED_HOSTS = env.list('ALLOWED_HOSTS')
+DEFAULT_ALLOWED_HOSTS = [
+    'localhost',
+    '127.0.0.1',
+    'tanla-ai.ardentsoft.uz',
+]
 
-# Ngrok URL
-NGROK_URL = env('NGROK_URL', default=None)
-
-CSRF_TRUSTED_ORIGINS = [
-    'https://*.ngrok-free.app',
+DEFAULT_FRONTEND_ORIGINS = [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
     'http://localhost:5173',
     'http://127.0.0.1:5173',
+    'https://tanla-ai-frontend.vercel.app',
+]
+
+DEFAULT_CSRF_TRUSTED_ORIGINS = [
+    *DEFAULT_FRONTEND_ORIGINS,
     'https://tanla-ai.ardentsoft.uz',
     'https://api.tanla-ai.ardentsoft.uz',
     'https://*.vercel.app',
 ]
+
+ALLOWED_HOSTS = normalize_allowed_hosts(
+    merge_lists(DEFAULT_ALLOWED_HOSTS, env_list('ALLOWED_HOSTS'))
+)
+
+# Ngrok URL
+NGROK_URL = env('NGROK_URL', default=None)
+
+CORS_ALLOWED_ORIGINS = merge_lists(
+    DEFAULT_FRONTEND_ORIGINS,
+    env_list('CORS_ALLOWED_ORIGINS'),
+)
+CORS_ALLOWED_ORIGIN_REGEXES = [r'^https://.*\.vercel\.app$']
+
+CSRF_TRUSTED_ORIGINS = merge_lists(
+    DEFAULT_CSRF_TRUSTED_ORIGINS,
+    env_list('CSRF_TRUSTED_ORIGINS'),
+)
 if NGROK_URL:
+    ALLOWED_HOSTS = normalize_allowed_hosts(
+        merge_lists(ALLOWED_HOSTS, [NGROK_URL.replace('https://', '').replace('http://', '')])
+    )
+    CORS_ALLOWED_ORIGINS = merge_lists(CORS_ALLOWED_ORIGINS, [NGROK_URL])
     CSRF_TRUSTED_ORIGINS.append(NGROK_URL)
 
 X_FRAME_OPTIONS = 'ALLOWALL'
@@ -149,7 +202,7 @@ USE_TZ = True
 
 STATIC_URL = '/static/'
 STATICFILES_DIRS = [BASE_DIR / 'static']
-MEDIA_URL = 'media/'
+MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
@@ -189,5 +242,5 @@ REST_FRAMEWORK = {
 }
 
 # CORS Settings
-CORS_ALLOW_ALL_ORIGINS = True  # Switch to specific origins in production
+CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_CREDENTIALS = True

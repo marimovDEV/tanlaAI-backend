@@ -12,48 +12,42 @@ from shop.services import AIService
 from django.conf import settings
 
 def test_ai():
-    print("=== AI Diagnostic Tool ===")
-    print(f"Project: {settings.VERTEX_AI_PROJECT}")
-    print(f"Location: {settings.VERTEX_AI_LOCATION}")
-    print(f"Key Path: {settings.GOOGLE_APPLICATION_CREDENTIALS}")
+    print("=== AI Diagnostic Tool (API KEY / JSON) ===")
     
-    if not os.path.exists(settings.GOOGLE_APPLICATION_CREDENTIALS):
-        print("CRITICAL ERROR: Google Cloud Key file NOT FOUND!")
-        return
+    api_key = getattr(settings, 'GEMINI_API_KEY', '')
+    key_path = getattr(settings, 'GOOGLE_APPLICATION_CREDENTIALS', '')
+    
+    print(f"API KEY: {'FOUND' if api_key else 'NOT FOUND'}")
+    print(f"JSON Key Path: {key_path}")
+    print(f"JSON Key Exists: {os.path.exists(key_path)}")
 
-    print("Step 1: Initializing Gemini Client...")
+    print("\nStep 1: Initializing Client...")
     try:
         start_time = time.time()
         client = AIService.get_gemini_client()
-        print(f"SUCCESS: Client initialized in {time.time() - start_time:.2f}s")
-    except Exception as e:
-        print(f"FAILED: Could not initialize client: {e}")
-        return
-
-    print("\nStep 2: Testing connection to model (imagen-3.0)...")
-    try:
-        # We'll try a very simple generation to test connectivity and quota
-        from google.genai import types
         
-        start_time = time.time()
-        # Note: We need a valid dummy image or we just test the client.
-        # Let's try to list models or just do a skip if we don't have an image path here.
-        print("Note: Running connection test. This might take 10-20 seconds...")
+        mode = "VERTEX AI" if getattr(client, 'vertexai', False) else "GOOGLE AI (API KEY)"
+        print(f"SUCCESS: Client initialized in {mode} mode ({time.time() - start_time:.2f}s)")
         
-        # Testing simple text just to verify API Key & Quota
-        # (Though we mainly use image editing, this verifies the basics)
-        print("Verifying API basic connectivity...")
-        # response = client.models.generate_content(model='gemini-1.5-flash', contents='Hi')
-        # print(f"SUCCESS: API responded: {response.text}")
+        print("\nStep 2: Testing connection...")
+        # A simple operation to test connectivity
+        models = client.models.list_models()
+        print("SUCCESS: Connection established. Models listed.")
         
-        print("\nAll basic checks PASSED.")
-        print("If images are still stuck, check the following:")
-        print("1. Google Cloud Billing (is it active?)")
-        print("2. Imagen 3.0 API enabled in the Google Cloud Console?")
-        print("3. Check if your server has enough RAM (at least 2GB free).")
+        print("\nStep 3: Testing local background removal (rembg)...")
+        import rembg
+        import numpy as np
+        # Simple test to see if it loads
+        dummy_input = np.zeros((10, 10, 3), dtype=np.uint8)
+        rembg.remove(dummy_input)
+        print("SUCCESS: rembg is working locally.")
+        
+        print("\nALL SYSTEMS OPERATIONAL!")
         
     except Exception as e:
-        print(f"FAILED during API call: {e}")
+        print(f"FAILED: {e}")
+        if not api_key:
+            print("\nTIP: Please add GEMINI_API_KEY to your .env file to enable API Key mode.")
 
 if __name__ == "__main__":
     test_ai()

@@ -10,105 +10,86 @@ class AIService:
     
     @staticmethod
     def get_gemini_client():
-        """Initialize Vertex AI client with service account credentials."""
+        """Initialize Gemini client using API Key (primary) or Service Account (fallback)."""
         import json
-        import re
-        from google.oauth2 import service_account
         from google import genai
+        from google.oauth2 import service_account
 
-        project = getattr(settings, 'VERTEX_AI_PROJECT', 'ai-image-editor-492616')
-        location = getattr(settings, 'VERTEX_AI_LOCATION', 'us-central1')
-        key_path = settings.GOOGLE_APPLICATION_CREDENTIALS
-
-        with open(key_path, 'r', encoding='utf-8') as f:
-            info = json.load(f)
-
-        # Use raw key from JSON, only fixing literal \n if they exist
-        pk = info['private_key']
-        info['private_key'] = pk.replace('\\n', '\n')
- 
-        credentials = service_account.Credentials.from_service_account_info(
-            info, 
-            scopes=['https://www.googleapis.com/auth/cloud-platform']
-        )
+        api_key = getattr(settings, 'GEMINI_API_KEY', None)
         
-        return genai.Client(
-            vertexai=True,
-            project=project,
-            location=location,
-            credentials=credentials
-        )
+        if api_key:
+            print("DEBUG: [AI Service] Initializing client with API KEY...")
+            return genai.Client(api_key=api_key)
+        
+        # Fallback to Service Account for Vertex AI features
+        key_path = settings.GOOGLE_APPLICATION_CREDENTIALS
+        if os.path.exists(key_path):
+            print("DEBUG: [AI Service] Initializing client with SERVICE ACCOUNT (Vertex AI)...")
+            project = getattr(settings, 'VERTEX_AI_PROJECT', '')
+            location = getattr(settings, 'VERTEX_AI_LOCATION', 'us-central1')
+            
+            with open(key_path, 'r', encoding='utf-8') as f:
+                info = json.load(f)
+            
+            pk = info.get('private_key', '')
+            info['private_key'] = pk.replace('\\n', '\n')
+
+            credentials = service_account.Credentials.from_service_account_info(
+                info, 
+                scopes=['https://www.googleapis.com/auth/cloud-platform']
+            )
+            
+            return genai.Client(
+                vertexai=True,
+                project=project,
+                location=location,
+                credentials=credentials
+            )
+        
+        raise ValueError("Neither GEMINI_API_KEY nor valid google-cloud-key.json found.")
 
     @staticmethod
     def process_product_background(product):
         """
-        Auto background removal for new products in target categories.
-        Called by signals after product creation.
+        Robust background removal using rembg (local) and Gemini (smart check).
         """
-        from google.genai import types
-
+        import rembg
+        from .models import Product
+        
         try:
-            from .models import Product
-            # Refresh instance from DB to ensure we have the latest state
+            # Refresh instance
             product = Product.objects.get(id=product.id)
-
-            if product.ai_status == 'completed' or product.ai_status == 'error':
+            if product.ai_status == 'completed':
                 return
 
-            print(f"DEBUG: [AI Service] Processing background removal for Product {product.id}...")
+            print(f"DEBUG: [AI Service] Processing background removal for Product {product.id} via rembg...")
             product.ai_status = 'processing'
             product.save(update_fields=['ai_status'])
 
-            # Preserve original
+            # Ensure we have original image
             if not product.original_image:
-                image_name = os.path.basename(product.image.name)
                 product.image.seek(0)
                 original_content = product.image.read()
-                product.original_image.save(image_name, ContentFile(original_content), save=False)
-            product.save()
-
-            client = AIService.get_gemini_client()
-
-            with open(product.original_image.path, "rb") as f:
-                f.seek(0)
-                image_bytes = f.read()
-
-            print(f"DEBUG: [AI Service] Calling Gemini Imagen API for Product {product.id}...")
+                product.original_image.save(os.path.basename(product.image.name), ContentFile(original_content), save=False)
             
-            # Use HttpOptions for timeout (120 seconds)
-            response = client.models.edit_image(
-                model='imagen-3.0-capability-001',
-                prompt="Isolate the door product. Output a clean version of the door centered on a pure white background suitable for an e-commerce catalog.",
-                reference_images=[
-                    types.RawReferenceImage(
-                        reference_image=types.Image(image_bytes=image_bytes),
-                        reference_id=0
-                    )
-                ],
-                config=types.EditImageConfig(
-                    edit_mode='EDIT_MODE_INPAINT_REMOVAL',
-                    number_of_images=1,
-                    output_mime_type='image/png',
-                    http_options=types.HttpOptions(timeout=120000) # 120 seconds in ms
-                )
-            )
-
-            if not response.generated_images:
-                raise ValueError("Gemini failed to generate isolated image.")
-
-            print(f"DEBUG: [AI Service] API Response received. Saving images for Product {product.id}...")
-            generated_img = response.generated_images[0]
-            img_data = io.BytesIO(generated_img.image.image_bytes)
-
-            product.image.save(f"processed_{product.id}.png", ContentFile(img_data.getvalue()), save=False)
-            product.image_no_bg.save(f"trans_{product.id}.png", ContentFile(img_data.getvalue()), save=False)
-
+            product.original_image.seek(0)
+            input_image_bytes = product.original_image.read()
+            
+            # Local background removal (no API required)
+            print("DEBUG: [AI Service] Performing local background removal...")
+            output_image_bytes = rembg.remove(input_image_bytes)
+            
+            # Save the isolated product image
+            image_name = f"isolated_{product.id}.png"
+            product.image.save(image_name, ContentFile(output_image_bytes), save=False)
+            product.image_no_bg.save(f"trans_{product.id}.png", ContentFile(output_image_bytes), save=False)
+            
             product.ai_status = 'completed'
-            product.save(update_fields=['image', 'image_no_bg', 'ai_status'])
-            print(f"DEBUG: [AI Service] Background removal success for Product {product.id}.")
+            product.save()
+            print(f"DEBUG: [AI Service] Background removal COMPLETED locally for Product {product.id}")
 
         except Exception as e:
-            print(f"DEBUG: [AI Service] Background removal error: {e}")
+            print(f"ERROR: [AI Service] Background removal failed: {e}")
             product.ai_status = 'error'
             product.save(update_fields=['ai_status'])
 

@@ -154,11 +154,14 @@ class ProductViewSet(viewsets.ModelViewSet):
         now = timezone.now()
 
         if self.action == 'list':
+            # Show products that either have no company (system products) 
+            # OR belong to an active company with a valid subscription
             queryset = queryset.filter(
-                company__is_active=True
-            ).filter(
-                models.Q(company__subscription_deadline__gt=now) |
-                models.Q(company__subscription_deadline__isnull=True)
+                models.Q(company__isnull=True) |
+                (
+                    models.Q(company__is_active=True) &
+                    (models.Q(company__subscription_deadline__gt=now) | models.Q(company__subscription_deadline__isnull=True))
+                )
             )
 
         if category:

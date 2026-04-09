@@ -237,28 +237,39 @@ class ProductViewSet(viewsets.ModelViewSet):
         if tg_user is None:
             return Response({'status': 'error', 'message': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
 
-        if product.company is None:
-            return Response({'status': 'error', 'message': 'This product is not attached to a company.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        subscription, _ = Subscription.objects.get_or_create(company=product.company)
-        current_ai_count = AIResult.objects.filter(product__company=product.company, status='done').count()
-        if current_ai_count >= subscription.ai_generations_limit:
-            return Response({
-                'status': 'error',
-                'message': f'AI generation limit reached ({subscription.ai_generations_limit}).',
-                'code': 'limit_reached',
-                'limit': subscription.ai_generations_limit,
-            }, status=status.HTTP_400_BAD_REQUEST)
+        # Allow admin-added products without a company
+        if product.company:
+            subscription, _ = Subscription.objects.get_or_create(company=product.company)
+            current_ai_count = AIResult.objects.filter(product__company=product.company, status='done').count()
+            if current_ai_count >= subscription.ai_generations_limit:
+                return Response({
+                    'status': 'error',
+                    'message': f'AI generation limit reached ({subscription.ai_generations_limit}).',
+                    'code': 'limit_reached',
+                    'limit': subscription.ai_generations_limit,
+                }, status=status.HTTP_400_BAD_REQUEST)
 
         if product.ai_status == 'processing':
             return Response({'status': 'processing'})
 
-        if product.ai_status == 'none' and product.category and product.category.name == 'Eshiklar':
+        # If background is not removed yet, trigger it now instead of failing
+        if product.ai_status == 'none':
+            from ..signals import trigger_ai_processing
+            # We trigger the processing manually (in a background thread via the signal or service)
+            # For immediate UX, we tell the user to wait a bit
+            product.ai_status = 'processing' # Set to processing to avoid double trigger
+            product.save(update_fields=['ai_status'])
+            
+            # Use the service to start background removal
+            from ..services import AIService
+            import threading
+            threading.Thread(target=AIService.process_product_background, args=(product,)).start()
+            
             return Response({
-                'status': 'error',
-                'message': 'AI preparation for this product is not finished yet.',
+                'status': 'preparing',
+                'message': 'Orqa fon o‘chirilmoqda. Iltimos 10-15 soniya kutib qayta urinib ko‘ring.',
                 'code': 'not_ready',
-            }, status=status.HTTP_400_BAD_REQUEST)
+            }, status=status.HTTP_200_OK) # Return 200 instead of 400 for better UX
 
         room_photo = request.FILES.get('room_photo') or request.FILES.get('input_image')
         user_height = str(request.data.get('height', '')).strip()

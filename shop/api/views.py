@@ -426,8 +426,14 @@ class AdminLoginApiView(views.APIView):
         if not user or not user.is_staff:
             return Response({'status': 'error', 'message': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
 
+        from rest_framework.authtoken.models import Token
         login(request, user)
-        return Response({'status': 'ok', 'username': user.username})
+        token, _ = Token.objects.get_or_create(user=user)
+        return Response({
+            'status': 'ok', 
+            'username': user.username,
+            'token': token.key
+        })
 
 
 class AdminLogoutApiView(views.APIView):

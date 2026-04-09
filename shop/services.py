@@ -31,7 +31,10 @@ class AIService:
             formatted_body = "\n".join(body[i:i+64] for i in range(0, len(body), 64))
             info['private_key'] = f"-----BEGIN PRIVATE KEY-----\n{formatted_body}\n-----END PRIVATE KEY-----\n"
 
-        credentials = service_account.Credentials.from_service_account_info(info)
+        credentials = service_account.Credentials.from_service_account_info(
+            info, 
+            scopes=['https://www.googleapis.com/auth/cloud-platform']
+        )
         
         return genai.Client(
             vertexai=True,
@@ -78,7 +81,7 @@ class AIService:
                     )
                 ],
                 config=types.EditImageConfig(
-                    edit_mode='BACKGROUND_REMOVAL',
+                    edit_mode='EDIT_MODE_INPAINT_REMOVAL',  # Full enum string
                     number_of_images=1,
                     output_mime_type='image/png'
                 )
@@ -143,7 +146,7 @@ class AIService:
                         )
                     ],
                     config=types.EditImageConfig(
-                        edit_mode='INPAINT_INSERT',
+                        edit_mode='EDIT_MODE_INPAINT_INSERTION',  # Full enum string
                         number_of_images=1
                     )
                 )

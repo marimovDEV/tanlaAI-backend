@@ -54,6 +54,15 @@ def run_api_ai_background(product_id, room_path, result_path, tg_user_id):
 
 def get_tg_user(request):
     tg_user_id = request.session.get('tg_user_id')
+    
+    # Fallback to header-based authentication
+    if not tg_user_id:
+        init_data = request.headers.get('X-Telegram-Init-Data')
+        if init_data:
+            user_data = verify_telegram_webapp_data(init_data, settings.BOT_TOKEN)
+            if user_data:
+                tg_user_id = user_data.get('id')
+    
     if not tg_user_id:
         return None
     return TelegramUser.objects.filter(id=tg_user_id).first()

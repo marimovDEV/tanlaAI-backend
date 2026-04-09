@@ -1,0 +1,96 @@
+{% extends 'admin/base_admin.html' %}
+
+{% block admin_content %}
+<div class="flex items-center justify-between mb-12">
+    <div>
+        <h1 class="text-3xl font-extrabold tracking-tight text-on-background">Promotions</h1>
+        <p class="text-xs text-outline font-bold uppercase tracking-widest mt-1">Manage active discounts and seasonal offers</p>
+    </div>
+    <div class="px-6 py-3 bg-primary/10 rounded-2xl border border-primary/20 flex items-center gap-3">
+        <span class="material-symbols-outlined text-primary text-sm" data-icon="local_offer">local_offer</span>
+        <p class="text-xs font-bold text-primary uppercase tracking-widest">{{ products|length }} Active Promotions</p>
+    </div>
+</div>
+
+<div class="bg-surface-container-low rounded-3xl border border-outline/5 overflow-hidden">
+    <div class="overflow-x-auto">
+        <table class="w-full text-left border-collapse">
+            <thead>
+                <tr class="bg-surface-container-high/50 border-b border-outline/5 text-outline text-[10px] font-extrabold uppercase tracking-widest">
+                    <th class="px-8 py-6">Image</th>
+                    <th class="px-8 py-6">Product</th>
+                    <th class="px-8 py-6">Pricing</th>
+                    <th class="px-8 py-6">Expires</th>
+                    <th class="px-8 py-6">Company</th>
+                    <th class="px-8 py-6 text-right">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-outline/5">
+                {% for product in products %}
+                <tr class="group hover:bg-surface-container-lowest/40 transition-colors">
+                    <td class="px-8 py-6">
+                        <div class="w-14 h-14 rounded-lg overflow-hidden bg-surface-container-highest shadow-sm relative">
+                            {% if product.image %}
+                                <img src="{{ product.image.url }}" class="w-full h-full object-cover">
+                            {% else %}
+                                <div class="w-full h-full flex items-center justify-center bg-outline/10">
+                                    <span class="material-symbols-outlined text-outline/30" data-icon="image">image</span>
+                                </div>
+                            {% endif %}
+                            <div class="absolute top-1 left-1 bg-primary text-on-primary text-[6px] font-black px-1 py-0.5 rounded-sm uppercase tracking-tighter shadow-sm">
+                                Sale
+                            </div>
+                        </div>
+                    </td>
+                    <td class="px-8 py-6 max-w-xs">
+                        <p class="font-bold text-on-surface truncate">{{ product.name }}</p>
+                        <p class="text-[10px] text-outline font-bold uppercase tracking-widest mt-0.5">{{ product.category.name }}</p>
+                    </td>
+                    <td class="px-8 py-6">
+                        <div class="flex flex-col">
+                            <p class="text-[10px] text-outline line-through">{{ product.price }} сум</p>
+                            <p class="font-black text-primary">{{ product.discount_price }} сум</p>
+                        </div>
+                    </td>
+                    <td class="px-8 py-6">
+                        {% if product.sale_end_date %}
+                            <div class="inline-flex items-center gap-2 px-3 py-1 bg-surface-container-high rounded-full border border-outline/5">
+                                <span class="material-symbols-outlined text-xs text-outline" data-icon="timer">timer</span>
+                                <span class="text-[10px] font-extrabold text-on-surface-variant uppercase tracking-widest">
+                                    {{ product.sale_end_date|date:"d M, H:i" }}
+                                </span>
+                            </div>
+                        {% else %}
+                            <p class="text-[10px] text-outline uppercase font-extrabold tracking-widest">Ongoing</p>
+                        {% endif %}
+                    </td>
+                    <td class="px-8 py-6">
+                        <p class="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">{{ product.company.name|default:"Internal" }}</p>
+                    </td>
+                    <td class="px-8 py-6 text-right">
+                        <div class="flex items-center justify-end gap-3">
+                            <a href="{% url 'admin_product_edit' product.pk %}" class="px-6 py-2 bg-primary text-on-primary text-[10px] font-black rounded-lg uppercase tracking-widest hover:scale-[1.05] transition-all shadow-md shadow-primary/20">
+                                Modify
+                            </a>
+                            <a href="{% url 'admin_product_delete' product.pk %}" class="w-10 h-10 rounded-full flex items-center justify-center text-outline hover:bg-error/10 hover:text-error transition-all">
+                                <span class="material-symbols-outlined text-lg" data-icon="delete">delete</span>
+                            </a>
+                        </div>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="6" class="px-8 py-20 text-center text-outline font-bold">
+                        <div class="w-16 h-16 rounded-full bg-outline/5 flex items-center justify-center mx-auto mb-4 border border-outline/10">
+                            <span class="material-symbols-outlined text-3xl opacity-20" data-icon="local_offer">local_offer</span>
+                        </div>
+                        <p>No active promotions at the moment.</p>
+                        <a href="{% url 'admin_product_list' %}" class="text-primary text-[10px] uppercase tracking-widest mt-4 inline-block hover:underline">Manage Products to start a sale</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

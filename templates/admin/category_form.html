@@ -1,0 +1,43 @@
+{% extends 'admin/base_admin.html' %}
+
+{% block admin_content %}
+<div class="mb-12">
+    <div class="flex items-center gap-4 mb-4">
+        <a href="{% url 'admin_category_list' %}" class="w-10 h-10 rounded-full bg-surface-container-low flex items-center justify-center text-outline hover:text-primary transition-colors">
+            <span class="material-symbols-outlined text-lg" data-icon="arrow_back">arrow_back</span>
+        </a>
+        <h1 class="text-3xl font-extrabold tracking-tight text-on-background">{% if form.instance.pk %}Edit Category{% else %}New Category{% endif %}</h1>
+    </div>
+    <p class="text-xs text-outline font-bold uppercase tracking-widest">{% if form.instance.pk %}Update the details for {{ form.instance.name }}{% else %}Add a new category to organize your boutique catalog{% endif %}</p>
+</div>
+
+<div class="max-w-xl mx-auto">
+    <form method="POST" enctype="multipart/form-data" class="bg-surface-container-low p-8 rounded-3xl border border-outline/5 space-y-8">
+        {% csrf_token %}
+        
+        <div class="space-y-6">
+            <div>
+                <label class="text-[10px] font-extrabold uppercase tracking-widest text-outline mb-2 block">Category Name</label>
+                {{ form.name }}
+            </div>
+            
+            <div>
+                <label class="text-[10px] font-extrabold uppercase tracking-widest text-outline mb-2 block">Category Icon (Image)</label>
+                {{ form.icon }}
+                {% if form.instance.icon %}
+                    <p class="text-[10px] text-outline mt-2">Current: {{ form.instance.icon.name }}</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="pt-6 border-t border-outline/5 flex gap-4">
+            <button type="submit" class="flex-1 bg-emerald-500 text-white font-bold py-4 rounded-xl shadow-lg shadow-emerald-500/20 hover:scale-[1.02] transform transition-all active:scale-95">
+                {% if form.instance.pk %}Update Category{% else %}Add Category{% endif %}
+            </button>
+            <a href="{% url 'admin_category_list' %}" class="px-8 py-4 bg-surface-container-high text-on-surface-variant font-bold rounded-xl hover:bg-surface-container-highest transition-colors">
+                Cancel
+            </a>
+        </div>
+    </form>
+</div>
+{% endblock %}

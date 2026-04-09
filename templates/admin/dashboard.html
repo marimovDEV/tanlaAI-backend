@@ -1,0 +1,104 @@
+{% extends 'admin/base_admin.html' %}
+
+{% block admin_content %}
+<div class="mb-12">
+    <h1 class="text-3xl font-extrabold tracking-tight text-on-background">System Overview</h1>
+    <p class="text-xs text-outline font-bold uppercase tracking-widest mt-1">Real-time statistics for ATELIER</p>
+</div>
+
+<!-- Stats Grid -->
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+    <!-- Products -->
+    <div class="bg-surface-container-low p-6 rounded-3xl border border-outline/5 hover:shadow-lg transition-all active:scale-[0.98]">
+        <div class="flex items-center justify-between mb-4">
+            <div class="w-10 h-10 rounded-2xl bg-primary/10 flex items-center justify-center text-primary">
+                <span class="material-symbols-outlined text-sm" data-icon="inventory_2">inventory_2</span>
+            </div>
+            <span class="text-[10px] font-black uppercase tracking-widest text-outline">Inventory</span>
+        </div>
+        <h3 class="text-2xl font-black text-on-surface">{{ product_count }}</h3>
+        <p class="text-[10px] text-outline font-bold uppercase tracking-widest mt-1">Total Products</p>
+    </div>
+
+    <!-- Companies -->
+    <div class="bg-surface-container-low p-6 rounded-3xl border border-outline/5 hover:shadow-lg transition-all active:scale-[0.98]">
+        <div class="flex items-center justify-between mb-4">
+            <div class="w-10 h-10 rounded-2xl bg-emerald-500/10 flex items-center justify-center text-emerald-500">
+                <span class="material-symbols-outlined text-sm" data-icon="business">business</span>
+            </div>
+            <span class="text-[10px] font-black uppercase tracking-widest text-outline">Partners</span>
+        </div>
+        <h3 class="text-2xl font-black text-on-surface">{{ company_count }}</h3>
+        <p class="text-[10px] text-outline font-bold uppercase tracking-widest mt-1">Active Studios</p>
+    </div>
+
+    <!-- Users -->
+    <div class="bg-surface-container-low p-6 rounded-3xl border border-outline/5 hover:shadow-lg transition-all active:scale-[0.98]">
+        <div class="flex items-center justify-between mb-4">
+            <div class="w-10 h-10 rounded-2xl bg-amber-500/10 flex items-center justify-center text-amber-500">
+                <span class="material-symbols-outlined text-sm" data-icon="group">group</span>
+            </div>
+            <span class="text-[10px] font-black uppercase tracking-widest text-outline">Community</span>
+        </div>
+        <h3 class="text-2xl font-black text-on-surface">{{ user_count }}</h3>
+        <p class="text-[10px] text-outline font-bold uppercase tracking-widest mt-1">Registered Users</p>
+    </div>
+
+    <!-- Banners -->
+    <div class="bg-surface-container-low p-6 rounded-3xl border border-outline/5 hover:shadow-lg transition-all active:scale-[0.98]">
+        <div class="flex items-center justify-between mb-4">
+            <div class="w-10 h-10 rounded-2xl bg-primary/10 flex items-center justify-center text-primary">
+                <span class="material-symbols-outlined text-sm" data-icon="view_carousel">view_carousel</span>
+            </div>
+            <span class="text-[10px] font-black uppercase tracking-widest text-outline">Marketing</span>
+        </div>
+        <h3 class="text-2xl font-black text-on-surface">{{ banner_count }}</h3>
+        <p class="text-[10px] text-outline font-bold uppercase tracking-widest mt-1">Active Banners</p>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="mt-12">
+    <h2 class="text-lg font-bold text-on-background mb-6">Quick Actions</h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <a href="{% url 'admin_product_create' %}" class="flex items-center justify-between p-6 bg-surface-container-lowest rounded-2xl border border-outline/5 hover:shadow-lg transition-all active:scale-[0.98]">
+            <div class="flex items-center gap-4">
+                <div class="w-10 h-10 rounded-full bg-primary flex items-center justify-center shadow-lg shadow-primary/20">
+                    <span class="material-symbols-outlined text-on-primary text-sm" data-icon="add">add</span>
+                </div>
+                <div>
+                    <p class="font-bold text-on-surface">New Product Entry</p>
+                    <p class="text-[10px] text-outline uppercase tracking-widest">Add to digital boutique</p>
+                </div>
+            </div>
+            <span class="material-symbols-outlined text-outline/30" data-icon="chevron_right">chevron_right</span>
+        </a>
+        
+        <a href="{% url 'admin_category_create' %}" class="flex items-center justify-between p-6 bg-surface-container-lowest rounded-2xl border border-outline/5 hover:shadow-lg transition-all active:scale-[0.98]">
+            <div class="flex items-center gap-4">
+                <div class="w-10 h-10 rounded-full bg-emerald-500 flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                    <span class="material-symbols-outlined text-white text-sm" data-icon="category">category</span>
+                </div>
+                <div>
+                    <p class="font-bold text-on-surface">Create Category</p>
+                    <p class="text-[10px] text-outline uppercase tracking-widest">Organize your shop</p>
+                </div>
+            </div>
+            <span class="material-symbols-outlined text-outline/30" data-icon="chevron_right">chevron_right</span>
+        </a>
+
+        <a href="{% url 'admin_user_list' %}" class="flex items-center justify-between p-6 bg-surface-container-lowest rounded-2xl border border-outline/5 hover:shadow-lg transition-all active:scale-[0.98]">
+            <div class="flex items-center gap-4">
+                <div class="w-10 h-10 rounded-full bg-amber-500 flex items-center justify-center shadow-lg shadow-amber-500/20">
+                    <span class="material-symbols-outlined text-white text-sm" data-icon="group">group</span>
+                </div>
+                <div>
+                    <p class="font-bold text-on-surface">User Management</p>
+                    <p class="text-[10px] text-outline uppercase tracking-widest">Manage artisans and roles</p>
+                </div>
+            </div>
+            <span class="material-symbols-outlined text-outline/30" data-icon="chevron_right">chevron_right</span>
+        </a>
+    </div>
+</div>
+{% endblock %}

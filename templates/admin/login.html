@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>TanlaAI | Admin Login</title>
+    <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet"/>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#006193',
+                        surface: '#f9f9f9',
+                        outline: '#6f7881',
+                        error: '#ba1a1a',
+                    },
+                    fontFamily: {
+                        sans: ['Manrope', 'sans-serif'],
+                    },
+                },
+            },
+        }
+    </script>
+</head>
+<body class="min-h-screen bg-surface font-sans text-slate-900">
+    <main class="mx-auto flex min-h-screen w-full max-w-6xl items-center justify-center px-6 py-10">
+        <section class="w-full max-w-md rounded-[2rem] border border-slate-200 bg-white p-10 shadow-2xl shadow-slate-200/70">
+            <div class="mb-10 text-center">
+                <p class="text-[11px] font-extrabold uppercase tracking-[0.3em] text-primary">TanlaAI Admin</p>
+                <h1 class="mt-3 text-3xl font-extrabold tracking-tight">Welcome back</h1>
+                <p class="mt-2 text-sm text-outline">Tizim boshqaruvi uchun akkauntingizga kiring.</p>
+            </div>
+
+            <form method="POST" class="space-y-6">
+                {% csrf_token %}
+
+                <div>
+                    <label class="mb-2 block text-[10px] font-extrabold uppercase tracking-[0.2em] text-outline">Username</label>
+                    <input type="text" name="username" required class="w-full rounded-2xl border border-slate-200 bg-slate-50 px-5 py-4 text-sm font-semibold outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/10" placeholder="admin">
+                </div>
+
+                <div>
+                    <label class="mb-2 block text-[10px] font-extrabold uppercase tracking-[0.2em] text-outline">Password</label>
+                    <input type="password" name="password" required class="w-full rounded-2xl border border-slate-200 bg-slate-50 px-5 py-4 text-sm font-semibold outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/10" placeholder="••••••••">
+                </div>
+
+                {% if form.errors %}
+                    <div class="rounded-2xl border border-error/20 bg-error/10 px-4 py-3">
+                        <p class="text-sm font-bold text-error">Login yoki parol noto'g'ri.</p>
+                    </div>
+                {% endif %}
+
+                <button type="submit" class="w-full rounded-2xl bg-primary px-5 py-4 text-sm font-extrabold uppercase tracking-[0.2em] text-white shadow-lg shadow-primary/20 transition-all active:scale-[0.98]">
+                    Sign In
+                </button>
+            </form>
+        </section>
+    </main>
+</body>
+</html>

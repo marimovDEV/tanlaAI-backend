@@ -1,0 +1,43 @@
+{% extends 'admin/base_admin.html' %}
+
+{% block admin_content %}
+<div class="mb-8 flex items-center gap-4">
+    <a href="{% url 'admin_company_list' %}" class="w-10 h-10 rounded-xl bg-surface-container-high flex items-center justify-center text-outline hover:text-primary transition-all active:scale-90">
+        <span class="material-symbols-outlined" data-icon="arrow_back">arrow_back</span>
+    </a>
+    <div>
+        <h1 class="text-3xl font-extrabold tracking-tight text-on-background">Confirm Deletion</h1>
+        <p class="text-xs text-outline font-bold uppercase tracking-widest mt-1">High-risk action</p>
+    </div>
+</div>
+
+<div class="max-w-2xl bg-surface-container-low rounded-3xl border border-error/20 p-10 shadow-xl shadow-error/5 relative overflow-hidden">
+    <!-- Danger Banner -->
+    <div class="absolute top-0 left-0 w-full h-1.5 bg-error"></div>
+
+    <div class="flex flex-col items-center text-center">
+        <div class="w-20 h-20 rounded-full bg-error/10 flex items-center justify-center text-error mb-8 shadow-inner">
+            <span class="material-symbols-outlined text-4xl" data-icon="warning">warning</span>
+        </div>
+        
+        <h2 class="text-2xl font-black text-on-background tracking-tight mb-2">Delete "{{ company.name }}"?</h2>
+        <p class="text-sm text-outline leading-relaxed max-w-md">
+            This action **cannot be undone**. All data associated with this studio, including its profile and 
+            <span class="text-error font-bold tracking-tight px-1.5 py-0.5 rounded-md bg-error/5 border border-error/10">
+                {{ company.products.count }} products
+            </span> 
+            will be permanently removed from the digital boutique.
+        </p>
+
+        <form method="POST" class="mt-12 w-full flex flex-col gap-4">
+            {% csrf_token %}
+            <button type="submit" class="w-full bg-error text-white font-extrabold py-5 rounded-2xl shadow-lg shadow-error/20 active:scale-[0.98] transition-all text-sm uppercase tracking-widest">
+                Confirm Permanent Removal
+            </button>
+            <a href="{% url 'admin_company_list' %}" class="w-full text-center py-4 text-xs font-bold text-outline hover:text-on-background transition-colors uppercase tracking-widest">
+                Nevermind, Take me back
+            </a>
+        </form>
+    </div>
+</div>
+{% endblock %}

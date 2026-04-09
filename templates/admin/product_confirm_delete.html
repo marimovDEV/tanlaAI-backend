@@ -1,0 +1,21 @@
+{% extends 'admin/base_admin.html' %}
+
+{% block admin_content %}
+<div class="max-w-xl mx-auto py-20 text-center">
+    <div class="w-20 h-20 rounded-full bg-error/10 flex items-center justify-center text-error mx-auto mb-8">
+        <span class="material-symbols-outlined text-4xl" data-icon="delete_forever">delete_forever</span>
+    </div>
+    <h1 class="text-3xl font-extrabold tracking-tight text-on-background mb-4">Confirm Deletion</h1>
+    <p class="text-outline leading-relaxed mb-12">Are you sure you want to delete <span class="text-on-background font-bold">"{{ product.name }}"</span>? This action is irreversible and the masterpiece will be removed from the boutique catalog.</p>
+
+    <form method="POST" class="flex gap-4">
+        {% csrf_token %}
+        <button type="submit" class="flex-1 bg-error text-white font-bold py-4 rounded-xl shadow-lg shadow-error/20 active:scale-95 transition-all">
+            Yes, Delete Product
+        </button>
+        <a href="{% url 'admin_product_list' %}" class="flex-1 bg-surface-container-high text-on-surface-variant font-bold py-4 rounded-xl hover:bg-surface-container-highest transition-all text-center">
+            No, Keep it
+        </a>
+    </form>
+</div>
+{% endblock %}

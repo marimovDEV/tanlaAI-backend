@@ -1,0 +1,42 @@
+{% extends 'admin/base_admin.html' %}
+
+{% block admin_content %}
+    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+            <h1 class="text-3xl font-extrabold tracking-tight text-on-background">Companies</h1>
+            <p class="text-xs text-outline font-bold uppercase tracking-widest mt-1">Manage registered studios and brands</p>
+        </div>
+        
+        <!-- Live Search -->
+        <div class="relative w-full md:w-64 group">
+            <span class="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-outline text-lg transition-colors group-focus-within:text-primary" data-icon="search">search</span>
+            <input type="text" name="q" placeholder="Search companies..." 
+                   value="{{ query|default:'' }}"
+                   hx-get="{% url 'admin_company_list' %}"
+                   hx-trigger="keyup changed delay:500ms"
+                   hx-target="#company-table-body"
+                   class="w-full bg-surface-container-high/50 border border-outline/10 rounded-2xl py-3 pl-12 pr-4 text-xs font-bold text-on-surface focus:ring-2 focus:ring-primary/20 outline-none transition-all placeholder:text-outline/50">
+        </div>
+    </div>
+
+<div class="bg-surface-container-low rounded-2xl border border-outline/5 overflow-hidden">
+    <div class="overflow-x-auto">
+        <table class="w-full text-left border-collapse">
+            <thead>
+                <tr class="bg-surface-container-high/50 border-b border-outline/10 text-[10px] font-extrabold text-outline uppercase tracking-widest">
+                    <th class="px-6 py-4">Logo</th>
+                    <th class="px-6 py-4">Company Name</th>
+                    <th class="px-6 py-4">Owner</th>
+                    <th class="px-6 py-4">Status</th>
+                    <th class="px-6 py-4">Deadline</th>
+                    <th class="px-6 py-4 text-center">Products</th>
+                    <th class="px-6 py-4 text-right">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="company-table-body" class="divide-y divide-outline/5">
+                {% include 'admin/partials/company_table_body.html' %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

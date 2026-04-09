@@ -1,0 +1,24 @@
+{% extends 'admin/base_admin.html' %}
+
+{% block admin_content %}
+<div class="min-h-[60vh] flex flex-col items-center justify-center p-8 text-center max-w-lg mx-auto">
+    <div class="w-16 h-16 rounded-3xl bg-error/10 flex items-center justify-center text-error mb-6 shadow-sm border border-error/20">
+        <span class="material-symbols-outlined text-3xl" data-icon="delete_forever">delete_forever</span>
+    </div>
+    
+    <h1 class="text-2xl font-black text-on-surface mb-2 tracking-tight">Remove this Banner?</h1>
+    <p class="text-sm text-outline font-medium mb-12">
+        You are about to delete <strong class="text-on-surface">"{{ banner.title|default:'Untitled' }}"</strong>. This action cannot be undone and it will be permanently removed from the carousel.
+    </p>
+    
+    <form method="POST" class="flex flex-col sm:flex-row items-center gap-4 w-full">
+        {% csrf_token %}
+        <a href="{% url 'admin_banner_list' %}" class="flex-1 w-full flex items-center justify-center px-8 py-4 rounded-full border border-outline/20 text-[10px] font-black uppercase tracking-widest text-outline hover:bg-surface-container-high transition-all">
+            Cancel
+        </a>
+        <button type="submit" class="flex-1 w-full flex items-center justify-center px-8 py-4 rounded-full bg-error text-on-error shadow-lg shadow-error/20 text-[10px] font-black uppercase tracking-[0.2em] transition-all active:scale-95">
+            Confirm Delete
+        </button>
+    </form>
+</div>
+{% endblock %}

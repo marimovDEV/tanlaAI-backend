@@ -1,0 +1,9 @@
+*.pyc
+__pycache__/
+db.sqlite3
+.env
+.pytest_cache/
+media/
+static/
+/Users/ogabek/Documents/projects/tanlaAI/backend/media/*
+/Users/ogabek/Documents/projects/tanlaAI/backend/static/*

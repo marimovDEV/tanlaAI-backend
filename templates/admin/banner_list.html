@@ -1,0 +1,70 @@
+{% extends 'admin/base_admin.html' %}
+
+{% block admin_content %}
+<div class="mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div>
+        <h1 class="text-3xl font-extrabold tracking-tight text-on-background">Home Banners</h1>
+        <p class="text-xs text-outline font-bold uppercase tracking-widest mt-1">Manage carousel slides and featured content</p>
+    </div>
+    <a href="{% url 'admin_banner_create' %}" class="inline-flex items-center gap-2 bg-primary text-on-primary px-6 py-3 rounded-2xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-primary/20 active:scale-95 transition-all">
+        <span class="material-symbols-outlined text-sm" data-icon="add">add</span>
+        Add Banner
+    </a>
+</div>
+
+<div class="bg-surface-container-low rounded-2xl border border-outline/5 overflow-hidden">
+    <div class="overflow-x-auto">
+        <table class="w-full text-left border-collapse">
+            <thead>
+                <tr class="bg-surface-container-high/50 border-b border-outline/10 text-[10px] font-extrabold text-outline uppercase tracking-widest">
+                    <th class="px-6 py-4">Preview</th>
+                    <th class="px-6 py-4">Content</th>
+                    <th class="px-6 py-4">Order</th>
+                    <th class="px-6 py-4">Status</th>
+                    <th class="px-6 py-4 text-right">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-outline/5">
+                {% for banner in banners %}
+                <tr class="hover:bg-surface-container-lowest transition-colors group">
+                    <td class="px-6 py-4">
+                        <img src="{{ banner.image.url }}" class="w-24 h-14 rounded-lg object-cover border border-outline/10 shadow-sm">
+                    </td>
+                    <td class="px-6 py-4">
+                        <p class="font-bold text-on-surface">{{ banner.title|default:"(No Title)" }}</p>
+                        <p class="text-[10px] text-outline font-medium truncate max-w-xs">{{ banner.subtitle|default:"(No Subtitle)" }}</p>
+                    </td>
+                    <td class="px-6 py-4">
+                        <span class="text-xs font-black text-on-surface-variant bg-surface-container-high px-2 py-1 rounded-md">{{ banner.order }}</span>
+                    </td>
+                    <td class="px-6 py-4">
+                        {% if banner.is_active %}
+                            <span class="bg-primary/10 text-primary text-[10px] font-black px-2.5 py-1 rounded-full uppercase tracking-widest">Active</span>
+                        {% else %}
+                            <span class="bg-surface-container-high text-outline text-[10px] font-black px-2.5 py-1 rounded-full uppercase tracking-widest">Inactive</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4 text-right">
+                        <div class="flex items-center justify-end gap-2">
+                            <a href="{% url 'admin_banner_edit' banner.pk %}" class="w-8 h-8 rounded-lg flex items-center justify-center text-outline hover:text-primary hover:bg-primary/5 transition-all">
+                                <span class="material-symbols-outlined text-lg" data-icon="edit">edit</span>
+                            </a>
+                            <a href="{% url 'admin_banner_delete' banner.pk %}" class="w-8 h-8 rounded-lg flex items-center justify-center text-outline hover:text-error hover:bg-error/5 transition-all">
+                                <span class="material-symbols-outlined text-lg" data-icon="delete">delete</span>
+                            </a>
+                        </div>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="5" class="px-6 py-12 text-center text-outline">
+                        <span class="material-symbols-outlined text-4xl mb-4" data-icon="view_carousel">view_carousel</span>
+                        <p class="text-sm font-bold">No banners added yet.</p>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

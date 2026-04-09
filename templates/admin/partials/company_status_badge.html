@@ -1,0 +1,5 @@
+<button hx-post="{% url 'admin_company_toggle_active' company.pk %}"
+        hx-swap="outerHTML"
+        class="px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all active:scale-95 {{ status_class }}">
+    {{ status_text }}
+</button>

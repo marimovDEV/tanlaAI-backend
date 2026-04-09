@@ -1,0 +1,263 @@
+{% extends 'admin/base_admin.html' %}
+
+{% block admin_content %}
+<div class="mb-12">
+    <div class="flex items-center gap-4 mb-4">
+        <a href="{% url 'admin_product_list' %}" class="w-10 h-10 rounded-full bg-surface-container-low flex items-center justify-center text-outline hover:text-primary transition-colors">
+            <span class="material-symbols-outlined text-lg" data-icon="arrow_back">arrow_back</span>
+        </a>
+        <h1 class="text-3xl font-extrabold tracking-tight text-on-background">{% if form.instance.pk %}Edit Product{% else %}New Product{% endif %}</h1>
+    </div>
+    <p class="text-xs text-outline font-bold uppercase tracking-widest">{% if form.instance.pk %}Update the details for {{ form.instance.name }}{% else %}Add a new masterpiece to your jewelry collection{% endif %}</p>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+    <div class="lg:col-span-2">
+        <form method="POST" enctype="multipart/form-data" class="bg-surface-container-low p-8 rounded-3xl border border-outline/5 space-y-8">
+            {% csrf_token %}
+            
+            <div class="space-y-6">
+                <div>
+                    <label class="text-[10px] font-extrabold uppercase tracking-widest text-outline mb-2 block">Product Name</label>
+                    {{ form.name }}
+                </div>
+                
+                <div>
+                    <label class="text-[10px] font-extrabold uppercase tracking-widest text-outline mb-2 block">Description</label>
+                    {{ form.description }}
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div class="space-y-4">
+                        <label class="text-[10px] font-extrabold uppercase tracking-widest text-outline block">Pricing Model</label>
+                        <div class="flex items-center bg-surface-container-highest p-1 rounded-xl border border-outline/5 relative h-10 w-full">
+                            <div id="pricing-glider" class="absolute h-8 w-[49%] bg-primary rounded-lg transition-all duration-300 z-0 left-1"></div>
+                            <button type="button" onclick="setPricingType('total')" id="btn-total" class="relative z-10 flex-1 text-[9px] font-bold uppercase tracking-widest text-center transition-colors duration-300 text-on-primary">Total Price</button>
+                            <button type="button" onclick="setPricingType('per_m2')" id="btn-per_m2" class="relative z-10 flex-1 text-[9px] font-bold uppercase tracking-widest text-center transition-colors duration-300 text-outline">Per 1 m²</button>
+                        </div>
+                        {{ form.pricing_type }}
+                        
+                        <div id="price-container">
+                            <label class="text-[10px] font-extrabold uppercase tracking-widest text-outline mb-2 block">Total Price (сум)</label>
+                            {{ form.price }}
+                        </div>
+                        <div id="price_per_m2-container" class="hidden">
+                            <label class="text-[10px] font-extrabold uppercase tracking-widest text-outline mb-2 block">Price per 1 m² (сум)</label>
+                            {{ form.price_per_m2 }}
+                        </div>
+                    </div>
+                    <div>
+                        <label class="text-[10px] font-extrabold uppercase tracking-widest text-outline mb-2 block">Category</label>
+                        {{ form.category }}
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-6" id="dimensions-section">
+                    <div>
+                        <label class="text-[10px] font-extrabold uppercase tracking-widest text-outline mb-2 block">Height (cm)</label>
+                        {{ form.height }}
+                    </div>
+                    <div>
+                        <label class="text-[10px] font-extrabold uppercase tracking-widest text-outline mb-2 block">Width (cm)</label>
+                        {{ form.width }}
+                    </div>
+                </div>
+
+                <div>
+                    <label class="text-[10px] font-extrabold uppercase tracking-widest text-outline mb-2 block">Product Image</label>
+                    {{ form.image }}
+                    {% if form.instance.image %}
+                        <p class="text-[10px] text-outline mt-2">Current: {{ form.instance.image.name }}</p>
+                    {% endif %}
+                </div>
+
+                <div class="flex items-center gap-3 py-4 border-t border-outline/5">
+                    {{ form.is_featured }}
+                    <label class="text-sm font-bold text-on-surface">Feature this product on homepage</label>
+                </div>
+
+                <!-- Promotional Settings Section -->
+                <div class="pt-8 border-t-2 border-primary/10">
+                    <div class="flex items-center gap-4 mb-6">
+                        <div class="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
+                            <span class="material-symbols-outlined text-primary text-sm" data-icon="local_offer">local_offer</span>
+                        </div>
+                        <h2 class="text-lg font-extrabold tracking-tight text-on-background">Promotional Settings</h2>
+                    </div>
+
+                    <div class="bg-primary/5 p-6 rounded-2xl border border-primary/10 space-y-6">
+                        <div class="flex items-center gap-3">
+                            {{ form.is_on_sale }}
+                            <label class="text-sm font-bold text-on-surface uppercase tracking-widest">Mark as "On Sale"</label>
+                        </div>
+
+                        <div id="sale-fields-container" class="space-y-6 {% if not form.is_on_sale.value %}opacity-40 pointer-events-none transition-opacity duration-300{% endif %}">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div>
+                                    <label class="text-[10px] font-extrabold uppercase tracking-widest text-outline mb-2 block">Discount Price (сум)</label>
+                                    {{ form.discount_price }}
+                                    <p class="text-[9px] text-primary/60 font-bold uppercase tracking-widest mt-2 px-1">Must be less than original price</p>
+                                </div>
+                                <div>
+                                    <label class="text-[10px] font-extrabold uppercase tracking-widest text-outline mb-2 block">Sale End Date</label>
+                                    {{ form.sale_end_date }}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="pt-6 border-t border-outline/5 flex gap-4">
+                <button type="submit" class="flex-1 bg-primary text-on-primary font-bold py-4 rounded-xl shadow-lg shadow-primary/20 hover:scale-[1.02] transform transition-all active:scale-95">
+                    {% if form.instance.pk %}Update Product{% else %}Add Product{% endif %}
+                </button>
+                <a href="{% url 'admin_product_list' %}" class="px-8 py-4 bg-surface-container-high text-on-surface-variant font-bold rounded-xl hover:bg-surface-container-highest transition-colors">
+                    Cancel
+                </a>
+            </div>
+        </form>
+    </div>
+
+    <div class="lg:col-span-1">
+        <div class="bg-surface-container-low p-8 rounded-3xl border border-outline/5 sticky top-32">
+            <h3 class="text-xs font-extrabold uppercase tracking-widest text-outline mb-6">Preview</h3>
+            <div id="preview-card" class="bg-surface-container-lowest rounded-2xl overflow-hidden shadow-sm border border-outline/10 group">
+                <div class="aspect-[4/5] bg-surface-container-highest flex items-center justify-center relative overflow-hidden">
+                    {% if form.instance.image %}
+                        <img id="preview-img" src="{{ form.instance.image.url }}" class="w-full h-full object-cover">
+                    {% else %}
+                        <span id="preview-placeholder" class="material-symbols-outlined text-4xl text-outline/20" data-icon="image">image</span>
+                    {% endif %}
+                    
+                    <div id="preview-sale-badge" class="absolute top-4 left-4 bg-primary text-on-primary text-[10px] font-bold px-2.5 py-1 rounded-full uppercase tracking-widest shadow-lg {% if not form.instance.is_on_sale %}hidden{% endif %}">
+                        Sale
+                    </div>
+                </div>
+                <div class="p-6">
+                    <p id="preview-category" class="text-xs text-primary font-bold uppercase tracking-widest mb-1">{{ form.instance.category.name|default:"Category" }}</p>
+                    <h4 id="preview-name" class="font-bold text-on-surface truncate">{{ form.instance.name|default:"Product Name" }}</h4>
+                    
+                    <div class="mt-4 flex flex-col gap-1">
+                        <p id="preview-old-price" class="text-xs text-outline line-through {% if not form.instance.is_on_sale %}hidden{% endif %}">{{ form.instance.price|default:0 }} сум</p>
+                        <p id="preview-current-price" class="text-lg font-extrabold text-primary">
+                            {% if form.instance.is_on_sale and form.instance.discount_price %}
+                                {{ form.instance.discount_price }}
+                            {% else %}
+                                {{ form.instance.price|default:0 }}
+                            {% endif %} сум
+                        </p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="mt-8 p-6 bg-amber-500/5 rounded-2xl border border-amber-500/10">
+                <div class="flex items-start gap-4">
+                    <span class="material-symbols-outlined text-amber-600 text-sm mt-1" data-icon="lightbulb">lightbulb</span>
+                    <p class="text-xs text-amber-900 leading-relaxed font-medium">Keep promotional titles concise. Highlighting the limited-time nature often increases conversion.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const isOnSaleCheckbox = document.querySelector('input[name="is_on_sale"]');
+        const saleFieldsContainer = document.getElementById('sale-fields-container');
+        const saleBadge = document.getElementById('preview-sale-badge');
+        const oldPriceElement = document.getElementById('preview-old-price');
+        const currentPriceElement = document.getElementById('preview-current-price');
+        
+        const priceInput = document.querySelector('input[name="price"]');
+        const pricePerM2Input = document.querySelector('input[name="price_per_m2"]');
+        const discountInput = document.querySelector('input[name="discount_price"]');
+        const nameInput = document.querySelector('input[name="name"]');
+        const previewName = document.getElementById('preview-name');
+        const heightInput = document.querySelector('input[name="height"]');
+        const widthInput = document.querySelector('input[name="width"]');
+
+        window.setPricingType = function(val) {
+            const input = document.querySelector('input[name="pricing_type"]');
+            const glider = document.getElementById('pricing-glider');
+            const btnTotal = document.getElementById('btn-total');
+            const btnPerM2 = document.getElementById('btn-per_m2');
+            const totalCont = document.getElementById('price-container');
+            const perM2Cont = document.getElementById('price_per_m2-container');
+            
+            input.value = val;
+            
+            if (val === 'total') {
+                glider.style.left = '4px';
+                btnTotal.classList.add('text-on-primary');
+                btnTotal.classList.remove('text-outline');
+                btnPerM2.classList.remove('text-on-primary');
+                btnPerM2.classList.add('text-outline');
+                totalCont.classList.remove('hidden');
+                perM2Cont.classList.add('hidden');
+            } else {
+                glider.style.left = 'calc(50% + 2px)';
+                btnPerM2.classList.add('text-on-primary');
+                btnPerM2.classList.remove('text-outline');
+                btnTotal.classList.remove('text-on-primary');
+                btnTotal.classList.add('text-outline');
+                perM2Cont.classList.remove('hidden');
+                totalCont.classList.add('hidden');
+            }
+
+            // Toggle dimensions section
+            const dimSection = document.getElementById('dimensions-section');
+            if (dimSection) {
+                if (val === 'total') {
+                    dimSection.classList.remove('hidden');
+                } else {
+                    dimSection.classList.add('hidden');
+                }
+            }
+            updatePrices();
+        }
+
+        function toggleSaleFields() {
+            if (isOnSaleCheckbox.checked) {
+                saleFieldsContainer.classList.remove('opacity-40', 'pointer-events-none');
+                saleBadge.classList.remove('hidden');
+                oldPriceElement.classList.remove('hidden');
+                updatePrices();
+            } else {
+                saleFieldsContainer.classList.add('opacity-40', 'pointer-events-none');
+                saleBadge.classList.add('hidden');
+                oldPriceElement.classList.add('hidden');
+                updatePrices();
+            }
+        }
+
+        function updatePrices() {
+            const pricingType = document.querySelector('input[name="pricing_type"]').value;
+            const activePriceInput = pricingType === 'total' ? priceInput : pricePerM2Input;
+            const currentVal = activePriceInput.value || 0;
+            const suffix = pricingType === 'per_m2' ? ' сум/м²' : ' сум';
+
+            if (isOnSaleCheckbox.checked) {
+                oldPriceElement.textContent = currentVal + suffix;
+                currentPriceElement.textContent = (discountInput.value || 0) + suffix;
+            } else {
+                currentPriceElement.textContent = currentVal + suffix;
+            }
+        }
+
+        isOnSaleCheckbox.addEventListener('change', toggleSaleFields);
+        priceInput.addEventListener('input', updatePrices);
+        pricePerM2Input.addEventListener('input', updatePrices);
+        discountInput.addEventListener('input', updatePrices);
+        heightInput.addEventListener('input', updatePrices);
+        widthInput.addEventListener('input', updatePrices);
+        nameInput.addEventListener('input', function() {
+            previewName.textContent = nameInput.value || 'Product Name';
+        });
+
+        // Initialize on load
+        const initialPricingType = document.querySelector('input[name="pricing_type"]').value || 'total';
+        window.setPricingType(initialPricingType);
+    });
+</script>
+{% endblock %}

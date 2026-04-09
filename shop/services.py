@@ -52,7 +52,11 @@ class AIService:
         from google.genai import types
 
         try:
-            if product.ai_status != 'none':
+            from .models import Product
+            # Refresh instance from DB to ensure we have the latest state
+            product = Product.objects.get(id=product.id)
+
+            if product.ai_status == 'completed' or product.ai_status == 'error':
                 return
 
             print(f"DEBUG: [AI Service] Processing background removal for Product {product.id}...")
@@ -62,6 +66,7 @@ class AIService:
             # Preserve original
             if not product.original_image:
                 image_name = os.path.basename(product.image.name)
+                product.image.seek(0)
                 original_content = product.image.read()
                 product.original_image.save(image_name, ContentFile(original_content), save=False)
             product.save()
@@ -69,6 +74,7 @@ class AIService:
             client = AIService.get_gemini_client()
 
             with open(product.original_image.path, "rb") as f:
+                f.seek(0)
                 image_bytes = f.read()
 
             response = client.models.edit_image(

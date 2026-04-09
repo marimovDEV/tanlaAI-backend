@@ -64,12 +64,11 @@ def get_tg_user(request):
                 # Auto-sync/register user
                 user_id = user_data.get('id')
                 user, created = TelegramUser.objects.update_or_create(
-                    id=user_id,
+                    telegram_id=user_id,
                     defaults={
                         'first_name': user_data.get('first_name', ''),
                         'last_name': user_data.get('last_name', ''),
                         'username': user_data.get('username'),
-                        'language_code': user_data.get('language_code'),
                     }
                 )
                 tg_user_id = user.id

@@ -418,6 +418,7 @@ class AIResultViewSet(viewsets.ReadOnlyModelViewSet):
 
 class AdminLoginApiView(views.APIView):
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []  # Disable CSRF check for login
 
     def post(self, request):
         username = (request.data.get('username') or '').strip()
@@ -438,6 +439,7 @@ class AdminLoginApiView(views.APIView):
 
 class AdminLogoutApiView(views.APIView):
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []  # Disable CSRF check for logout
 
     def post(self, request):
         logout(request)

@@ -354,23 +354,28 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             response = client.models.edit_image(
                 model='imagen-3.0-capability-001',
                 prompt=(
-                    "The door has already been placed in this image. "
-                    "DO NOT change the door's color, texture, wood grain, or design. "
-                    "Only harmonize the edges where the door meets the wall — "
-                    "add realistic shadows, fix seams, and blend the frame into the wall naturally. "
-                    "Keep the door EXACTLY as it appears."
+                    "Blend the inserted door into the wall naturally. "
+                    "Do not move, resize, or modify the door shape or texture. "
+                    "Only add realistic shadows, fix seams, and harmonize lighting."
                 ),
                 reference_images=[
                     types.RawReferenceImage(
                         reference_image=types.Image(image_bytes=r_buf.getvalue()),
-                        reference_id=0,
-                    )
+                        reference_id=1,
+                    ),
+                    types.MaskReferenceImage(
+                        reference_id=2,
+                        reference_image=types.Image(image_bytes=m_buf.getvalue()),
+                        config=types.MaskReferenceConfig(
+                            mask_mode='MASK_MODE_USER_PROVIDED',
+                            mask_dilation=0.03,
+                        ),
+                    ),
                 ],
                 config=types.EditImageConfig(
-                    edit_mode='INPAINT_INSERT',
+                    edit_mode='EDIT_MODE_INPAINT_INSERTION',
                     number_of_images=1,
                     output_mime_type='image/png',
-                    mask=types.Image(image_bytes=m_buf.getvalue()),
                 ),
             )
             LOG(7, f"Imagen 3 javob berdi!")
@@ -383,13 +388,13 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                 full = room_img.copy()
                 full.paste(gen_roi, (roi_left, roi_top))
                 full.save(result_image_path, format='JPEG', quality=95)
-                LOG(7, f"✅ MUVAFFAQIYATLI! Natija saqlandi: {result_image_path}")
+                LOG(7, f"MUVAFFAQIYATLI! Natija saqlandi: {result_image_path}")
                 return result_image_path
             else:
-                LOG(7, "⚠️ Imagen 3 rasm QAYTARMADI (empty response)")
+                LOG(7, "Imagen 3 rasm QAYTARMADI (empty response)")
                 
         except Exception as e:
-            LOG(7, f"❌ AI harmonization XATO: {e}")
+            LOG(7, f"AI harmonization XATO: {e}")
             import traceback
             traceback.print_exc()
 

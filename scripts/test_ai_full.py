@@ -173,14 +173,21 @@ def test_imagen_edit(client):
             reference_images=[
                 types.RawReferenceImage(
                     reference_image=types.Image(image_bytes=r_buf.getvalue()),
-                    reference_id=0,
+                    reference_id=1,
+                ),
+                types.MaskReferenceImage(
+                    reference_id=2,
+                    reference_image=types.Image(image_bytes=m_buf.getvalue()),
+                    config=types.MaskReferenceConfig(
+                        mask_mode='MASK_MODE_USER_PROVIDED',
+                        mask_dilation=0.0
+                    )
                 )
             ],
             config=types.EditImageConfig(
-                edit_mode='INPAINT_INSERT',
+                edit_mode='EDIT_MODE_INPAINT_INSERTION',
                 number_of_images=1,
                 output_mime_type='image/png',
-                mask=types.Image(image_bytes=m_buf.getvalue()),
             ),
         )
         dt = time.time() - t0

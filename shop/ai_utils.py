@@ -417,27 +417,25 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         dirty_composite = room_img.copy()
         
         if door_resized.mode == 'RGBA':
-            # Edge Feathering (Yumshatish)
+            # 1. Wall Cut effect: Devorda o'zidek chuqurlik qorayadi
+            hole_color = Image.new("RGBA", door_resized.size, (0, 0, 0, 40)) # 40 alpha qora teshik
+            hole_mask = door_resized.split()[3] # Eshik formasi
+            dirty_composite.paste(hole_color, (final_left, final_top), hole_mask)
+            
+            # 2. Contact Shadow (Faqat polga yopishish qismiga ancha aniq ishora qilamiz)
+            shadow_rect = Image.new("RGBA", (resized_w + 10, int(resized_h * 0.05)), (0, 0, 0, 100))
+            shadow_rect = shadow_rect.filter(ImageFilter.GaussianBlur(5))
+            shadow_x, shadow_y = final_left - 5, final_top + resized_h - int(resized_h * 0.02)
+            dirty_composite.paste(shadow_rect, (shadow_x, shadow_y), shadow_rect)
+
+            # 3. Edge Darken / Blending (Devor bilan birikishi)
             alpha = door_resized.split()[3]
-            alpha = alpha.filter(ImageFilter.GaussianBlur(2))
+            alpha = alpha.filter(ImageFilter.GaussianBlur(3)) # 3px yumshatish devorga yaxshi singishi uchun
             door_resized.putalpha(alpha)
             
-            # Shadow yaratish (Faqat Alpha'dan ko'chiramiz, rectangle bo'lib ketmasligi uchun)
-            shadow_alpha = door_resized.split()[3]
-            shadow_alpha = shadow_alpha.point(lambda p: int(p * 0.65)) # Opacity tushirish
-            shadow_alpha = shadow_alpha.filter(ImageFilter.GaussianBlur(15)) # Blur
-            
-            shadow_color = Image.new("RGBA", door_resized.size, (0, 0, 0, 0))
-            shadow_color.putalpha(shadow_alpha)
-            
-            # Floor contact shadow offset
-            shadow_x, shadow_y = final_left + 8, final_top + 12
-            
-            # Avval shadow paste qilinadi
-            dirty_composite.paste(shadow_color, (shadow_x, shadow_y), shadow_color)
-            # So'ng eshik o'zi
+            # So'ng eshik o'zi eng ustiga qo'yiladi
             dirty_composite.paste(door_resized, (final_left, final_top), door_resized)
-            LOG(5, "Alpha-matte: shadow + feathering paste amalga oshdi")
+            LOG(5, "Alpha-matte: Wall_Cut + Floor_Contact + Edge_Darken amalga oshdi")
         else:
             dirty_composite.paste(door_resized, (final_left, final_top))
             LOG(5, "Oddiy paste amalga oshdi (alpha yo'q)")
@@ -503,15 +501,13 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             response = client.models.edit_image(
                 model='imagen-3.0-capability-001',
                 prompt=(
-                    "A door is already placed in the room.\n"
-                    "IMPORTANT:\n"
-                    "- Do not remove or change the door\n"
-                    "- Do not change size or position\n\n"
-                    "Make the door look realistic:\n"
-                    "- add contact shadow on the floor\n"
-                    "- match lighting with the room\n"
-                    "- slightly blend edges into the wall\n"
-                    "- ensure the door fits naturally into the wall opening"
+                    "The door is already placed in the wall opening.\n"
+                    "Do not move or resize the door.\n\n"
+                    "Make it realistic:\n"
+                    "- embed the door into the wall (not on top)\n"
+                    "- add contact shadow on floor\n"
+                    "- darken edges where door meets wall\n"
+                    "- match lighting and perspective"
                 ),
                 reference_images=[
                     types.RawReferenceImage(

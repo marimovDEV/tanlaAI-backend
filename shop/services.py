@@ -82,9 +82,12 @@ class AIService:
                 product.original_image.save(name, ContentFile(original_content), save=False)
                 product.save(update_fields=['original_image'])
 
-            # 2. Prepare image for rembg
+            # 2. Prepare image for
+            # --- Pre-processing: Contrast & Sharpness enhancement ---
             from PIL import Image, ImageEnhance
             import io
+            import cv2
+            import numpy as np
             
             product.original_image.seek(0)
             input_image_bytes = product.original_image.read()
@@ -92,32 +95,50 @@ class AIService:
             if not input_image_bytes:
                 raise ValueError("Source image is empty")
 
-            # --- Pre-processing: Contrast & Sharpness enhancement ---
-            img = Image.open(io.BytesIO(input_image_bytes)).convert("RGB")
+            img_pil = Image.open(io.BytesIO(input_image_bytes)).convert("RGB")
+            # Increase contrast & sharpness
+            img_pil = ImageEnhance.Contrast(img_pil).enhance(1.2)
+            img_pil = ImageEnhance.Sharpness(img_pil).enhance(2.0)
             
-            # Increase contrast
-            img = ImageEnhance.Contrast(img).enhance(1.2)
-            # Increase sharpness to help detect edges
-            img = ImageEnhance.Sharpness(img).enhance(2.0)
+            # Convert to numpy for OpenCV interaction later
+            img_np = np.array(img_pil)
+            img_rgb = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
             
-            # Convert back to bytes
             enhanced_io = io.BytesIO()
-            img.save(enhanced_io, format='PNG')
+            img_pil.save(enhanced_io, format='PNG')
             enhanced_input_bytes = enhanced_io.getvalue()
             # --------------------------------------------
 
-            print("DEBUG: [AI Service] Executing local background removal (silueta + zero erosion)...")
-            # 'silueta' is often better at maintaining object boundaries than u2net/isnet
-            session = new_session("silueta")
-            output_image_bytes = rembg.remove(
+            print("DEBUG: [AI Service] Executing Hybrid Pipeline (BiRefNet + OpenCV Dilate)...")
+            
+            # STEP 1: Get the binary mask first using the most accurate model
+            # Note: birefnet-general is currently top-tier for general object segmentation
+            session = new_session("birefnet-general")
+            mask_bytes = rembg.remove(
                 enhanced_input_bytes,
                 session=session,
-                alpha_matting=True,
-                alpha_matting_foreground_threshold=240, 
-                alpha_matting_background_threshold=10,  
-                alpha_matting_erode_size=0, # CRITICAL: Do not eat the edges
+                only_mask=True, # We only need the alpha channel mask first
                 post_process_mask=True
             )
+            
+            # STEP 2: Process mask with OpenCV to avoid "eating edges"
+            mask_np = np.frombuffer(mask_bytes, dtype=np.uint8)
+            mask = cv2.imdecode(mask_np, cv2.IMREAD_GRAYSCALE)
+            
+            # DILATE: Expand the mask slightly to include frame edges that AI might have missed
+            # 3x3 or 5x5 kernel depending on resolution
+            kernel = np.ones((3, 3), np.uint8)
+            dilated_mask = cv2.dilate(mask, kernel, iterations=1)
+            
+            # STEP 3: Apply the dilated mask back to original image
+            # Create a 4-channel image (RGBA)
+            b_channel, g_channel, r_channel = cv2.split(img_rgb)
+            # Use dilated mask as the alpha channel
+            rgba = cv2.merge((b_channel, g_channel, r_channel, dilated_mask))
+            
+            # STEP 4: Convert back to PNG bytes
+            _, final_encoded = cv2.imencode('.png', rgba)
+            output_image_bytes = final_encoded.tobytes()
 
             # Save results
             image_name = f"isolated_{product.id}.png"
@@ -126,7 +147,7 @@ class AIService:
             
             product.ai_status = 'completed'
             product.save()
-            print(f"DEBUG: [AI Service] High-quality background removal (silueta) COMPLETED for Product {product.id}")
+            print(f"DEBUG: [AI Service] Hybrid professional pipeline COMPLETED for Product {product.id}")
 
         except Exception as e:
             print(f"ERROR: [AI Service] Background removal failed: {e}")

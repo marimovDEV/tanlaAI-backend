@@ -180,53 +180,35 @@ def replace_background_with_green(image_bytes: bytes, mask_bytes: bytes) -> byte
 
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None):
     """
-    Ironclad Overlay (v17): 
-    Guarantees that a door IS ALWAYS placed, regardless of asset quality.
+    v18 Performance & Resilience:
+    - Skip local rembg to ensure <15s response.
+    - Simplified logic.
     """
+    import time
+    start_t = time.time()
     try:
         from PIL import Image, ImageOps, ImageDraw
         import numpy as np
         import io
-        import rembg
-        client = get_gemini_client()
+        client = AIService.get_gemini_client()
         
         # 1. Load Room
         room_img = Image.open(room_image_path).convert("RGB")
         rw, rh = room_img.size
         
-        # 2. Ironclad Asset Loading
+        # 2. Optimized Asset Loading (Strictly No rembg here)
         door_img = None
+        # Try PNG first, then raw JPG
+        for field in [product.image_no_bg, product.image, product.original_image]:
+            if field and field.name and os.path.exists(field.path):
+                door_img = Image.open(field.path).convert("RGBA")
+                break
         
-        # Priority 1: Trusted isolate
-        if product.image_no_bg and product.image_no_bg.name and os.path.exists(product.image_no_bg.path):
-            try:
-                img = Image.open(product.image_no_bg.path).convert("RGBA")
-                # Even if it lacks alpha, we take it if it targets image_no_bg
-                door_img = img
-                print("DEBUG: [Ironclad] Using isolated asset.")
-            except: pass
-            
-        # Priority 2: Standard Image (try to clean it)
-        if not door_img and product.image and os.path.exists(product.image.path):
-            try:
-                print("DEBUG: [Ironclad] Cleaning standard image...")
-                with open(product.image.path, "rb") as f:
-                    data = f.read()
-                clean = rembg.remove(data)
-                door_img = Image.open(io.BytesIO(clean)).convert("RGBA")
-            except:
-                print("DEBUG: [Ironclad] Cleaning failed, using raw image.")
-                door_img = Image.open(product.image.path).convert("RGBA")
-
-        # Final Fallback: ANYTHING
-        if not door_img:
-            source = product.original_image if product.original_image else product.image
-            if source and os.path.exists(source.path):
-                door_img = Image.open(source.path).convert("RGBA")
-
         if not door_img:
             raise ValueError("NO IMAGE ASSET FOUND.")
 
+        print(f"DEBUG: [v18] Asset loaded in {time.time()-start_t:.2f}s")
+        
         # 3. Placement Math
         if not box_1000:
             box_1000 = [200, 400, 850, 600]
@@ -280,8 +262,7 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         # 5. Harmonization
         try:
             r_buf = io.BytesIO(); roi_img.save(r_buf, format='JPEG')
-            m_buf = io.BytesIO(); local_mask.save(m_buf, format='PNG')
-            
+            print(f"DEBUG: [v18] Starting Harmonization... (Time so far: {time.time()-start_t:.2f}s)")
             response = client.models.edit_image(
                 model='imagen-3.0-capability-001',
                 prompt=(
@@ -297,11 +278,13 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                 full = room_img.copy()
                 full.paste(gen_roi, (roi_left, roi_top))
                 full.save(result_image_path, format='JPEG', quality=95)
+                print(f"DEBUG: [v18] SUCCESS total time: {time.time()-start_t:.2f}s")
                 return result_image_path
-        except:
-            print("WARNING: AI failed, using dirty composite.")
+        except Exception as e:
+            print(f"WARNING: [v18] AI failed or timed out: {e}. (Time so far: {time.time()-start_t:.2f}s)")
 
         dirty_composite.save(result_image_path, format='JPEG', quality=90)
+        print(f"DEBUG: [v18] FALLBACK total time: {time.time()-start_t:.2f}s")
         return result_image_path
 
     except Exception as e:

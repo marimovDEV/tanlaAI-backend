@@ -405,20 +405,25 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         box_w = right - left
         box_h = bottom - top
         
-        # 1. To'g'ri scaling algoritmi (Box ichiga proportion bilan sig'dirish)
-        scale = min(box_w / float(dw), box_h / float(dh))
+        # 1. TO'G'RI SCALING (User maslahati): Eshik balandligi teshikka (top-to-bottom) 100% mos bo'lishi kerak!
+        # Aspect rationi saqlagan holda balandlikni to'ldiramiz
+        resized_h = box_h
+        door_ar = dw / float(dh)
+        resized_w = int(resized_h * door_ar)
         
-        resized_w = int(dw * scale)
-        resized_h = int(dh * scale)
-        
+        # Agar eshik teshikdan juda keng bo'lib ketsa (kamdan-kam), unda minimal qisqartiramiz
+        if resized_w > box_w * 1.2:
+            resized_w = int(box_w * 1.1) 
+            # Eslatma: Eshik bir oz kengroq bo'lishi (frame ustiga tushishi) realistikroq
+
         door_resized = door_img.resize((resized_w, resized_h), Image.Resampling.LANCZOS)
-        LOG(4, f"Eshik scale: {resized_w}x{resized_h}")
+        LOG(4, f"Eshik scale (Height-First): {resized_w}x{resized_h}")
         
-        # 2. ALIGN - O'rtaga va eng asosiy: POLGA taqab joylashtirish!
+        # 2. ALIGN - Tepaga (Top) va Pastga (Bottom) yopishtirish
+        final_top = top
         final_left = left + (box_w - resized_w) // 2
-        final_top = top + (box_h - resized_h)
         
-        LOG(4, f"Align Joylashtirish: final_left={final_left}, final_top={final_top}")
+        LOG(4, f"Snap Joylashtirish: final_left={final_left}, final_top={final_top}")
         
         # ====== STEP 5: Edge Blur, Shadow va Dirty Composite ======
         LOG(5, "Dirty composite yaratilmoqda (blur + shadow)...")

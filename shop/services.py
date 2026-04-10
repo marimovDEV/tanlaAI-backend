@@ -18,6 +18,8 @@ class AIService:
         from google.oauth2 import service_account
 
         api_key = getattr(settings, 'GEMINI_API_KEY', None)
+        if isinstance(api_key, str):
+            api_key = api_key.strip()
         
         if api_key:
             print("DEBUG: [AI Service] Initializing client with API KEY...")
@@ -139,15 +141,20 @@ class AIService:
                 import json
                 import re
                 
-                # Extract JSON using more flexible regex
-                json_match = re.search(r'\{(?:[^{}]|(?R))*\}', text, re.DOTALL)
-                if not json_match:
-                    # Fallback regex if recursion is not supported in re module
-                    json_match = re.search(r'\{.*\}', text, re.DOTALL)
+                # Extract JSON using simple regex
+                json_match = re.search(r'\{.*\}', text, re.DOTALL)
                 
                 if json_match:
-                    coords = json.loads(json_match.group(0))
-                    box = coords.get('box_2d')
+                    try:
+                        coords = json.loads(json_match.group(0))
+                        box = coords.get('box_2d')
+                    except json.JSONDecodeError:
+                        # Try to find a list like [1, 2, 3, 4] if JSON wrapper is missing/broken
+                        list_match = re.search(r'\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]', text)
+                        if list_match:
+                            box = [int(x) for x in list_match.groups()]
+                        else:
+                            box = None
                 else:
                     box = None
             except Exception as e:

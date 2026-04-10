@@ -57,7 +57,8 @@ class AIService:
     @staticmethod
     def process_product_background(product):
         """
-        Background removal using remove.bg API (preferred) with rembg (fallback).
+        Background removal using ONLY the free local rembg library.
+        No API keys or internet required for this step.
         """
         from .models import Product
         try:
@@ -66,7 +67,7 @@ class AIService:
             if product.ai_status == 'completed':
                 return
 
-            print(f"DEBUG: [AI Service] Processing Background for Product {product.id}...")
+            print(f"DEBUG: [AI Service] Processing Background for Product {product.id} (using local rembg)...")
             product.ai_status = 'processing'
             product.save(update_fields=['ai_status'])
 
@@ -76,41 +77,18 @@ class AIService:
                 original_content = product.image.read()
                 product.original_image.save(os.path.basename(product.image.name), ContentFile(original_content), save=False)
 
-            api_key = getattr(settings, 'REMOVE_BG_API_KEY', '')
-            output_image_bytes = None
-
-            # 1. Try remove.bg API if key is available
-            if api_key and api_key != 'YOUR_API_KEY_HERE':
-                try:
-                    print("DEBUG: [AI Service] Attempting background removal via remove.bg API...")
-                    product.original_image.seek(0)
-                    response = requests.post(
-                        'https://api.remove.bg/v1.0/removebg',
-                        files={'image_file': product.original_image.open('rb')},
-                        data={'size': 'auto'},
-                        headers={'X-Api-Key': api_key},
-                        timeout=30
-                    )
-                    if response.status_code == requests.codes.ok:
-                        output_image_bytes = response.content
-                        print("DEBUG: [AI Service] remove.bg API SUCCESS.")
-                    else:
-                        print(f"DEBUG: [AI Service] remove.bg API failed (status {response.status_code}): {response.text}")
-                except Exception as api_err:
-                    print(f"DEBUG: [AI Service] remove.bg API connection error: {api_err}")
-
-            # 2. Fallback to local rembg if API failed or was skipped
-            if not output_image_bytes:
-                print("DEBUG: [AI Service] Falling back to local rembg (isnet-general-use)...")
-                session = new_session("isnet-general-use")
-                product.original_image.seek(0)
-                input_image_bytes = product.original_image.read()
-                output_image_bytes = rembg.remove(
-                    input_image_bytes,
-                    session=session,
-                    alpha_matting=False,
-                    post_process_mask=True
-                )
+            # Use local rembg
+            print("DEBUG: [AI Service] Executing local background removal (isnet-general-use)...")
+            session = new_session("isnet-general-use")
+            product.original_image.seek(0)
+            input_image_bytes = product.original_image.read()
+            
+            output_image_bytes = rembg.remove(
+                input_image_bytes,
+                session=session,
+                alpha_matting=False,
+                post_process_mask=True
+            )
 
             # Save results
             image_name = f"isolated_{product.id}.png"
@@ -119,7 +97,7 @@ class AIService:
             
             product.ai_status = 'completed'
             product.save()
-            print(f"DEBUG: [AI Service] Background removal COMPLETED for Product {product.id}")
+            print(f"DEBUG: [AI Service] Background removal COMPLETED (FREE) for Product {product.id}")
 
         except Exception as e:
             print(f"ERROR: [AI Service] Background removal failed: {e}")

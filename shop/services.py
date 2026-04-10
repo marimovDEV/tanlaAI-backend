@@ -437,19 +437,19 @@ class AIService:
                     print(f"DEBUG: [AI Service v7] Unrealistic width ratio ({raw_w/raw_h:.2f}), forcing AR.")
                     raw_w = raw_h * door_ar
 
-                # Rule 3: Floor-Anchored Placement & Gapless Coverage (v12)
-                # Ensure the door is anchored to the floor (b_y) to prevent 'floating'.
-                # Add a 5% width buffer to ensure it completely covers the old door's edges.
-                box_h = raw_h
-                box_w = raw_h * door_ar * 1.05
+                # Rule 3: The Deep Anchor & Width Calibration (v13 Master Hybrid)
+                # Sink the door 15 pixels deeper into the floor to guarantee zero floating.
+                # Enforce a minimum width of 0.43x height to hide old frame ghosting.
+                box_h = raw_h + 15
+                box_w = max(raw_h * door_ar * 1.05, raw_h * 0.43)
                 
                 avg_x = (t_x + b_x) / 2
                 
                 new_box = [
-                    t_y,                       # top: anchored to the opening top
-                    max(0, avg_x - box_w/2),   # xmin
-                    b_y,                       # bottom: anchored firmly to the floor
-                    min(1000, avg_x + box_w/2) # xmax
+                    t_y,                                # top: anchored to the opening top
+                    max(0, avg_x - box_w/2),            # xmin
+                    min(1000, b_y + 15),                # bottom: deep-anchored into the floor
+                    min(1000, avg_x + box_w/2)          # xmax
                 ]
                 box = new_box
                 print(f"DEBUG: [AI Service v7] Scientific-Validated Box: {box}")

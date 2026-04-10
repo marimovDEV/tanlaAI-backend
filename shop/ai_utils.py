@@ -47,13 +47,17 @@ def get_gemini_client():
 
 def process_product_with_ai(product):
     """
-    Uses Gemini (Nano Banana) to isolate the door and put it on a white background.
+    Uses Photoroom API to isolate the door and remove the background.
+    Results in a high-quality transparent PNG.
     """
+    import requests
+    from django.conf import settings
+    
     try:
         if product.ai_status != 'none':
             return
             
-        print(f"DEBUG: [Gemini AI] Processing creation for Product {product.id}...")
+        print(f"DEBUG: [Photoroom] Processing creation for Product {product.id}...")
         product.ai_status = 'processing'
         product.save(update_fields=['ai_status'])
         
@@ -64,44 +68,34 @@ def process_product_with_ai(product):
             product.original_image.save(image_name, ContentFile(original_content), save=False)
         product.save()
 
-        client = get_gemini_client()
+        api_key = getattr(settings, 'PHOTOROOM_API_KEY', os.getenv('PHOTOROOM_API_KEY'))
+        if not api_key:
+            raise ValueError("Photoroom API key missing in settings.")
+            
+        url = "https://sdk.photoroom.com/v1/segment"
+        with open(product.original_image.path, "rb") as img_file:
+            files = {"image_file": img_file}
+            headers = {"x-api-key": api_key}
+            response = requests.post(url, files=files, headers=headers)
         
-        # Call Gemini for Background Removal (Nano Banana)
-        # Using Imagen 3 capability for professional isolation
-        with open(product.original_image.path, "rb") as f:
-            image_bytes = f.read()
-
-        print("DEBUG: [Gemini/Imagen] Executing background removal...")
-        response = client.models.edit_image(
-            model='imagen-3.0-capability-001',
-            prompt="Isolate the door product. Output a clean version of the door centered on a pure white background suitable for an e-commerce catalog.",
-            reference_images=[
-                types.RawReferenceImage(
-                    reference_image=types.Image(image_bytes=image_bytes),
-                    reference_id=0
-                )
-            ],
-            config=types.EditImageConfig(
-                edit_mode='BACKGROUND_REMOVAL',
-                number_of_images=1,
-                output_mime_type='image/png'
-            )
-        )
-
-        if not response.generated_images:
-            raise ValueError("Gemini failed to generate isolated image.")
-
-        # Save the result
-        generated_img = response.generated_images[0]
-        img_data = io.BytesIO(generated_img.image.image_bytes)
-        
-        # Update product image and transparent version
-        product.image.save(f"processed_{product.id}.png", ContentFile(img_data.getvalue()), save=False)
-        product.image_no_bg.save(f"trans_{product.id}.png", ContentFile(img_data.getvalue()), save=False)
+        if response.status_code != 200:
+            raise ValueError(f"Photoroom API failed: {response.status_code} - {response.text}")
+            
+        # Success: Save the transparent PNG
+        content = response.content
+        product.image.save(f"processed_{product.id}.png", ContentFile(content), save=False)
+        product.image_no_bg.save(f"trans_{product.id}.png", ContentFile(content), save=False)
         
         product.ai_status = 'completed'
         product.save(update_fields=['image', 'image_no_bg', 'ai_status'])
-        print(f"DEBUG: [Gemini AI] Success for Product {product.id}.")
+        print(f"DEBUG: [Photoroom] Success! Background removed for product {product.id}")
+        return True
+        
+    except Exception as e:
+        print(f"ERROR: [Photoroom] Exception occurred: {e}")
+        product.ai_status = 'error'
+        product.save(update_fields=['ai_status'])
+        return False
 
     except Exception as e:
         print(f"DEBUG: [Gemini AI] Error during creation: {e}")

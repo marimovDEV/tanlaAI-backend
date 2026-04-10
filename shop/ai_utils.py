@@ -204,7 +204,7 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         
         # ====== STEP 1: AI Client ======
         LOG(1, "AI Client yaratilmoqda...")
-        client = AIService.get_gemini_client()
+        client = get_gemini_client()
         LOG(1, f"Client tayyor: {type(client).__name__}")
         
         # ====== STEP 2: Room yuklash ======

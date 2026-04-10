@@ -258,6 +258,19 @@ class ProductViewSet(viewsets.ModelViewSet):
             Wishlist.objects.create(user=tg_user, product=product)
             return Response({'status': 'added'})
 
+    @action(detail=True, methods=['post'], permission_classes=[permissions.AllowAny])
+    def reprocess_ai(self, request, pk=None):
+        """Forces the AI to re-process the background removal using the latest model (SAM)."""
+        product = self.get_object()
+        product.ai_status = 'processing'
+        product.save(update_fields=['ai_status'])
+        
+        import threading
+        from ..services import AIService
+        threading.Thread(target=AIService.process_product_background, args=(product,)).start()
+        
+        return Response({'status': 'processing'})
+
     @action(detail=True, methods=['post'], url_path='ai-generate', permission_classes=[permissions.AllowAny])
     def ai_generate(self, request, pk=None):
         product = self.get_object()

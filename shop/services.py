@@ -114,37 +114,34 @@ class AIService:
         import json
         import re
         
-        try:
-            client = AIService.get_gemini_client()
-            
         # Flag to indicate if we have custom boxes
         box = [200, 300, 850, 700]  # Default central box [ymin, xmin, ymax, xmax]
         
+        # 1. Try to get AI coordinates, but don't let failures stop us
         try:
-            # 1. Try to get AI coordinates, but don't let failures stop us
-            try:
-                client = AIService.get_gemini_client()
-                if client:
-                    with open(room_image_path, "rb") as f:
-                        room_bytes = f.read()
-                    
-                    prompt = "Return JSON: {\"box_2d\": [ymin, xmin, ymax, xmax]} for the main door frame. Values 0-1000."
-                    response = client.models.generate_content(
-                        model='gemini-1.5-flash',
-                        contents=[prompt, types.Part.from_bytes(data=room_bytes, mime_type='image/jpeg')]
-                    )
-                    
-                    if response and response.text:
-                        match = re.search(r'\{.*\}', response.text, re.DOTALL)
-                        if match:
-                            ai_box = json.loads(match.group(0)).get('box_2d')
-                            if ai_box and len(ai_box) == 4:
-                                box = ai_box
-                                print(f"DEBUG: [AI Service] Using AI coordinates: {box}")
-            except Exception as ai_err:
-                print(f"DEBUG: [AI Service] AI detection skipped (falling back to center): {ai_err}")
+            client = AIService.get_gemini_client()
+            if client:
+                with open(room_image_path, "rb") as f:
+                    room_bytes = f.read()
+                
+                prompt = "Return JSON: {\"box_2d\": [ymin, xmin, ymax, xmax]} for the main door frame. Values 0-1000."
+                response = client.models.generate_content(
+                    model='gemini-1.5-flash',
+                    contents=[prompt, types.Part.from_bytes(data=room_bytes, mime_type='image/jpeg')]
+                )
+                
+                if response and response.text:
+                    match = re.search(r'\{.*\}', response.text, re.DOTALL)
+                    if match:
+                        ai_box = json.loads(match.group(0)).get('box_2d')
+                        if ai_box and len(ai_box) == 4:
+                            box = ai_box
+                            print(f"DEBUG: [AI Service] Using AI coordinates: {box}")
+        except Exception as ai_err:
+            print(f"DEBUG: [AI Service] AI detection ignored (falling back to center): {ai_err}")
 
-            # 2. Variant A: PIL Overlay using the confirmed 'box'
+        # 2. Variant A: PIL Overlay using the confirmed 'box'
+        try:
             from PIL import Image
             
             room_img = Image.open(room_image_path).convert("RGBA")

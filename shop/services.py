@@ -359,7 +359,11 @@ class AIService:
                 with open(room_image_path, "rb") as f:
                     room_bytes = f.read()
                 
-                prompt = "Return JSON: {\"box_2d\": [ymin, xmin, ymax, xmax]} for the main door frame. Values 0-1000."
+                prompt = """
+                Detect the precise rectangular door opening (door frame area) in this room where a new door can be installed. 
+                Return JSON: {"box_2d": [ymin, xmin, ymax, xmax]} scale 0-1000. 
+                Focus strictly on the area between the wall opening. Do not include the whole wall.
+                """
                 response = client.models.generate_content(
                     model='gemini-1.5-flash',
                     contents=[prompt, types.Part.from_bytes(data=room_bytes, mime_type='image/jpeg')]

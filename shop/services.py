@@ -111,9 +111,7 @@ class AIService:
             print(f"DEBUG: [AI Service] Initializing SAM on {device}...")
             sam = sam_model_registry[MODEL_TYPE](checkpoint=SAM_CHECKPOINT)
             sam.to(device=device)
-            predictor = SamPredictor(sam)
-
-            # Prepare image
+            predictor = SamPredictor(sam)            # Prepare image
             product.original_image.seek(0)
             input_image_bytes = product.original_image.read()
             img_pil = Image.open(io.BytesIO(input_image_bytes)).convert("RGB")
@@ -123,25 +121,66 @@ class AIService:
             img_pil = ImageEnhance.Sharpness(img_pil).enhance(2.0)
             
             img_np = np.array(img_pil)
+            h, w = img_np.shape[:2]
             predictor.set_image(img_np)
 
-            # POINT PROMPT: Target the center of the image (likely the door)
-            h, w = img_np.shape[:2]
-            input_point = np.array([[w // 2, h // 2]])
-            input_label = np.array([1]) # 1 = foreground
+            # --- HYBRID DETECTION: Use Gemini to find the door bounding box first ---
+            input_box = None
+            try:
+                print(f"DEBUG: [AI Service] Asking Gemini to detect the door for Product {product.id}...")
+                client = AIService.get_gemini_client()
+                from google.genai import types
+                import json
+                import re
 
+                prompt = "Detect the main single door in this image and return only a JSON: {\"box_2d\": [ymin, xmin, ymax, xmax]} using 0-1000 scale."
+                response = client.models.generate_content(
+                    model='gemini-1.5-flash',
+                    contents=[prompt, types.Part.from_bytes(data=input_image_bytes, mime_type='image/jpeg')]
+                )
+
+                if response and response.text:
+                    match = re.search(r'\{.*\}', response.text, re.DOTALL)
+                    if match:
+                        data = json.loads(match.group(0))
+                        box_1000 = data.get('box_2d')
+                        if box_1000 and len(box_1000) == 4:
+                            # Convert 0-1000 scale to pixel scale
+                            ymin, xmin, ymax, xmax = box_1000
+                            # SAM expects [x1, y1, x2, y2]
+                            input_box = np.array([
+                                xmin * w / 1000,
+                                ymin * h / 1000,
+                                xmax * w / 1000,
+                                ymax * h / 1000
+                            ])
+                            print(f"DEBUG: [AI Service] Gemini detected door at binary box: {input_box}")
+            except Exception as detection_err:
+                print(f"DEBUG: [AI Service] Gemini detection failed, falling back to center point: {detection_err}")
+
+            # --- SEGMENTATION: Use the box prompt (or fallback point) ---
             print(f"DEBUG: [AI Service] Executing SAM segmentation for Product {product.id}...")
-            masks, scores, logits = predictor.predict(
-                point_coords=input_point,
-                point_labels=input_label,
-                multimask_output=True, # Returns 3 candidate masks
-            )
+            if input_box is not None:
+                # Use detected box
+                masks, scores, logits = predictor.predict(
+                    box=input_box,
+                    multimask_output=True,
+                )
+            else:
+                # Fallback: Target the center of the image
+                input_point = np.array([[w // 2, h // 2]])
+                input_label = np.array([1]) # 1 = foreground
+                masks, scores, logits = predictor.predict(
+                    point_coords=input_point,
+                    point_labels=input_label,
+                    multimask_output=True,
+                )
 
             # Select the mask with the highest score
             mask = masks[np.argmax(scores)].astype(np.uint8)
 
             # DILATE: Expand slightly to ensure frame edges are in
-            kernel = np.ones((5, 5), np.uint8)
+            kernel = np.ones((7, 7), np.uint8) # Slightly larger kernel for security
             dilated_mask = cv2.dilate(mask, kernel, iterations=1)
 
             # Create final RGBA result
@@ -160,7 +199,7 @@ class AIService:
             
             product.ai_status = 'completed'
             product.save()
-            print(f"DEBUG: [AI Service] SAM Professional Pipeline COMPLETED for Product {product.id}")
+            print(f"DEBUG: [AI Service] SAM Professional Hybrid Pipeline COMPLETED for Product {product.id}")
 
         except Exception as e:
             print(f"ERROR: [AI Service] Background removal failed: {e}")

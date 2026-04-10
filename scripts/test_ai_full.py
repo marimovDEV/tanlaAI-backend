@@ -53,16 +53,26 @@ def test_settings():
     
     key_path = getattr(settings, 'GOOGLE_APPLICATION_CREDENTIALS', '')
     if key_path and os.path.exists(key_path):
-        log(PASS, f"Service Account fayli topildi: {key_path}")
-        with open(key_path, 'r') as f:
-            info = json.load(f)
+        file_size = os.path.getsize(key_path)
+        log(PASS, f"Service Account fayli topildi: {key_path} ({file_size} bytes)")
+        if file_size < 10:
+            log(FAIL, "Service Account fayli BOSH yoki buzilgan!")
+            results.append(("Service Account", False))
+            return
+        try:
+            with open(key_path, 'r') as f:
+                info = json.load(f)
+        except json.JSONDecodeError as e:
+            log(FAIL, f"Service Account fayli JSON emas: {e}")
+            results.append(("Service Account", False))
+            return
         log(PASS, f"  Project ID: {info.get('project_id', 'NOANIQ')}")
         log(PASS, f"  Client Email: {info.get('client_email', 'NOANIQ')}")
         pk = info.get('private_key', '')
         if pk and len(pk) > 50:
             log(PASS, f"  Private Key: bor ({len(pk)} belgi)")
         else:
-            log(FAIL, f"  Private Key: YO'Q yoki juda qisqa ({len(pk)} belgi)")
+            log(FAIL, f"  Private Key: YOQ yoki juda qisqa ({len(pk)} belgi)")
             results.append(("Service Account Private Key", False))
             return
     else:

@@ -393,7 +393,7 @@ class AIService:
                 product=product,
                 room_image_path=room_image_path,
                 result_image_path=result_image_path,
-                mask_bytes=mask_bytes
+                box_1000=box
             )
             
             print(f"DEBUG: [AI Service] AI Inpainting SUCCESS for {product.name}")

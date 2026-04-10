@@ -184,64 +184,108 @@ def replace_background_with_green(image_bytes: bytes, mask_bytes: bytes) -> byte
         
     return response.generated_images[0].image.image_bytes
 
-def visualize_door_in_room(product, room_image_path, result_image_path, mask_bytes=None):
+def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None):
     """
-    Uses Gemini/Imagen to realistically install a door into a room photo using inpainting.
-    If mask_bytes is provided, it uses it to guide the insertion.
+    Uses Gemini/Imagen to realistically install a door into a room photo.
+    Preserves the full room by using ROI-based (Region of Interest) inpainting.
+    box_1000: [ymin, xmin, ymax, xmax] in 0-1000 scale.
     """
     try:
+        from PIL import Image
+        import numpy as np
         client = get_gemini_client()
         
-        # Use a high-quality door image (original or isolated)
-        door_source = product.image_no_bg if product.image_no_bg else product.image
+        # 1. Load Original Room
+        room_img = Image.open(room_image_path).convert("RGB")
+        rw, rh = room_img.size
         
-        with open(room_image_path, "rb") as rf:
-            room_bytes = rf.read()
+        # 2. Determine ROI (Square area around the door box)
+        if not box_1000:
+            box_1000 = [200, 300, 850, 700] # Default
+            
+        ymin, xmin, ymax, xmax = box_1000
+        left, top = int(xmin * rw / 1000), int(ymin * rh / 1000)
+        right, bottom = int(xmax * rw / 1000), int(ymax * rh / 1000)
+        
+        # Add 20% padding around the door for context, but keep it square
+        width = right - left
+        height = bottom - top
+        side = int(max(width, height) * 1.4)
+        
+        center_x = (left + right) // 2
+        center_y = (top + bottom) // 2
+        
+        roi_left = max(0, center_x - side // 2)
+        roi_top = max(0, center_y - side // 2)
+        roi_right = min(rw, roi_left + side)
+        roi_bottom = min(rh, roi_top + side)
+        
+        # Adjust if hit right/bottom edges to keep it square
+        if roi_right == rw: roi_left = max(0, rw - side)
+        if roi_bottom == rh: roi_top = max(0, rh - side)
+        
+        roi_box = (roi_left, roi_top, roi_right, roi_bottom)
+        roi_img = room_img.crop(roi_box)
+        roi_w, roi_h = roi_img.size
+        
+        # 3. Prepare Local Mask (where the door goes within the ROI)
+        local_left = left - roi_left
+        local_top = top - roi_top
+        local_right = right - roi_left
+        local_bottom = bottom - roi_top
+        
+        from PIL import ImageDraw
+        local_mask = Image.new("L", (roi_w, roi_h), 0)
+        draw = ImageDraw.Draw(local_mask)
+        draw.rectangle([local_left, local_top, local_right, local_bottom], fill=255)
+        
+        # 4. AI Inpaint the ROI
+        door_source = product.image_no_bg if product.image_no_bg else product.image
         with open(door_source.path, "rb") as df:
             door_bytes = df.read()
-
-        print(f"DEBUG: [Gemini/Nano Banana] Visualizing door {product.id} in room...")
+            
+        roi_buf = io.BytesIO()
+        roi_img.save(roi_buf, format='JPEG')
         
-        # Smart inpainting/insertion call
+        mask_buf = io.BytesIO()
+        local_mask.save(mask_buf, format='PNG')
+        
         config = types.EditImageConfig(
             edit_mode='INPAINT_INSERT',
             number_of_images=1,
-            output_mime_type='image/png'
+            output_mime_type='image/png',
+            mask=types.Image(image_bytes=mask_buf.getvalue())
         )
         
-        if mask_bytes:
-            config.mask = types.Image(image_bytes=mask_bytes)
-
+        print(f"DEBUG: [Gemini/ROI] Inpainting door {product.id} in {roi_w}x{roi_h} crop...")
         response = client.models.edit_image(
             model='imagen-3.0-capability-001',
             prompt=(
-                "Professionally install the high-quality wood door from image 1 into the specified door opening area in image 0. "
-                "Match the room's lighting, perspective, and shadows perfectly. The door should be perfectly aligned within the door frame."
+                "Professionally install the wood door from image 1 into the specified door area in image 0. "
+                "The door should fit perfectly in the frame, matching the room's lighting and shadows."
             ),
             reference_images=[
-                types.RawReferenceImage(
-                    reference_image=types.Image(image_bytes=room_bytes),
-                    reference_id=0
-                ),
-                types.RawReferenceImage(
-                    reference_image=types.Image(image_bytes=door_bytes),
-                    reference_id=1
-                )
+                types.RawReferenceImage(reference_image=types.Image(image_bytes=roi_buf.getvalue()), reference_id=0),
+                types.RawReferenceImage(reference_image=types.Image(image_bytes=door_bytes), reference_id=1)
             ],
             config=config
         )
-
-        if not response.generated_images:
-            raise ValueError("Gemini failed to generate visualization.")
-
-        # Save final result
-        generated_img = response.generated_images[0]
-        final_img = Image.open(io.BytesIO(generated_img.image.image_bytes))
-        final_img.save(result_image_path, format='PNG')
         
-        print(f"DEBUG: [Gemini AI] Visualization successful: {result_image_path}")
+        if not response.generated_images:
+            raise ValueError("Gemini failed to generate visualization crop.")
+            
+        # 5. Composite back into Full-Size Room
+        generated_roi_img = Image.open(io.BytesIO(response.generated_images[0].image.image_bytes)).resize((roi_w, roi_h))
+        
+        # Final stitch
+        full_result = room_img.copy()
+        full_result.paste(generated_roi_img, (roi_left, roi_top))
+        full_result.save(result_image_path, format='JPEG', quality=95)
+        
+        print(f"DEBUG: [Gemini ROI] Visualization stitched successfully: {rw}x{rh}")
 
     except Exception as e:
-        print(f"DEBUG: [Gemini AI] Error during visualization: {e}")
-        # If it fails, we can handle it in the polling view
+        print(f"DEBUG: [Gemini ROI] Error during visualization: {e}")
+        import traceback
+        traceback.print_exc()
         raise e

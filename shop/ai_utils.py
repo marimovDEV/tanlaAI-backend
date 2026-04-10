@@ -272,15 +272,15 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             mask=types.Image(image_bytes=mask_buf.getvalue())
         )
         
-        print(f"DEBUG: [Hybrid v6] Finishing door {product.id} with Perfect Prompt...")
+        print(f"DEBUG: [Replacement Strategy v12] Replacing door {product.id} with high-fidelity integration...")
         response = client.models.edit_image(
             model='imagen-3.0-capability-001',
             prompt=(
-                "Insert the door from image 1 into the specified room area in image 0 naturally. "
-                "The door MUST be embedded into the wall opening, not floating or pasted in front. "
-                "Align with wall and floor correctly. Match perspective with the room perfectly. "
-                "Add soft natural ambient occlusion shadows under the door and on its sides. "
-                "The door should look like it originally belongs to this wall. Maintain 100% room visibility."
+                "Find the existing door or door opening in the wall and REPLACE it with the provided new door in image 1. "
+                "The new door must be integrated into the wall, fitting perfectly into the exact same space as the original door. "
+                "Completely remove the old door. Align with the floor and wall perspective perfectly. "
+                "Add natural soft ambient occlusion shadows around the door frame and at the floor contact. "
+                "The result must look like a professional installation, not an overlay. Maintain 100% room context."
             ),
             reference_images=[
                 types.RawReferenceImage(reference_image=types.Image(image_bytes=roi_buf.getvalue()), reference_id=0)

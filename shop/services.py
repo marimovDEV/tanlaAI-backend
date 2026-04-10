@@ -437,17 +437,18 @@ class AIService:
                     print(f"DEBUG: [AI Service v7] Unrealistic width ratio ({raw_w/raw_h:.2f}), forcing AR.")
                     raw_w = raw_h * door_ar
 
-                # Rule 3: Apply final 95% scale for mounting/frame realism
-                box_h = raw_h * 0.95
-                box_w = raw_h * door_ar # Use native AR for width
+                # Rule 3: Floor-Anchored Placement & Gapless Coverage (v12)
+                # Ensure the door is anchored to the floor (b_y) to prevent 'floating'.
+                # Add a 5% width buffer to ensure it completely covers the old door's edges.
+                box_h = raw_h
+                box_w = raw_h * door_ar * 1.05
                 
-                # Center horizontally based on the average of t_x and b_x
                 avg_x = (t_x + b_x) / 2
                 
                 new_box = [
-                    t_y + ( (raw_h-box_h)/2 ), # Centered shift relative to scale reduction
+                    t_y,                       # top: anchored to the opening top
                     max(0, avg_x - box_w/2),   # xmin
-                    b_y - ( (raw_h-box_h)/2 ), # ymax
+                    b_y,                       # bottom: anchored firmly to the floor
                     min(1000, avg_x + box_w/2) # xmax
                 ]
                 box = new_box

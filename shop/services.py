@@ -3,6 +3,8 @@ import io
 from PIL import Image
 from django.core.files.base import ContentFile
 from django.conf import settings
+import rembg
+from rembg import new_session
 
 
 class AIService:
@@ -53,7 +55,6 @@ class AIService:
         """
         Robust background removal using rembg (local) and Gemini (smart check).
         """
-        import rembg
         from .models import Product
         
         try:

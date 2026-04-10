@@ -19,8 +19,9 @@ environ.Env.read_env(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 TOKEN = env('TELEGRAM_BOT_TOKEN')
 WEBAPP_URL = env('NGROK_URL')
+PROXY_URL = env('PROXY_URL', default=None)
 
-# Custom Session to force IPv4 in aiogram 3.x
+# Custom Session to force IPv4 in aiogram 3.x with optional Proxy
 class IPv4Session(AiohttpSession):
     async def create_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -47,8 +48,8 @@ async def command_start_handler(message: types.Message) -> None:
     )
 
 async def main() -> None:
-    # Use our custom IPv4 session
-    session = IPv4Session()
+    # Use our custom IPv4 session with optional proxy
+    session = IPv4Session(proxy=PROXY_URL)
     bot = Bot(token=TOKEN, session=session)
     
     try:

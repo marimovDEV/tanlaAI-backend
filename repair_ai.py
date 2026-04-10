@@ -20,10 +20,13 @@ def force_repair_all():
     for product in products:
         print(f"Checking Product: {product.name} (Status: {product.ai_status})")
         
-        # Reset stuck ones and process 'none' ones if they have an image
-        if product.image and (product.ai_status == 'processing' or product.ai_status == 'none' or product.ai_status == 'error'):
+        # Process if it has an image (even if already 'completed', to apply quality fixes)
+        if product.image:
             print(f"   -> Forcing AI background removal for: {product.name}...")
-            # We call it directly (synchronously) for this script
+            # Reset status to none first to bypass the service's internal 'completed' check
+            product.ai_status = 'none'
+            product.save(update_fields=['ai_status'])
+            
             AIService.process_product_background(product)
             count += 1
             

@@ -156,7 +156,9 @@ class TelegramAuthView(views.APIView):
         })
 
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = Category.objects.order_by('id')
+    queryset = Category.objects.annotate(
+        product_count=models.Count('products')
+    ).order_by('id')
     serializer_class = CategorySerializer
     permission_classes = [permissions.AllowAny]
 

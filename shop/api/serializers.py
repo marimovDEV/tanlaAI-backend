@@ -5,9 +5,11 @@ from ..models import (
 )
 
 class CategorySerializer(serializers.ModelSerializer):
+    product_count = serializers.IntegerField(read_only=True, default=0)
+
     class Meta:
         model = Category
-        fields = '__all__'
+        fields = ['id', 'name', 'icon', 'product_count']
 
 class TelegramUserSerializer(serializers.ModelSerializer):
     class Meta:

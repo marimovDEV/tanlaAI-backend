@@ -75,9 +75,15 @@ class AIService:
             product.original_image.seek(0)
             input_image_bytes = product.original_image.read()
             
-            # Local background removal (no API required)
-            print("DEBUG: [AI Service] Performing local background removal...")
-            output_image_bytes = rembg.remove(input_image_bytes)
+            # Local background removal with high quality settings
+            print("DEBUG: [AI Service] Performing high-quality local background removal (alpha matting)...")
+            output_image_bytes = rembg.remove(
+                input_image_bytes,
+                alpha_matting=True,
+                alpha_matting_foreground_threshold=240,
+                alpha_matting_background_threshold=10,
+                alpha_matting_erode_size=10
+            )
             
             # Save the isolated product image
             image_name = f"isolated_{product.id}.png"

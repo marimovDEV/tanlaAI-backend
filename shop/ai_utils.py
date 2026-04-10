@@ -108,31 +108,70 @@ def process_product_with_ai(product):
         product.ai_status = 'error'
         product.save(update_fields=['ai_status'])
 
-def create_binary_mask(width: int, height: int, box_1000: list[int]) -> io.BytesIO:
+def create_binary_mask(width: int, height: int, box_1000: list[int] = None, polygon: list[list[int]] = None, invert: bool = False) -> io.BytesIO:
     """
     Creates a black and white mask image.
-    box_1000 is [ymin, xmin, ymax, xmax] in 0-1000 range.
+    Supports either a bounding box [ymin, xmin, ymax, xmax] OR a list of [x, y] polygon points.
+    If invert is True, the identified object becomes black (0) and background becomes white (255).
     """
     from PIL import Image, ImageDraw
+    import numpy as np
     
-    # Create black image
-    mask = Image.new("L", (width, height), 0)
+    # Create black image (0)
+    bg_color = 255 if invert else 0
+    fg_color = 0 if invert else 255
+    
+    mask = Image.new("L", (width, height), bg_color)
     draw = ImageDraw.Draw(mask)
     
-    # Map coordinates
-    ymin, xmin, ymax, xmax = box_1000
-    left = int(xmin * width / 1000)
-    top = int(ymin * height / 1000)
-    right = int(xmax * width / 1000)
-    bottom = int(ymax * height / 1000)
-    
-    # Draw white rectangle for the mask area
-    draw.rectangle([left, top, right, bottom], fill=255)
+    if polygon:
+        # Draw explicit polygon from GPT-4o points
+        points = [(int(p[0]), int(p[1])) for p in polygon]
+        draw.polygon(points, fill=fg_color)
+    elif box_1000:
+        # Map coordinates for bounding box fallback
+        ymin, xmin, ymax, xmax = box_1000
+        left = int(xmin * width / 1000)
+        top = int(ymin * height / 1000)
+        right = int(xmax * width / 1000)
+        bottom = int(ymax * height / 1000)
+        draw.rectangle([left, top, right, bottom], fill=fg_color)
     
     buf = io.BytesIO()
     mask.save(buf, format='PNG')
     buf.seek(0)
     return buf
+
+def replace_background_with_green(image_bytes: bytes, mask_bytes: bytes) -> bytes:
+    """
+    Uses Gemini (Nano Banana) to replace the background with a solid #00FF00 green color.
+    """
+    client = get_gemini_client()
+    
+    config = types.EditImageConfig(
+        edit_mode='INPAINT_EDIT',
+        number_of_images=1,
+        output_mime_type='image/png',
+        mask=types.Image(image_bytes=mask_bytes)
+    )
+    
+    print("DEBUG: [Gemini/Nano Banana] Replacing background with Green Screen (#00FF00)...")
+    response = client.models.edit_image(
+        model='imagen-3.0-capability-001',
+        prompt="Replace the entire background with a solid, flat, bright green color (#00FF00). The door must remain exactly as it is without any changes.",
+        reference_images=[
+            types.RawReferenceImage(
+                reference_image=types.Image(image_bytes=image_bytes),
+                reference_id=0
+            )
+        ],
+        config=config
+    )
+    
+    if not response.generated_images:
+        raise ValueError("Gemini failed to generate green-screen image.")
+        
+    return response.generated_images[0].image.image_bytes
 
 def visualize_door_in_room(product, room_image_path, result_image_path, mask_bytes=None):
     """

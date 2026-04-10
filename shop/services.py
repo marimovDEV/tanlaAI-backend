@@ -92,81 +92,81 @@ class AIService:
             import base64
             import json
             import requests
+            from .ai_utils import create_binary_mask, replace_background_with_green
 
             img_np = np.array(img_pil)
             h, w = img_np.shape[:2]
 
-            # --- GPT-ONLY DETECTION: Use OpenAI (GPT-4o) to Trace the Polygon ---
+            # --- STEP 1: GPT-4o Detection (Polygon) ---
             polygon_points = None
             try:
                 openai_key = getattr(settings, 'OPENAI_API_KEY', None)
                 if not openai_key:
                     raise ValueError("OPENAI_API_KEY is missing.")
 
-                print(f"DEBUG: [AI Service] Asking GPT-4o to trace the door polygon for Product {product.id}...")
-                
+                print(f"DEBUG: [AI Service] Asking GPT-4o for door polygon...")
                 base64_image = base64.b64encode(input_image_bytes).decode('utf-8')
                 
                 prompt = """
-                Identify the main door in this image. 
-                Trace its absolute outer boundary (including the frame) with a detailed polygon.
-                Return exactly a JSON object: {"polygon": [[x1, y1], [x2, y2], ...]} 
-                Use a 0-1000 scale for coordinates.
-                Return at least 30 points to ensure smooth coverage of the rectangular shape.
+                Identify the main door in this image. Trace its ABSOLUTE outer boundary including the frame with a polygon.
+                Return JSON: {"polygon": [[x, y], ...]} scale 0-1000. Use at least 30-40 points for precision.
                 """
                 
-                # Direct API call to be library-version independent
-                headers = {
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {openai_key}"
-                }
-                
+                headers = {"Content-Type": "application/json", "Authorization": f"Bearer {openai_key}"}
                 payload = {
                     "model": "gpt-4o",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                            ]
-                        }
-                    ],
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                    ]}],
                     "response_format": {"type": "json_object"}
                 }
                 
                 response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
                 response.raise_for_status()
-                
-                res_data = response.json()
-                content = json.loads(res_data['choices'][0]['message']['content'])
-                
+                content = json.loads(response.json()['choices'][0]['message']['content'])
                 polygon_1000 = content.get('polygon')
-                if polygon_1000 and len(polygon_1000) >= 3:
-                    polygon_points = []
-                    for pt in polygon_1000:
-                        px_x = int(pt[0] * w / 1000)
-                        px_y = int(pt[1] * h / 1000)
-                        polygon_points.append([px_x, px_y])
-                    
-                    print(f"DEBUG: [AI Service] GPT-4o traced door with {len(polygon_points)} points.")
-            
-            except Exception as gpt_err:
-                print(f"ERROR: [AI Service] GPT-Only pipeline failed: {gpt_err}")
-                raise gpt_err
+                if polygon_1000:
+                    polygon_points = [[int(pt[0] * w / 1000), int(pt[1] * h / 1000)] for pt in polygon_1000]
+            except Exception as e:
+                print(f"ERROR: GPT-4o detection failed: {e}")
+                raise e
 
-            # --- MASK CREATION ---
+            # --- STEP 2: Gemini (Nano Banana) Green Screen Preparation ---
             if not polygon_points:
-                raise ValueError("No polygon points returned from GPT-4o.")
+                raise ValueError("Polygon points missing.")
 
-            mask = np.zeros((h, w), dtype=np.uint8)
-            pts = np.array(polygon_points, np.int32).reshape((-1, 1, 2))
-            cv2.fillPoly(mask, [pts], (255))
+            # Create an INVERTED mask for Gemini (masking what to change: the background)
+            mask_io = create_binary_mask(w, h, polygon=polygon_points, invert=True)
+            mask_bytes = mask_io.getvalue()
             
-            # Create final RGBA result
-            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-            b, g, r = cv2.split(img_bgr)
-            rgba = cv2.merge((b, g, r, mask))
+            # Use Nano Banana (Gemini/Imagen) to paint background solid green #00FF00
+            green_screen_bytes = replace_background_with_green(input_image_bytes, mask_bytes)
+            
+            # --- STEP 3: OpenCV Chroma Keying ---
+            # Load the green screen image generated by Gemini
+            nparr = np.frombuffer(green_screen_bytes, np.uint8)
+            img_green = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+            # Define Green color range for Chroma Keying
+            # Bright Green (#00FF00) in BGR is (0, 255, 0). 
+            # We use a slight tolerance to capture Gemini's inpainting edge variations.
+            lower_green = np.array([0, 200, 0])
+            upper_green = np.array([120, 255, 120])
+            
+            # Create a mask for the green background
+            green_mask = cv2.inRange(img_green, lower_green, upper_green)
+            
+            # The door is where the mask is NOT green
+            door_mask = cv2.bitwise_not(green_mask)
+            
+            # Clean up the mask (optional noise reduction)
+            kernel = np.ones((3, 3), np.uint8)
+            door_mask = cv2.morphologyEx(door_mask, cv2.MORPH_OPEN, kernel)
+
+            # Create RGBA image
+            b, g, r = cv2.split(img_green)
+            rgba = cv2.merge((b, g, r, door_mask))
 
             # Encode and Save
             _, final_encoded = cv2.imencode('.png', rgba)
@@ -178,7 +178,7 @@ class AIService:
             
             product.ai_status = 'completed'
             product.save()
-            print(f"DEBUG: [AI Service] GPT-Only (Polygon) Pipeline COMPLETED for Product {product.id}")
+            print(f"DEBUG: [AI Service] Triple-AI Chroma Key Pipeline COMPLETED for Product {product.id}")
 
         except Exception as e:
             print(f"ERROR: [AI Service] Background removal failed: {e}")

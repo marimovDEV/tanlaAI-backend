@@ -841,7 +841,9 @@ class AIService:
             except Exception as e:
                 print(f"WARNING: [AI Service] Service Account failed: {e}")
         
-        raise ValueError("GEMINI_API_KEY yoki google-cloud-key.json topilmadi.")    @staticmethod
+        raise ValueError("GEMINI_API_KEY yoki google-cloud-key.json topilmadi.")
+
+    @staticmethod
     def process_product_background(product):
         """
         Remove the background using rembg (U2Net) and save the transparent version.

@@ -302,37 +302,41 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         
         # ====== STEP 4: Joylashtirish matematikasi ======
         LOG(4, "Placement hisob-kitob boshlandi...")
-        if not box_1000:
-            LOG(4, "Teshikni OpenCV geomtriyasi bilan qidirmoqdamiz...")
-            import cv2
-            import numpy as np
-            gray = cv2.cvtColor(np.array(room_img), cv2.COLOR_RGB2GRAY)
-            edges = cv2.Canny(gray, 50, 150)
-            contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-            
+            # --- Detection Logic ---
             door_box = None
-            max_area = 0
-            for cnt in contours:
-                approx = cv2.approxPolyDP(cnt, 0.02 * cv2.arcLength(cnt, True), True)
-                if len(approx) == 4:
-                    x, y, w, h = cv2.boundingRect(cnt)
-                    # Eshik teshigi taxminlari
-                    if w > 100 and h > 200 and h > w and h > (rh * 0.3):
-                        if w * h > max_area:
-                            max_area = w * h
-                            door_box = (x, y, w, h)
-                            
-            if door_box:
-                x, y, w, h = door_box
-                box_1000 = [
-                    int(y / rh * 1000), 
-                    int(x / rw * 1000), 
-                    int((y + h) / rh * 1000), 
-                    int((x + w) / rw * 1000)
-                ]
-                LOG(4, f"OpenCV tayyor teshikni topdi: {door_box}")
-            else:
-                LOG(4, "OpenCV geometriyasi topolmadi, GPT-4o ga jo'natilmoqda...")
+            try:
+                LOG(4, "Teshikni OpenCV geometriyasi bilan qidirmoqdamiz...")
+                import cv2
+                import numpy as np
+                gray = cv2.cvtColor(np.array(room_img), cv2.COLOR_RGB2GRAY)
+                edges = cv2.Canny(gray, 50, 150)
+                contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                
+                max_area = 0
+                for cnt in contours:
+                    approx = cv2.approxPolyDP(cnt, 0.02 * cv2.arcLength(cnt, True), True)
+                    if len(approx) == 4:
+                        x, y, w, h = cv2.boundingRect(cnt)
+                        # Eshik teshigi taxminlari
+                        if w > 100 and h > 200 and h > w and h > (rh * 0.3):
+                            if w * h > max_area:
+                                max_area = w * h
+                                door_box = (x, y, w, h)
+                
+                if door_box:
+                    x, y, w, h = door_box
+                    box_1000 = [
+                        int(y / rh * 1000), 
+                        int(x / rw * 1000), 
+                        int((y + h) / rh * 1000), 
+                        int((x + w) / rw * 1000)
+                    ]
+                    LOG(4, f"OpenCV tayyor teshikni topdi: {door_box}")
+            except Exception as e:
+                LOG(4, f"OpenCV geometriya tahlili muvaffaqiyatsiz: {e}")
+
+            if not box_1000:
+                LOG(4, "GPT-4o orqali eshik o'rni izlanmoqda...")
                 try:
                     r_bytes = io.BytesIO()
                     room_img.save(r_bytes, format='JPEG', quality=85)

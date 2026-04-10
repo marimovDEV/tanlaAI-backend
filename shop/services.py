@@ -117,102 +117,73 @@ class AIService:
         try:
             client = AIService.get_gemini_client()
             
-            box = None
+        # Flag to indicate if we have custom boxes
+        box = [200, 300, 850, 700]  # Default central box [ymin, xmin, ymax, xmax]
+        
+        try:
+            # 1. Try to get AI coordinates, but don't let failures stop us
             try:
-                # 1. Detect door frame coordinates using Gemini 1.5 Flash
-                with open(room_image_path, "rb") as f:
-                    room_bytes = f.read()
+                client = AIService.get_gemini_client()
+                if client:
+                    with open(room_image_path, "rb") as f:
+                        room_bytes = f.read()
+                    
+                    prompt = "Return JSON: {\"box_2d\": [ymin, xmin, ymax, xmax]} for the main door frame. Values 0-1000."
+                    response = client.models.generate_content(
+                        model='gemini-1.5-flash',
+                        contents=[prompt, types.Part.from_bytes(data=room_bytes, mime_type='image/jpeg')]
+                    )
+                    
+                    if response and response.text:
+                        match = re.search(r'\{.*\}', response.text, re.DOTALL)
+                        if match:
+                            ai_box = json.loads(match.group(0)).get('box_2d')
+                            if ai_box and len(ai_box) == 4:
+                                box = ai_box
+                                print(f"DEBUG: [AI Service] Using AI coordinates: {box}")
+            except Exception as ai_err:
+                print(f"DEBUG: [AI Service] AI detection skipped (falling back to center): {ai_err}")
 
-                prompt = (
-                    "You are a computer vision expert. Identify the bounding box of the main doorway, "
-                    "entrance, or door frame in this room image where a new door should be installed. "
-                    "Return only a STRICT JSON dictionary: {\"box_2d\": [ymin, xmin, ymax, xmax]}. "
-                    "Values must be normalized to 1000. If multiple doors exist, pick the most central one. "
-                    "Output ONLY the JSON, no other text."
-                )
-                
-                response = client.models.generate_content(
-                    model='gemini-1.5-flash',
-                    contents=[
-                        prompt,
-                        types.Part.from_bytes(data=room_bytes, mime_type='image/jpeg')
-                    ]
-                )
-                text = response.text.strip()
-                print(f"DEBUG: [AI Service] Gemini detection response: {text}")
-
-                # Extract JSON using simple regex
-                json_match = re.search(r'\{.*\}', text, re.DOTALL)
-                
-                if json_match:
-                    try:
-                        coords = json.loads(json_match.group(0))
-                        box = coords.get('box_2d')
-                    except json.JSONDecodeError:
-                        # Try to find a list like [1, 2, 3, 4] if JSON wrapper is missing/broken
-                        list_match = re.search(r'\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]', text)
-                        if list_match:
-                            box = [int(x) for x in list_match.groups()]
-                        else:
-                            box = None
-                else:
-                    box = None
-            except Exception as e:
-                print(f"WARNING: Gemini connection or detection failed: {e}. Using fallback center box.")
-                box = None
-
-            # Fallback: if Gemini fails or returns nothing, use a standard center door box
-            if not box or len(box) != 4:
-                print("DEBUG: [AI Service] Using fallback center box (150, 350, 850, 650)")
-                box = [150, 350, 850, 650]
-
-            ymin, xmin, ymax, xmax = box
-
-            # 2. Local Overlay using PIL
+            # 2. Variant A: PIL Overlay using the confirmed 'box'
             from PIL import Image
             
             room_img = Image.open(room_image_path).convert("RGBA")
-            # Prefer the no-background version we created earlier
-            door_source = None
+            rw, rh = room_img.size
+
+            # Select door source (prefer background-removed version)
+            door_path = product.image.path
             if product.image_no_bg and product.image_no_bg.name:
-                # Check if the file actually exists on disk
                 if os.path.exists(product.image_no_bg.path):
-                    door_source = product.image_no_bg
+                    door_path = product.image_no_bg.path
             
-            if not door_source:
-                door_source = product.image
-                
-            door_img = Image.open(door_source.path).convert("RGBA")
+            door_img = Image.open(door_path).convert("RGBA")
 
-            w, h = room_img.size
+            # Map coordinates
+            ymin, xmin, ymax, xmax = box
+            left = int(xmin * rw / 1000)
+            top = int(ymin * rh / 1000)
+            right = int(xmax * rw / 1000)
+            bottom = int(ymax * rh / 1000)
             
-            # Convert normalized coordinates to pixels
-            left = xmin * w / 1000
-            top = ymin * h / 1000
-            right = xmax * w / 1000
-            bottom = ymax * h / 1000
-            
-            target_w = int(right - left)
-            target_h = int(bottom - top)
+            target_w = max(1, right - left)
+            target_h = max(1, bottom - top)
 
-            if target_w <= 0 or target_h <= 0:
-                raise ValueError(f"Invalid target dimensions: {target_w}x{target_h}")
-
-            # Resize door to fit the detected frame
+            # Resize door
             door_resized = door_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
             
-            # Paste door onto room
-            room_img.alpha_composite(door_resized, (int(left), int(top)))
+            # Robust Overlay: Paste using door_resized as its own mask for transparency
+            room_img.paste(door_resized, (left, top), door_resized)
+
+            # Save result
+            final_res = room_img.convert("RGB")
+            final_res.save(result_image_path, "JPEG", quality=95)
             
-            # Save final result
-            room_img.convert("RGB").save(result_image_path, "JPEG", quality=95)
-            
-            print(f"DEBUG: [AI Service] Visualization success: {result_image_path}")
+            print(f"DEBUG: [AI Service] Variant A overlay SUCCESS for {product.name}")
             return result_image_path
 
         except Exception as e:
-            print(f"ERROR: [AI Service] Visualization failed: {str(e)}")
-            raise e
+            print(f"ERROR: [AI Service] Variant A failed completely: {e}")
+            return None
 
 
 class WishlistService:

@@ -82,71 +82,85 @@ class AIService:
                 product.original_image.save(name, ContentFile(original_content), save=False)
                 product.save(update_fields=['original_image'])
 
-            # 2. Prepare image for
-            # --- Pre-processing: Contrast & Sharpness enhancement ---
+            # 2. SAM (Segment Anything Model) Pipeline
             from PIL import Image, ImageEnhance
             import io
             import cv2
             import numpy as np
-            
+            import torch
+            from segment_anything import sam_model_registry, SamPredictor
+            import requests
+
+            # Model configuration
+            SAM_CHECKPOINT = os.path.join(settings.BASE_DIR, "models", "sam_vit_b_01ec64.pth")
+            SAM_MODEL_URL = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
+            MODEL_TYPE = "vit_b"
+
+            # Ensure model exists
+            if not os.path.exists(SAM_CHECKPOINT):
+                print(f"DEBUG: [AI Service] Downloading SAM model (370MB)... This may take a few minutes.")
+                os.makedirs(os.path.dirname(SAM_CHECKPOINT), exist_ok=True)
+                response = requests.get(SAM_MODEL_URL, stream=True)
+                with open(SAM_CHECKPOINT, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk: f.write(chunk)
+                print("DEBUG: [AI Service] SAM model downloaded successfully.")
+
+            # Load SAM
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            print(f"DEBUG: [AI Service] Initializing SAM on {device}...")
+            sam = sam_model_registry[MODEL_TYPE](checkpoint=SAM_CHECKPOINT)
+            sam.to(device=device)
+            predictor = SamPredictor(sam)
+
+            # Prepare image
             product.original_image.seek(0)
             input_image_bytes = product.original_image.read()
-            
-            if not input_image_bytes:
-                raise ValueError("Source image is empty")
-
             img_pil = Image.open(io.BytesIO(input_image_bytes)).convert("RGB")
-            # Increase contrast & sharpness
+            
+            # Contrast & Sharpness help SAM "see" better
             img_pil = ImageEnhance.Contrast(img_pil).enhance(1.2)
             img_pil = ImageEnhance.Sharpness(img_pil).enhance(2.0)
             
-            # Convert to numpy for OpenCV interaction later
             img_np = np.array(img_pil)
-            img_rgb = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-            
-            enhanced_io = io.BytesIO()
-            img_pil.save(enhanced_io, format='PNG')
-            enhanced_input_bytes = enhanced_io.getvalue()
-            # --------------------------------------------
+            predictor.set_image(img_np)
 
-            print("DEBUG: [AI Service] Executing Stable Hybrid Pipeline (u2net + OpenCV Dilate)...")
-            
-            # STEP 1: Get the binary mask using the stable u2net model
-            # Note: u2net is lighter and already tested on this VPS
-            session = new_session("u2net")
-            mask_bytes = rembg.remove(
-                enhanced_input_bytes,
-                session=session,
-                only_mask=True, 
-                post_process_mask=True
+            # POINT PROMPT: Target the center of the image (likely the door)
+            h, w = img_np.shape[:2]
+            input_point = np.array([[w // 2, h // 2]])
+            input_label = np.array([1]) # 1 = foreground
+
+            print(f"DEBUG: [AI Service] Executing SAM segmentation for Product {product.id}...")
+            masks, scores, logits = predictor.predict(
+                point_coords=input_point,
+                point_labels=input_label,
+                multimask_output=True, # Returns 3 candidate masks
             )
-            
-            # STEP 2: Process mask with OpenCV to avoid "eating edges"
-            mask_np = np.frombuffer(mask_bytes, dtype=np.uint8)
-            mask = cv2.imdecode(mask_np, cv2.IMREAD_GRAYSCALE)
-            
-            # DILATE: Expand the mask slightly to include frame edges
-            # Using 3x3 kernel as a safe baseline for stability and quality
-            kernel = np.ones((3, 3), np.uint8)
+
+            # Select the mask with the highest score
+            mask = masks[np.argmax(scores)].astype(np.uint8)
+
+            # DILATE: Expand slightly to ensure frame edges are in
+            kernel = np.ones((5, 5), np.uint8)
             dilated_mask = cv2.dilate(mask, kernel, iterations=1)
-            
-            # STEP 3: Apply the dilated mask back to original image
-            # Create a 4-channel image (RGBA)
-            b_channel, g_channel, r_channel = cv2.split(img_rgb)
-            rgba = cv2.merge((b_channel, g_channel, r_channel, dilated_mask))
-            
-            # STEP 4: Convert back to PNG bytes
+
+            # Create final RGBA result
+            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+            b, g, r = cv2.split(img_bgr)
+            alpha = (dilated_mask * 255).astype(np.uint8)
+            rgba = cv2.merge((b, g, r, alpha))
+
+            # Encode and Save
             _, final_encoded = cv2.imencode('.png', rgba)
             output_image_bytes = final_encoded.tobytes()
 
-            # Save results
             image_name = f"isolated_{product.id}.png"
             product.image.save(image_name, ContentFile(output_image_bytes), save=False)
             product.image_no_bg.save(f"trans_{product.id}.png", ContentFile(output_image_bytes), save=False)
             
             product.ai_status = 'completed'
             product.save()
-            print(f"DEBUG: [AI Service] Stable hybrid pipeline COMPLETED for Product {product.id}")
+            print(f"DEBUG: [AI Service] SAM Professional Pipeline COMPLETED for Product {product.id}")
 
         except Exception as e:
             print(f"ERROR: [AI Service] Background removal failed: {e}")

@@ -180,97 +180,177 @@ def replace_background_with_green(image_bytes: bytes, mask_bytes: bytes) -> byte
 
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None):
     """
-    v18 Performance & Resilience:
-    - Skip local rembg to ensure <15s response.
-    - Simplified logic.
+    v19 — Full logging + bugfixes.
+    Har bir qadam serverda log qilinadi.
     """
     import time
     start_t = time.time()
+    
+    def LOG(step, msg):
+        elapsed = time.time() - start_t
+        print(f"[v19 {elapsed:6.2f}s] STEP {step}: {msg}")
+    
+    LOG(0, f"=== VIZUALIZATSIYA BOSHLANDI ===")
+    LOG(0, f"Product: #{product.id} '{product.name}'")
+    LOG(0, f"Room image: {room_image_path}")
+    LOG(0, f"Result path: {result_image_path}")
+    LOG(0, f"box_1000: {box_1000}")
+    
     try:
         from PIL import Image, ImageOps, ImageDraw
+        from google.genai import types
         import numpy as np
         import io
-        client = AIService.get_gemini_client()
         
-        # 1. Load Room
+        # ====== STEP 1: AI Client ======
+        LOG(1, "AI Client yaratilmoqda...")
+        client = AIService.get_gemini_client()
+        LOG(1, f"Client tayyor: {type(client).__name__}")
+        
+        # ====== STEP 2: Room yuklash ======
+        LOG(2, "Xona rasmi yuklanmoqda...")
         room_img = Image.open(room_image_path).convert("RGB")
         rw, rh = room_img.size
+        LOG(2, f"Xona o'lchami: {rw}x{rh}")
         
-        # 2. Optimized Asset Loading (Strictly No rembg here)
+        # ====== STEP 3: Eshik asset yuklash ======
+        LOG(3, "Eshik asseti yuklanmoqda...")
         door_img = None
-        # Try PNG first, then raw JPG
-        for field in [product.image_no_bg, product.image, product.original_image]:
-            if field and field.name and os.path.exists(field.path):
-                door_img = Image.open(field.path).convert("RGBA")
+        asset_source = None
+        
+        for attr_name in ['image_no_bg', 'image', 'original_image']:
+            field = getattr(product, attr_name, None)
+            if not field or not field.name:
+                LOG(3, f"  {attr_name}: bo'sh (o'tkazib yuboryapman)")
+                continue
+            
+            try:
+                path = field.path
+            except Exception:
+                LOG(3, f"  {attr_name}: path olishda xato")
+                continue
+                
+            if not os.path.exists(path):
+                LOG(3, f"  {attr_name}: fayl TOPILMADI: {path}")
+                continue
+            
+            file_size = os.path.getsize(path) / 1024
+            LOG(3, f"  {attr_name}: fayl topildi ({file_size:.0f}KB) — {path}")
+            
+            try:
+                door_img = Image.open(path)
+                LOG(3, f"  {attr_name}: ochildi — o'lcham: {door_img.size}, mode: {door_img.mode}")
+                door_img = door_img.convert("RGBA")
+                LOG(3, f"  {attr_name}: RGBA ga o'tkazildi")
+                asset_source = attr_name
                 break
+            except Exception as e:
+                LOG(3, f"  {attr_name}: ochishda XATO: {e}")
+                continue
         
         if not door_img:
-            raise ValueError("NO IMAGE ASSET FOUND.")
-
-        print(f"DEBUG: [v18] Asset loaded in {time.time()-start_t:.2f}s")
+            LOG(3, "XATO: HECH QANDAY ASSET TOPILMADI!")
+            raise ValueError("NO IMAGE ASSET FOUND for product #" + str(product.id))
         
-        # 3. Placement Math
+        dw, dh = door_img.size
+        LOG(3, f"Eshik asseti tayyor: {dw}x{dh} (manba: {asset_source})")
+        
+        # ====== STEP 4: Joylashtirish matematikasi ======
+        LOG(4, "Placement hisob-kitob boshlandi...")
         if not box_1000:
             box_1000 = [200, 400, 850, 600]
+            LOG(4, f"Default box ishlatilmoqda: {box_1000}")
             
         ymin, xmin, ymax, xmax = box_1000
-        left, top = int(xmin * rw / 1000), int(ymin * rh / 1000)
-        right, bottom = int(xmax * rw / 1000), int(ymax * rh / 1000)
+        left = int(xmin * rw / 1000)
+        top = int(ymin * rh / 1000)
+        right = int(xmax * rw / 1000)
+        bottom = int(ymax * rh / 1000)
+        LOG(4, f"Pixel box: left={left}, top={top}, right={right}, bottom={bottom}")
         
         target_h = bottom - top
-        dw, dh = door_img.size
         door_ar = dw / float(dh)
+        LOG(4, f"Target height: {target_h}, Door aspect ratio: {door_ar:.3f}")
         
-        # Realistic door width logic
         resized_h = target_h
         resized_w = int(resized_h * door_ar)
+        LOG(4, f"Hisoblangan o'lcham: {resized_w}x{resized_h}")
         
-        # Hard limits to prevent "thin" or "wide" glitches
-        if resized_w < (target_h * 0.42): resized_w = int(target_h * 0.42)
-        if resized_w > (target_h * 0.80): resized_w = int(target_h * 0.80)
+        # Hard limits
+        if resized_w < (target_h * 0.42):
+            old_w = resized_w
+            resized_w = int(target_h * 0.42)
+            LOG(4, f"Min-width cheklovi: {old_w} → {resized_w}")
+        if resized_w > (target_h * 0.80):
+            old_w = resized_w
+            resized_w = int(target_h * 0.80)
+            LOG(4, f"Max-width cheklovi: {old_w} → {resized_w}")
 
         door_resized = door_img.resize((resized_w, resized_h), Image.Resampling.LANCZOS)
+        LOG(4, f"Eshik resize qilindi: {resized_w}x{resized_h}")
         
         center_x = (left + right) // 2
         final_left = center_x - (resized_w // 2)
-        final_top = top + 15 # Ground the door
+        final_top = top + 15
+        LOG(4, f"Joylashtirish: final_left={final_left}, final_top={final_top}, center_x={center_x}")
         
+        # ====== STEP 5: Dirty Composite ======
+        LOG(5, "Dirty composite yaratilmoqda...")
         dirty_composite = room_img.copy()
-        # Alpha-matte paste
-        dirty_composite.paste(door_resized, (final_left, final_top), door_resized if door_resized.mode == 'RGBA' else None)
+        if door_resized.mode == 'RGBA':
+            dirty_composite.paste(door_resized, (final_left, final_top), door_resized)
+            LOG(5, "Alpha-matte paste amalga oshdi")
+        else:
+            dirty_composite.paste(door_resized, (final_left, final_top))
+            LOG(5, "Oddiy paste amalga oshdi (alpha yo'q)")
         
-        # 4. Preparation
+        # Debug: save dirty composite
+        debug_dir = os.path.join(os.path.dirname(result_image_path))
+        debug_dirty = os.path.join(debug_dir, f'debug_dirty_{product.id}.jpg')
+        try:
+            dirty_composite.save(debug_dirty, format='JPEG', quality=85)
+            LOG(5, f"Debug dirty composite saqlandi: {debug_dirty}")
+        except:
+            LOG(5, "Debug dirty composite saqlab bo'lmadi")
+        
+        # ====== STEP 6: ROI va Mask tayyorlash ======
+        LOG(6, "ROI va mask tayyorlanmoqda...")
         side = int(max(resized_w, resized_h) * 1.4)
         side = min(side, rw, rh)
         roi_left = max(0, center_x - side // 2)
-        roi_top = max(0, final_top + resized_h//2 - side // 2)
+        roi_top = max(0, final_top + resized_h // 2 - side // 2)
         if roi_left + side > rw: roi_left = rw - side
         if roi_top + side > rh: roi_top = rh - side
         roi_left, roi_top = max(0, roi_left), max(0, roi_top)
         
         roi_box = (roi_left, roi_top, roi_left + side, roi_top + side)
+        LOG(6, f"ROI box: {roi_box} (side={side})")
+        
         roi_img = dirty_composite.crop(roi_box)
         roi_w, roi_h = roi_img.size
+        LOG(6, f"ROI o'lchami: {roi_w}x{roi_h}")
         
-        # 4b. Create mask — ONLY cover edges/seams, not the door itself
+        # Mask — faqat chetlarni qamrab oladi
         local_mask = Image.new("L", (roi_w, roi_h), 0)
         draw = ImageDraw.Draw(local_mask)
-        m_pad = int(resized_w * 0.08)  # v19: tight 8% pad — AI touches edges only
+        m_pad = int(resized_w * 0.08)
         m_left = (final_left - roi_left) - m_pad
         m_top_mask = (final_top - roi_top) - m_pad
         m_right = (final_left + resized_w - roi_left) + m_pad
         m_bottom = (final_top + resized_h - roi_top) + m_pad
         draw.rectangle([m_left, m_top_mask, m_right, m_bottom], fill=255)
+        LOG(6, f"Mask: pad={m_pad}, rect=[{m_left},{m_top_mask},{m_right},{m_bottom}]")
         
-        # 4c. Serialize mask to buffer (v19 BUGFIX: was missing!)
+        # Serialize
         m_buf = io.BytesIO()
         local_mask.save(m_buf, format='PNG')
+        r_buf = io.BytesIO()
+        roi_img.save(r_buf, format='PNG')
+        LOG(6, f"Bufferlar tayyor: roi={len(r_buf.getvalue())} bytes, mask={len(m_buf.getvalue())} bytes")
         
-        # 5. Harmonization — preserve the door, only blend edges
+        # ====== STEP 7: AI Harmonization ======
+        LOG(7, "Imagen 3 harmonization SO'ROVI yuborilmoqda...")
         try:
-            r_buf = io.BytesIO()
-            roi_img.save(r_buf, format='PNG')
-            print(f"DEBUG: [v19] Starting Harmonization... (Time so far: {time.time()-start_t:.2f}s)")
             response = client.models.edit_image(
                 model='imagen-3.0-capability-001',
                 prompt=(
@@ -293,23 +373,35 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                     mask=types.Image(image_bytes=m_buf.getvalue()),
                 ),
             )
+            LOG(7, f"Imagen 3 javob berdi!")
             
             if response.generated_images:
-                gen_roi = Image.open(io.BytesIO(response.generated_images[0].image.image_bytes)).resize((roi_w, roi_h))
+                img_bytes = response.generated_images[0].image.image_bytes
+                LOG(7, f"Natija rasmi bor: {len(img_bytes)} bytes")
+                
+                gen_roi = Image.open(io.BytesIO(img_bytes)).resize((roi_w, roi_h))
                 full = room_img.copy()
                 full.paste(gen_roi, (roi_left, roi_top))
                 full.save(result_image_path, format='JPEG', quality=95)
-                print(f"DEBUG: [v19] SUCCESS total time: {time.time()-start_t:.2f}s")
+                LOG(7, f"✅ MUVAFFAQIYATLI! Natija saqlandi: {result_image_path}")
                 return result_image_path
+            else:
+                LOG(7, "⚠️ Imagen 3 rasm QAYTARMADI (empty response)")
+                
         except Exception as e:
-            print(f"WARNING: [v19] AI harmonization failed: {e}. (Time so far: {time.time()-start_t:.2f}s)")
+            LOG(7, f"❌ AI harmonization XATO: {e}")
+            import traceback
+            traceback.print_exc()
 
-        # Fallback: save the dirty composite (door is still placed, just no edge blending)
+        # ====== STEP 8: Fallback ======
+        LOG(8, "Fallback: dirty composite saqlanmoqda...")
         dirty_composite.save(result_image_path, format='JPEG', quality=90)
-        print(f"DEBUG: [v19] FALLBACK (dirty composite) total time: {time.time()-start_t:.2f}s")
+        LOG(8, f"Fallback natija saqlandi: {result_image_path}")
         return result_image_path
 
     except Exception as e:
-        print(f"FATAL: [v19] visualize_door_in_room error: {e}")
-        import traceback; traceback.print_exc()
+        LOG("X", f"💥 FATAL XATO: {e}")
+        import traceback
+        traceback.print_exc()
         raise e
+

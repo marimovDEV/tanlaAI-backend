@@ -53,44 +53,36 @@ class AIService:
     @staticmethod
     def process_product_background(product):
         """
-        Robust background removal using rembg (local) and Gemini (smart check).
+        Robust background removal using rembg (isnet-general-use).
+        We use a more conservative approach to preserve door frames/platbands.
         """
         from .models import Product
-        
         try:
             # Refresh instance
             product = Product.objects.get(id=product.id)
             if product.ai_status == 'completed':
                 return
 
-            print(f"DEBUG: [AI Service] Processing background removal for Product {product.id} via rembg...")
+            print(f"DEBUG: [AI Service] Processing Background for Product {product.id} (model: isnet-general-use)...")
             product.ai_status = 'processing'
             product.save(update_fields=['ai_status'])
 
-            # Ensure we have original image
-            if not product.original_image:
-                product.image.seek(0)
-                original_content = product.image.read()
-                product.original_image.save(os.path.basename(product.image.name), ContentFile(original_content), save=False)
-            
-            # We use isnet-general-use as it remains very accurate for furniture and complex edges
+            # Load model session
             session = new_session("isnet-general-use")
             
             product.original_image.seek(0)
             input_image_bytes = product.original_image.read()
             
-            # Local background removal with tuned high quality settings
-            print(f"DEBUG: [AI Service] Processing Background for Product {product.id} (model: isnet-general-use)...")
+            # Use conservative settings: turn off alpha_matting as it tends to eat wood edges
             output_image_bytes = rembg.remove(
                 input_image_bytes,
                 session=session,
-                alpha_matting=True,
-                alpha_matting_foreground_threshold=150, # Lower threshold to keep more wood detail
-                alpha_matting_background_threshold=10, 
-                alpha_matting_erode_size=7            # Slightly smaller erosion to avoid cutting into the door
+                alpha_matting=False, # Disable to preserve hard wooden edges
+                only_mask=False,
+                post_process_mask=True # Clean up the edges naturally
             )
             
-            # Save the isolated product image
+            # Save results
             image_name = f"isolated_{product.id}.png"
             product.image.save(image_name, ContentFile(output_image_bytes), save=False)
             product.image_no_bg.save(f"trans_{product.id}.png", ContentFile(output_image_bytes), save=False)

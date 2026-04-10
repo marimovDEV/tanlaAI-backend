@@ -4,6 +4,7 @@ import os
 import sys
 import socket
 import aiohttp
+from typing import Any, Optional
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
 from aiogram.types import WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
@@ -18,6 +19,16 @@ environ.Env.read_env(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 TOKEN = env('TELEGRAM_BOT_TOKEN')
 WEBAPP_URL = env('NGROK_URL')
+
+# Custom Session to force IPv4 in aiogram 3.x
+class IPv4Session(AiohttpSession):
+    async def create_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(family=socket.AF_INET, enable_cleanup_closed=True),
+                json_serialize=self.json_serialization.dumps,
+            )
+        return self._session
 
 dp = Dispatcher()
 
@@ -36,10 +47,8 @@ async def command_start_handler(message: types.Message) -> None:
     )
 
 async def main() -> None:
-    # STRONGLY Force IPv4 using TCPConnector
-    connector = aiohttp.TCPConnector(family=socket.AF_INET)
-    session = AiohttpSession(connector=connector)
-    
+    # Use our custom IPv4 session
+    session = IPv4Session()
     bot = Bot(token=TOKEN, session=session)
     
     try:

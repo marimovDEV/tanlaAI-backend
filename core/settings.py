@@ -228,6 +228,7 @@ AI_AUTO_PROCESS_CATEGORIES = ["Eshiklar", "eshiklar", "Eshik", "eshik", "Doors",
 GOOGLE_APPLICATION_CREDENTIALS = os.path.join(BASE_DIR, env('GOOGLE_APPLICATION_CREDENTIALS', default='google-cloud-key.json'))
 VERTEX_AI_PROJECT = env('VERTEX_AI_PROJECT', default='project-b79a8b66-7b7a-4251-b56')
 VERTEX_AI_LOCATION = env('VERTEX_AI_LOCATION', default='us-central1')
+REMOVE_BG_API_KEY = env('REMOVE_BG_API_KEY', default='')
 
 # Admin deploy actions
 ALLOW_ADMIN_DEPLOY_ACTIONS = env.bool('ALLOW_ADMIN_DEPLOY_ACTIONS', default=False)

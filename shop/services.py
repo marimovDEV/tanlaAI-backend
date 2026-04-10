@@ -4,7 +4,9 @@ from PIL import Image
 from django.core.files.base import ContentFile
 from django.conf import settings
 import rembg
+import requests
 from rembg import new_session
+from .ai_utils import visualize_door_in_room, create_binary_mask
 
 
 class AIService:
@@ -55,8 +57,7 @@ class AIService:
     @staticmethod
     def process_product_background(product):
         """
-        Robust background removal using rembg (isnet-general-use).
-        We use a more conservative approach to preserve door frames/platbands.
+        Background removal using remove.bg API (preferred) with rembg (fallback).
         """
         from .models import Product
         try:
@@ -65,7 +66,7 @@ class AIService:
             if product.ai_status == 'completed':
                 return
 
-            print(f"DEBUG: [AI Service] Processing Background for Product {product.id} (model: isnet-general-use)...")
+            print(f"DEBUG: [AI Service] Processing Background for Product {product.id}...")
             product.ai_status = 'processing'
             product.save(update_fields=['ai_status'])
 
@@ -75,21 +76,42 @@ class AIService:
                 original_content = product.image.read()
                 product.original_image.save(os.path.basename(product.image.name), ContentFile(original_content), save=False)
 
-            # Load model session
-            session = new_session("isnet-general-use")
-            
-            product.original_image.seek(0)
-            input_image_bytes = product.original_image.read()
-            
-            # Use conservative settings: turn off alpha_matting as it tends to eat wood edges
-            output_image_bytes = rembg.remove(
-                input_image_bytes,
-                session=session,
-                alpha_matting=False, # Disable to preserve hard wooden edges
-                only_mask=False,
-                post_process_mask=True # Clean up the edges naturally
-            )
-            
+            api_key = getattr(settings, 'REMOVE_BG_API_KEY', '')
+            output_image_bytes = None
+
+            # 1. Try remove.bg API if key is available
+            if api_key and api_key != 'YOUR_API_KEY_HERE':
+                try:
+                    print("DEBUG: [AI Service] Attempting background removal via remove.bg API...")
+                    product.original_image.seek(0)
+                    response = requests.post(
+                        'https://api.remove.bg/v1.0/removebg',
+                        files={'image_file': product.original_image.open('rb')},
+                        data={'size': 'auto'},
+                        headers={'X-Api-Key': api_key},
+                        timeout=30
+                    )
+                    if response.status_code == requests.codes.ok:
+                        output_image_bytes = response.content
+                        print("DEBUG: [AI Service] remove.bg API SUCCESS.")
+                    else:
+                        print(f"DEBUG: [AI Service] remove.bg API failed (status {response.status_code}): {response.text}")
+                except Exception as api_err:
+                    print(f"DEBUG: [AI Service] remove.bg API connection error: {api_err}")
+
+            # 2. Fallback to local rembg if API failed or was skipped
+            if not output_image_bytes:
+                print("DEBUG: [AI Service] Falling back to local rembg (isnet-general-use)...")
+                session = new_session("isnet-general-use")
+                product.original_image.seek(0)
+                input_image_bytes = product.original_image.read()
+                output_image_bytes = rembg.remove(
+                    input_image_bytes,
+                    session=session,
+                    alpha_matting=False,
+                    post_process_mask=True
+                )
+
             # Save results
             image_name = f"isolated_{product.id}.png"
             product.image.save(image_name, ContentFile(output_image_bytes), save=False)
@@ -97,7 +119,7 @@ class AIService:
             
             product.ai_status = 'completed'
             product.save()
-            print(f"DEBUG: [AI Service] Background removal COMPLETED locally for Product {product.id}")
+            print(f"DEBUG: [AI Service] Background removal COMPLETED for Product {product.id}")
 
         except Exception as e:
             print(f"ERROR: [AI Service] Background removal failed: {e}")
@@ -140,47 +162,58 @@ class AIService:
         except Exception as ai_err:
             print(f"DEBUG: [AI Service] AI detection ignored (falling back to center): {ai_err}")
 
-        # 2. Variant A: PIL Overlay using the confirmed 'box'
+        # 2. Variant B: AI Inpainting (imagen-3.0)
         try:
             from PIL import Image
             
-            room_img = Image.open(room_image_path).convert("RGBA")
-            rw, rh = room_img.size
-
-            # Select door source (prefer background-removed version)
-            door_path = product.image.path
-            if product.image_no_bg and product.image_no_bg.name:
-                if os.path.exists(product.image_no_bg.path):
-                    door_path = product.image_no_bg.path
+            # Detect room image size for mask creation
+            with Image.open(room_image_path) as room_img:
+                width, height = room_img.size
             
-            door_img = Image.open(door_path).convert("RGBA")
+            # Create binary mask from detected box
+            print(f"DEBUG: [AI Service] Creating mask for box {box} on {width}x{height} image...")
+            mask_io = create_binary_mask(width, height, box)
+            mask_bytes = mask_io.getvalue()
 
-            # Map coordinates
-            ymin, xmin, ymax, xmax = box
-            left = int(xmin * rw / 1000)
-            top = int(ymin * rh / 1000)
-            right = int(xmax * rw / 1000)
-            bottom = int(ymax * rh / 1000)
+            # Execute real AI visualization
+            visualize_door_in_room(
+                product=product,
+                room_image_path=room_image_path,
+                result_image_path=result_image_path,
+                mask_bytes=mask_bytes
+            )
             
-            target_w = max(1, right - left)
-            target_h = max(1, bottom - top)
-
-            # Resize door
-            door_resized = door_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
-            
-            # Robust Overlay: Paste using door_resized as its own mask for transparency
-            room_img.paste(door_resized, (left, top), door_resized)
-
-            # Save result
-            final_res = room_img.convert("RGB")
-            final_res.save(result_image_path, "JPEG", quality=95)
-            
-            print(f"DEBUG: [AI Service] Variant A overlay SUCCESS for {product.name}")
+            print(f"DEBUG: [AI Service] AI Inpainting SUCCESS for {product.name}")
             return result_image_path
 
         except Exception as e:
-            print(f"ERROR: [AI Service] Variant A failed completely: {e}")
-            return None
+            print(f"ERROR: [AI Service] AI Inpainting failed: {e}")
+            
+            # 3. Final Fallback: Simple PIL Overlay if AI inpainting fails
+            try:
+                print("DEBUG: [AI Service] Falling back to Variant A (PIL Overlay)...")
+                room_img = Image.open(room_image_path).convert("RGBA")
+                rw, rh = room_img.size
+                
+                door_path = product.image.path
+                if product.image_no_bg and product.image_no_bg.name:
+                    if os.path.exists(product.image_no_bg.path):
+                        door_path = product.image_no_bg.path
+                
+                door_img = Image.open(door_path).convert("RGBA")
+                ymin, xmin, ymax, xmax = box
+                left, top = int(xmin * rw / 1000), int(ymin * rh / 1000)
+                right, bottom = int(xmax * rw / 1000), int(ymax * rh / 1000)
+                
+                door_resized = door_img.resize((max(1, right-left), max(1, bottom-top)), Image.Resampling.LANCZOS)
+                room_img.paste(door_resized, (left, top), door_resized)
+                
+                final_res = room_img.convert("RGB")
+                final_res.save(result_image_path, "JPEG", quality=95)
+                return result_image_path
+            except Exception as fallback_err:
+                print(f"ERROR: [AI Service] Final fallback also failed: {fallback_err}")
+                return None
 
 
 class WishlistService:

@@ -108,9 +108,36 @@ def process_product_with_ai(product):
         product.ai_status = 'error'
         product.save(update_fields=['ai_status'])
 
-def visualize_door_in_room(product, room_image_path, result_image_path):
+def create_binary_mask(width: int, height: int, box_1000: list[int]) -> io.BytesIO:
     """
-    Uses Gemini (Nano Banana) to realistically install a door into a room photo in one pass.
+    Creates a black and white mask image.
+    box_1000 is [ymin, xmin, ymax, xmax] in 0-1000 range.
+    """
+    from PIL import Image, ImageDraw
+    
+    # Create black image
+    mask = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(mask)
+    
+    # Map coordinates
+    ymin, xmin, ymax, xmax = box_1000
+    left = int(xmin * width / 1000)
+    top = int(ymin * height / 1000)
+    right = int(xmax * width / 1000)
+    bottom = int(ymax * height / 1000)
+    
+    # Draw white rectangle for the mask area
+    draw.rectangle([left, top, right, bottom], fill=255)
+    
+    buf = io.BytesIO()
+    mask.save(buf, format='PNG')
+    buf.seek(0)
+    return buf
+
+def visualize_door_in_room(product, room_image_path, result_image_path, mask_bytes=None):
+    """
+    Uses Gemini/Imagen to realistically install a door into a room photo using inpainting.
+    If mask_bytes is provided, it uses it to guide the insertion.
     """
     try:
         client = get_gemini_client()
@@ -126,11 +153,20 @@ def visualize_door_in_room(product, room_image_path, result_image_path):
         print(f"DEBUG: [Gemini/Nano Banana] Visualizing door {product.id} in room...")
         
         # Smart inpainting/insertion call
+        config = types.EditImageConfig(
+            edit_mode='INPAINT_INSERT',
+            number_of_images=1,
+            output_mime_type='image/png'
+        )
+        
+        if mask_bytes:
+            config.mask = types.Image(image_bytes=mask_bytes)
+
         response = client.models.edit_image(
             model='imagen-3.0-capability-001',
             prompt=(
-                "Install the door from image 1 into the most suitable door frame or entrance wall found in image 0. "
-                "Ensure correct scale, perspective, and realistic shadows. The final image should look like a real home photo."
+                "Professionally install the high-quality wood door from image 1 into the specified door opening area in image 0. "
+                "Match the room's lighting, perspective, and shadows perfectly. The door should be perfectly aligned within the door frame."
             ),
             reference_images=[
                 types.RawReferenceImage(
@@ -142,10 +178,7 @@ def visualize_door_in_room(product, room_image_path, result_image_path):
                     reference_id=1
                 )
             ],
-            config=types.EditImageConfig(
-                edit_mode='INPAINT_INSERT',
-                number_of_images=1
-            )
+            config=config
         )
 
         if not response.generated_images:

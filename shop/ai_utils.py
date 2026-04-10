@@ -272,29 +272,70 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         # ====== STEP 4: Joylashtirish matematikasi ======
         LOG(4, "Placement hisob-kitob boshlandi...")
         if not box_1000:
-            LOG(4, "box_1000 mavjud emas. Gemini orqali eshik o'rni izlanmoqda...")
+            LOG(4, "box_1000 mavjud emas. GPT-4o orqali eshik o'rni izlanmoqda...")
             try:
                 r_bytes = io.BytesIO()
                 room_img.save(r_bytes, format='JPEG', quality=85)
-                
-                resp = client.models.generate_content(
-                    model='gemini-1.5-flash',
-                    contents=[
-                        "Find the vertical rectangular area (opening or wall) suitable for placing a door.\n"
-                        "Return ONLY valid JSON with no markdown inside exactly like this: {\"box_2d\": [ymin, xmin, ymax, xmax]}.\n"
-                        "Coordinates must be integers from 0 to 1000.",
-                        types.Part.from_bytes(data=r_bytes.getvalue(), mime_type='image/jpeg')
-                    ],
-                    config=types.GenerateContentConfig(response_mime_type="application/json")
+                import base64
+                import requests
+                from django.conf import settings
+
+                base64_image = base64.b64encode(r_bytes.getvalue()).decode('utf-8')
+                openai_key = getattr(settings, 'OPENAI_API_KEY', os.getenv("OPENAI_API_KEY"))
+                if not openai_key: raise ValueError("OpenAI Key missing. Please set it in .env")
+
+                prompt = (
+                    "You are a computer vision system.\n"
+                    "Analyze this room image and find the best place where a door can be installed.\n"
+                    "Rules:\n"
+                    "- Door must be placed ONLY on a wall\n"
+                    "- Door must NOT be placed on windows\n"
+                    "- Door must be vertical rectangle\n"
+                    "- Door must touch the floor\n"
+                    "- Door must not overlap furniture\n"
+                    "Return ONLY JSON:\n"
+                    "{\n"
+                    "  \"x\": number (0-1),\n"
+                    "  \"y\": number (0-1),\n"
+                    "  \"width\": number (0-1),\n"
+                    "  \"height\": number (0-1)\n"
+                    "}"
                 )
+                
+                headers = {"Content-Type": "application/json", "Authorization": f"Bearer {openai_key}"}
+                payload = {
+                    "model": "gpt-4o",
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                    ]}],
+                    "response_format": {"type": "json_object"}
+                }
+                
+                LOG(4, "Sending room image to GPT...")
+                response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=20)
+                response.raise_for_status()
+                
                 import json
-                box_data = json.loads(resp.text)
-                box_1000 = box_data.get('box_2d')
-                if not box_1000 or len(box_1000) != 4:
-                    raise ValueError(f"Noto'g'ri box formati: {box_data}")
-                LOG(4, f"Gemini box topdi: {box_1000}")
+                content = json.loads(response.json()['choices'][0]['message']['content'])
+                LOG(4, f"GPT BOX: {content}")
+                
+                # Validation rule from user
+                if content.get("width", 0) < 0.1 or content.get("height", 0) < 0.2 or (content.get("y", 0) + content.get("height", 0)) > 1.0:
+                    raise ValueError("GPT box failed validation rules")
+                
+                box_x = content["x"]
+                box_y = content["y"]
+                box_w = content["width"]
+                box_h = content["height"]
+                box_1000 = [
+                    int(box_y * 1000), 
+                    int(box_x * 1000), 
+                    int((box_y + box_h) * 1000), 
+                    int((box_x + box_w) * 1000)
+                ]
             except Exception as e:
-                LOG(4, f"Gemini detection XATOLIGI: {e}")
+                LOG(4, f"GPT detection XATOLIGI: {e}")
                 box_1000 = [200, 400, 850, 600]
                 LOG(4, f"Fallback Default box ishlatilmoqda: {box_1000}")
             
@@ -303,33 +344,39 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         top = int(ymin * rh / 1000)
         right = int(xmax * rw / 1000)
         bottom = int(ymax * rh / 1000)
-        LOG(4, f"Pixel box: left={left}, top={top}, right={right}, bottom={bottom}")
+        LOG(4, f"Original Pixel box: left={left}, top={top}, right={right}, bottom={bottom}")
         
+        # CHEAP WINDOW DETECTION HACK
+        import numpy as np
+        roi = room_img.crop((left, top, right, bottom))
+        brightness = np.mean(np.array(roi))
+        LOG(4, f"ROI Brightness check: {brightness:.2f}")
+        
+        if brightness > 190:
+            LOG(4, "WARNING: Oyna (Window) aniqlandi (yoki juda yorug' devor). Fallback ishlatilmoqda...")
+            left, top, right, bottom = (int(0.40 * rw), int(0.20 * rh), int(0.60 * rw), int(0.85 * rh))
+            LOG(4, f"Fallback Pixel box: left={left}, top={top}, right={right}, bottom={bottom}")
+
         target_h = bottom - top
         door_ar = dw / float(dh)
-        LOG(4, f"Target height: {target_h}, Door aspect ratio: {door_ar:.3f}")
         
         resized_h = target_h
         resized_w = int(resized_h * door_ar)
-        LOG(4, f"Hisoblangan o'lcham: {resized_w}x{resized_h}")
         
-        # Hard limits
         if resized_w < (target_h * 0.42):
-            old_w = resized_w
             resized_w = int(target_h * 0.42)
-            LOG(4, f"Min-width cheklovi: {old_w} → {resized_w}")
         if resized_w > (target_h * 0.80):
-            old_w = resized_w
             resized_w = int(target_h * 0.80)
-            LOG(4, f"Max-width cheklovi: {old_w} → {resized_w}")
 
         door_resized = door_img.resize((resized_w, resized_h), Image.Resampling.LANCZOS)
-        LOG(4, f"Eshik resize qilindi: {resized_w}x{resized_h}")
+        LOG(4, f"Eshik resize: {resized_w}x{resized_h}")
         
         center_x = (left + right) // 2
         final_left = center_x - (resized_w // 2)
-        final_top = top + 15
-        LOG(4, f"Joylashtirish: final_left={final_left}, final_top={final_top}, center_x={center_x}")
+        
+        # Floor snap constraint - using the box bottom instead of image bottom
+        final_top = bottom - resized_h
+        LOG(4, f"Joylashtirish: final_left={final_left}, final_top={final_top}")
         
         # ====== STEP 5: Dirty Composite ======
         LOG(5, "Dirty composite yaratilmoqda...")

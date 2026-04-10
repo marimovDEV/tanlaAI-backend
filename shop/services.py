@@ -92,26 +92,30 @@ class AIService:
             if not input_image_bytes:
                 raise ValueError("Source image is empty")
 
-            # --- Pre-processing: Contrast enhancement ---
+            # --- Pre-processing: Contrast & Sharpness enhancement ---
             img = Image.open(io.BytesIO(input_image_bytes)).convert("RGB")
-            enhancer = ImageEnhance.Contrast(img)
-            img_enhanced = enhancer.enhance(1.2) # Increase contrast by 20%
+            
+            # Increase contrast
+            img = ImageEnhance.Contrast(img).enhance(1.2)
+            # Increase sharpness to help detect edges
+            img = ImageEnhance.Sharpness(img).enhance(2.0)
             
             # Convert back to bytes
             enhanced_io = io.BytesIO()
-            img_enhanced.save(enhanced_io, format='PNG')
+            img.save(enhanced_io, format='PNG')
             enhanced_input_bytes = enhanced_io.getvalue()
             # --------------------------------------------
 
-            print("DEBUG: [AI Service] Executing local background removal (u2net + alpha matting)...")
-            session = new_session("u2net")
+            print("DEBUG: [AI Service] Executing local background removal (silueta + zero erosion)...")
+            # 'silueta' is often better at maintaining object boundaries than u2net/isnet
+            session = new_session("silueta")
             output_image_bytes = rembg.remove(
                 enhanced_input_bytes,
                 session=session,
                 alpha_matting=True,
                 alpha_matting_foreground_threshold=240, 
                 alpha_matting_background_threshold=10,  
-                alpha_matting_erode_size=10,
+                alpha_matting_erode_size=0, # CRITICAL: Do not eat the edges
                 post_process_mask=True
             )
 
@@ -122,7 +126,7 @@ class AIService:
             
             product.ai_status = 'completed'
             product.save()
-            print(f"DEBUG: [AI Service] High-quality background removal COMPLETED for Product {product.id}")
+            print(f"DEBUG: [AI Service] High-quality background removal (silueta) COMPLETED for Product {product.id}")
 
         except Exception as e:
             print(f"ERROR: [AI Service] Background removal failed: {e}")

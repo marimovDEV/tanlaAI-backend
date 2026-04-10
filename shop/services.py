@@ -237,8 +237,8 @@ class AIService:
                 base64_image = base64.b64encode(input_image_bytes).decode('utf-8')
                 prompt = """
                 Identify the main DOOR product. 
-                Return the bounding box for the ENTIRE door structure including the LEFT and RIGHT vertical frames and the decorative CROWN/TOP cornice. 
-                DO NOT BE TOO TIGHT; ensure all wooden parts are inside the box.
+                Return a GENEROUS bounding box for the ENTIRE DOOR including vertical frames, hinges, handle, and the decorative TOP CROWN/cornice.
+                ERR ON THE SIDE OF INCLUDING EXTRA SPACE; it is better to have more background than to clip the door.
                 Return JSON: {"box_2d": [ymin, xmin, ymax, xmax]} scale 0-1000.
                 """
                 

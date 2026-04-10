@@ -259,7 +259,6 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         draw.rectangle([m_left, m_top, m_right, m_bottom], fill=255)
         
         # 4. AI Harmonization Call
-        from .ai_utils import types # Inside visualizer, we might need types
         roi_buf = io.BytesIO()
         roi_img.save(roi_buf, format='JPEG')
         mask_buf = io.BytesIO()

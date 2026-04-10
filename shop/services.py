@@ -236,10 +236,10 @@ class AIService:
 
                 base64_image = base64.b64encode(input_image_bytes).decode('utf-8')
                 prompt = """
-                Identify the main DOOR product in this image.
-                Return only the bounding box covering the ENTIRE structure including the frame, handle and all panels.
-                Return JSON in this format: {"box_2d": [ymin, xmin, ymax, xmax]} scale 0-1000.
-                The door is the whole large rectangular object. Include the dark wooden frame.
+                Identify the main DOOR product. 
+                Return the bounding box for the ENTIRE door structure including the LEFT and RIGHT vertical frames and the decorative CROWN/TOP cornice. 
+                DO NOT BE TOO TIGHT; ensure all wooden parts are inside the box.
+                Return JSON: {"box_2d": [ymin, xmin, ymax, xmax]} scale 0-1000.
                 """
                 
                 headers = {"Content-Type": "application/json", "Authorization": f"Bearer {openai_key}"}

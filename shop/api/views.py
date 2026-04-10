@@ -1,8 +1,11 @@
 import os
 import uuid
+import logging
 from concurrent.futures import ThreadPoolExecutor
 import shlex
 import subprocess
+
+logger = logging.getLogger(__name__)
 
 from django.db import models
 from django.utils import timezone
@@ -30,6 +33,7 @@ ai_executor = ThreadPoolExecutor(max_workers=2)
 
 
 def run_api_ai_background(product_id, room_path, result_path, tg_user_id):
+    logger.info(f"DEBUG: [AI Service] Background task STARTED for product {product_id}")
     try:
         product = Product.objects.get(pk=product_id)
         AIService.generate_room_preview(product, room_path, result_path)
@@ -47,9 +51,10 @@ def run_api_ai_background(product_id, room_path, result_path, tg_user_id):
 
         product.ai_status = 'completed'
         product.save(update_fields=['ai_status'])
+        logger.info(f"DEBUG: [AI Service] Background task COMPLETED for product {product_id}")
     except Exception as error:
         Product.objects.filter(pk=product_id).update(ai_status='error')
-        print(f"DEBUG: API AI generation error for product {product_id}: {error}")
+        logger.error(f"DEBUG: API AI generation error for product {product_id}: {error}")
 
 
 def get_tg_user(request):
@@ -330,7 +335,9 @@ class ProductViewSet(viewsets.ModelViewSet):
         product.ai_status = 'processing'
         product.save(update_fields=['ai_status'])
 
+        logger.info(f"DEBUG: [AI Service] Submitting background task for product {product.id}")
         ai_executor.submit(run_api_ai_background, product.id, room_path, result_path, tg_user.id)
+        logger.info(f"DEBUG: [AI Service] Task submitted successfully")
 
         return Response({'status': 'ok'})
 

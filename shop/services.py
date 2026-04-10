@@ -72,17 +72,21 @@ class AIService:
                 original_content = product.image.read()
                 product.original_image.save(os.path.basename(product.image.name), ContentFile(original_content), save=False)
             
+            # We use isnet-general-use as it remains very accurate for furniture and complex edges
+            session = new_session("isnet-general-use")
+            
             product.original_image.seek(0)
             input_image_bytes = product.original_image.read()
             
-            # Local background removal with high quality settings
-            print("DEBUG: [AI Service] Performing high-quality local background removal (alpha matting)...")
+            # Local background removal with tuned high quality settings
+            print(f"DEBUG: [AI Service] Processing Background for Product {product.id} (model: isnet-general-use)...")
             output_image_bytes = rembg.remove(
                 input_image_bytes,
+                session=session,
                 alpha_matting=True,
-                alpha_matting_foreground_threshold=240,
-                alpha_matting_background_threshold=10,
-                alpha_matting_erode_size=10
+                alpha_matting_foreground_threshold=150, # Lower threshold to keep more wood detail
+                alpha_matting_background_threshold=10, 
+                alpha_matting_erode_size=7            # Slightly smaller erosion to avoid cutting into the door
             )
             
             # Save the isolated product image

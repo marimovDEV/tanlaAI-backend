@@ -348,7 +348,9 @@ class ProductViewSet(viewsets.ModelViewSet):
         if product.ai_status == 'completed':
             latest_result = AIResult.objects.filter(product=product).order_by('-created_at').first()
             if latest_result:
-                return Response({'status': 'done', 'image_url': latest_result.image.url})
+                # Build absolute URI for the image
+                full_url = request.build_absolute_uri(latest_result.image.url)
+                return Response({'status': 'done', 'image_url': full_url})
 
         if product.ai_status == 'error':
             return Response({'status': 'error', 'message': 'AI generation failed.'})

@@ -124,48 +124,75 @@ class AIService:
             h, w = img_np.shape[:2]
             predictor.set_image(img_np)
 
-            # --- HYBRID DETECTION: Use Gemini to find the door bounding box first ---
+            # --- HYBRID DETECTION: Use OpenAI (GPT-4o) or Gemini to find the box ---
             input_box = None
             try:
-                print(f"DEBUG: [AI Service] Asking Gemini to detect the door for Product {product.id}...")
-                client = AIService.get_gemini_client()
-                from google.genai import types
-                import json
-                import re
+                # 1. Try OpenAI GPT-4o first (Most precise spatial reasoning)
+                openai_key = getattr(settings, 'OPENAI_API_KEY', None)
+                if openai_key:
+                    print(f"DEBUG: [AI Service] Asking OpenAI (GPT-4o) to detect the door for Product {product.id}...")
+                    import base64
+                    from openai import OpenAI
+                    oa_client = OpenAI(api_key=openai_key)
+                    
+                    base64_image = base64.b64encode(input_image_bytes).decode('utf-8')
+                    
+                    prompt = """
+                    Detect the main single door in this image and return only a JSON: {"box_2d": [ymin, xmin, ymax, xmax]} using 0-1000 scale.
+                    
+                    RULES:
+                    - The door is ONE single rectangular object. Include frame, all glass, and patterns.
+                    - Do NOT exclude inner parts or cut corners.
+                    - Bounding box must cover the absolute outermost edges of the door frame.
+                    """
+                    
+                    response = oa_client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt},
+                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
+                                ],
+                            }
+                        ],
+                        response_format={"type": "json_object"}
+                    )
+                    
+                    import json
+                    data = json.loads(response.choices[0].message.content)
+                    box_1000 = data.get('box_2d')
+                    if box_1000 and len(box_1000) == 4:
+                        ymin, xmin, ymax, xmax = box_1000
+                        input_box = np.array([xmin * w / 1000, ymin * h / 1000, xmax * w / 1000, ymax * h / 1000])
+                        print(f"DEBUG: [AI Service] OpenAI detected door at: {input_box}")
 
-                prompt = """
-                Detect the main single door in this image and return only a JSON: {"box_2d": [ymin, xmin, ymax, xmax]} using 0-1000 scale.
-                
-                IMPORTANT RULES:
-                - The door is ONE single rectangular object.
-                - Preserve its full rectangular silhouette.
-                - Include the ENTIRE frame, all glass panels, internal decorations, and handles.
-                - Do NOT exclude inner parts even if they are transparent or look like background.
-                - The bounding box must capture the absolute outermost edges of the door frame.
-                """
-                response = client.models.generate_content(
-                    model='gemini-1.5-flash',
-                    contents=[prompt, types.Part.from_bytes(data=input_image_bytes, mime_type='image/jpeg')]
-                )
+                # 2. Fallback to Gemini if OpenAI failed or no key
+                if input_box is None:
+                    print(f"DEBUG: [AI Service] Falling back to Gemini for detection...")
+                    client = AIService.get_gemini_client()
+                    from google.genai import types
+                    import json
+                    import re
 
-                if response and response.text:
-                    match = re.search(r'\{.*\}', response.text, re.DOTALL)
-                    if match:
-                        data = json.loads(match.group(0))
-                        box_1000 = data.get('box_2d')
-                        if box_1000 and len(box_1000) == 4:
-                            # Convert 0-1000 scale to pixel scale
-                            ymin, xmin, ymax, xmax = box_1000
-                            # SAM expects [x1, y1, x2, y2]
-                            input_box = np.array([
-                                xmin * w / 1000,
-                                ymin * h / 1000,
-                                xmax * w / 1000,
-                                ymax * h / 1000
-                            ])
-                            print(f"DEBUG: [AI Service] Gemini detected door at binary box: {input_box}")
+                    prompt = "Detect the main single door in this image and return JSON: {\"box_2d\": [ymin, xmin, ymax, xmax]} (0-1000 scale)."
+                    response = client.models.generate_content(
+                        model='gemini-1.5-flash',
+                        contents=[prompt, types.Part.from_bytes(data=input_image_bytes, mime_type='image/jpeg')]
+                    )
+
+                    if response and response.text:
+                        match = re.search(r'\{.*\}', response.text, re.DOTALL)
+                        if match:
+                            data = json.loads(match.group(0))
+                            box_1000 = data.get('box_2d')
+                            if box_1000 and len(box_1000) == 4:
+                                ymin, xmin, ymax, xmax = box_1000
+                                input_box = np.array([xmin * w / 1000, ymin * h / 1000, xmax * w / 1000, ymax * h / 1000])
+                                print(f"DEBUG: [AI Service] Gemini detected door at: {input_box}")
             except Exception as detection_err:
-                print(f"DEBUG: [AI Service] Gemini detection failed, falling back to center point: {detection_err}")
+                print(f"DEBUG: [AI Service] AI detection failed, falling back to center point: {detection_err}")
 
             # --- SEGMENTATION: Use the box prompt (or fallback point) ---
             print(f"DEBUG: [AI Service] Executing SAM segmentation for Product {product.id}...")

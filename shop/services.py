@@ -109,15 +109,15 @@ class AIService:
             enhanced_input_bytes = enhanced_io.getvalue()
             # --------------------------------------------
 
-            print("DEBUG: [AI Service] Executing Hybrid Pipeline (BiRefNet + OpenCV Dilate)...")
+            print("DEBUG: [AI Service] Executing Stable Hybrid Pipeline (u2net + OpenCV Dilate)...")
             
-            # STEP 1: Get the binary mask first using the most accurate model
-            # Note: birefnet-general is currently top-tier for general object segmentation
-            session = new_session("birefnet-general")
+            # STEP 1: Get the binary mask using the stable u2net model
+            # Note: u2net is lighter and already tested on this VPS
+            session = new_session("u2net")
             mask_bytes = rembg.remove(
                 enhanced_input_bytes,
                 session=session,
-                only_mask=True, # We only need the alpha channel mask first
+                only_mask=True, 
                 post_process_mask=True
             )
             
@@ -125,15 +125,14 @@ class AIService:
             mask_np = np.frombuffer(mask_bytes, dtype=np.uint8)
             mask = cv2.imdecode(mask_np, cv2.IMREAD_GRAYSCALE)
             
-            # DILATE: Expand the mask slightly to include frame edges that AI might have missed
-            # 3x3 or 5x5 kernel depending on resolution
+            # DILATE: Expand the mask slightly to include frame edges
+            # Using 3x3 kernel as a safe baseline for stability and quality
             kernel = np.ones((3, 3), np.uint8)
             dilated_mask = cv2.dilate(mask, kernel, iterations=1)
             
             # STEP 3: Apply the dilated mask back to original image
             # Create a 4-channel image (RGBA)
             b_channel, g_channel, r_channel = cv2.split(img_rgb)
-            # Use dilated mask as the alpha channel
             rgba = cv2.merge((b_channel, g_channel, r_channel, dilated_mask))
             
             # STEP 4: Convert back to PNG bytes
@@ -147,14 +146,13 @@ class AIService:
             
             product.ai_status = 'completed'
             product.save()
-            print(f"DEBUG: [AI Service] Hybrid professional pipeline COMPLETED for Product {product.id}")
+            print(f"DEBUG: [AI Service] Stable hybrid pipeline COMPLETED for Product {product.id}")
 
         except Exception as e:
             print(f"ERROR: [AI Service] Background removal failed: {e}")
             import traceback
             traceback.print_exc()
             product.ai_status = 'error'
-            product.save(update_fields=['ai_status'])
             product.save(update_fields=['ai_status'])
 
     @staticmethod

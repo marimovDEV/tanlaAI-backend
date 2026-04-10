@@ -12,9 +12,14 @@ class CategorySerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'icon', 'product_count']
 
 class TelegramUserSerializer(serializers.ModelSerializer):
+    has_company = serializers.SerializerMethodField()
+
     class Meta:
         model = TelegramUser
-        fields = '__all__'
+        fields = ['id', 'telegram_id', 'first_name', 'last_name', 'username', 'role', 'photo_url', 'has_company']
+
+    def get_has_company(self, obj):
+        return hasattr(obj, 'company')
 
 class CompanySerializer(serializers.ModelSerializer):
     is_currently_active = serializers.ReadOnlyField()

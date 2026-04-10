@@ -1,5 +1,6 @@
 import os
 import io
+from functools import lru_cache
 from PIL import Image
 from django.core.files.base import ContentFile
 from django.conf import settings
@@ -141,6 +142,372 @@ def compose_rgba_from_mask(rgb_image, alpha_mask):
     img_bgr = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR)
     b, g, r = cv2.split(img_bgr)
     return cv2.merge((b, g, r, refined_mask))
+
+
+def sanitize_pixel_box(box, width, height):
+    left, top, right, bottom = [int(round(value)) for value in box]
+
+    left = max(0, min(left, max(0, width - 1)))
+    top = max(0, min(top, max(0, height - 1)))
+    right = max(left + 1, min(right, width))
+    bottom = max(top + 1, min(bottom, height))
+    return left, top, right, bottom
+
+
+def box_1000_to_pixels(box_1000, width, height):
+    ymin, xmin, ymax, xmax = box_1000
+    return sanitize_pixel_box(
+        (
+            xmin * width / 1000.0,
+            ymin * height / 1000.0,
+            xmax * width / 1000.0,
+            ymax * height / 1000.0,
+        ),
+        width,
+        height,
+    )
+
+
+def pixels_to_box_1000(pixel_box, width, height):
+    left, top, right, bottom = sanitize_pixel_box(pixel_box, width, height)
+    return [
+        int(round(top * 1000.0 / max(1, height))),
+        int(round(left * 1000.0 / max(1, width))),
+        int(round(bottom * 1000.0 / max(1, height))),
+        int(round(right * 1000.0 / max(1, width))),
+    ]
+
+
+def expand_pixel_box(pixel_box, width, height, pad_x_ratio=0.06, pad_y_ratio=0.04):
+    left, top, right, bottom = sanitize_pixel_box(pixel_box, width, height)
+    pad_x = int(round((right - left) * pad_x_ratio))
+    pad_y = int(round((bottom - top) * pad_y_ratio))
+    return sanitize_pixel_box((left - pad_x, top - pad_y, right + pad_x, bottom + pad_y), width, height)
+
+
+def build_box_mask(height, width, pixel_box, pad_x_ratio=0.06, pad_y_ratio=0.04):
+    import cv2
+    import numpy as np
+
+    left, top, right, bottom = expand_pixel_box(pixel_box, width, height, pad_x_ratio=pad_x_ratio, pad_y_ratio=pad_y_ratio)
+    mask = np.zeros((height, width), dtype=np.uint8)
+    cv2.rectangle(mask, (left, top), (max(left + 1, right - 1), max(top + 1, bottom - 1)), 255, thickness=-1)
+    return mask
+
+
+def get_expected_door_aspect_ratio(product, door_rgba=None):
+    try:
+        if product.width and product.height:
+            ratio = float(product.width) / float(product.height)
+            if 0.15 <= ratio <= 0.95:
+                return ratio
+    except (TypeError, ValueError, ZeroDivisionError):
+        pass
+
+    if door_rgba is not None:
+        door_height, door_width = door_rgba.shape[:2]
+        if door_height > 0:
+            ratio = door_width / float(door_height)
+            if 0.15 <= ratio <= 0.95:
+                return ratio
+
+    return 0.45
+
+
+def score_door_candidate(x, y, candidate_width, candidate_height, image_width, image_height, expected_aspect_ratio, signal_mask):
+    import numpy as np
+
+    area = candidate_width * candidate_height
+    area_ratio = area / float(max(1, image_width * image_height))
+    height_ratio = candidate_height / float(max(1, image_height))
+    width_ratio = candidate_width / float(max(1, image_width))
+    aspect_ratio = candidate_width / float(max(1, candidate_height))
+
+    if area_ratio < 0.03 or area_ratio > 0.80:
+        return None
+    if height_ratio < 0.35 or width_ratio < 0.10:
+        return None
+    if aspect_ratio < 0.15 or aspect_ratio > 0.95:
+        return None
+
+    center_penalty = abs(((x + (candidate_width / 2.0)) / max(1, image_width)) - 0.5)
+    bottom_ratio = (y + candidate_height) / float(max(1, image_height))
+    if bottom_ratio < 0.55:
+        return None
+
+    aspect_penalty = abs(aspect_ratio - expected_aspect_ratio)
+    region = signal_mask[y:y + candidate_height, x:x + candidate_width]
+    edge_density = float(np.count_nonzero(region)) / float(max(1, area))
+
+    return (
+        (height_ratio * 4.0)
+        + (area_ratio * 3.0)
+        + (bottom_ratio * 1.5)
+        + (edge_density * 3.0)
+        - (center_penalty * 2.5)
+        - (aspect_penalty * 1.5)
+    )
+
+
+@lru_cache(maxsize=1)
+def load_optional_yolo_model(model_path):
+    from ultralytics import YOLO
+
+    return YOLO(model_path)
+
+
+def detect_door_box_with_yolo(room_bgr, expected_aspect_ratio):
+    model_path = str(getattr(settings, 'YOLO_DOOR_MODEL_PATH', '') or '').strip()
+    if not model_path or not os.path.exists(model_path):
+        return None
+
+    try:
+        model = load_optional_yolo_model(model_path)
+        results = model.predict(room_bgr, conf=0.20, verbose=False)
+    except Exception as exc:
+        print(f"DEBUG: [AI Service] YOLO detection unavailable: {exc}")
+        return None
+
+    image_height, image_width = room_bgr.shape[:2]
+    best_box = None
+    best_score = float('-inf')
+
+    for result in results:
+        boxes = getattr(result, 'boxes', None)
+        if boxes is None:
+            continue
+
+        for box in boxes:
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            confidence = float(box.conf[0]) if getattr(box, 'conf', None) is not None else 0.0
+            left, top, right, bottom = sanitize_pixel_box((x1, y1, x2, y2), image_width, image_height)
+            aspect_ratio = (right - left) / float(max(1, bottom - top))
+            aspect_penalty = abs(aspect_ratio - expected_aspect_ratio)
+            center_penalty = abs((((left + right) / 2.0) / max(1, image_width)) - 0.5)
+            score = (confidence * 10.0) - (aspect_penalty * 2.0) - (center_penalty * 1.5)
+            if score > best_score:
+                best_score = score
+                best_box = (left, top, right, bottom)
+
+    return best_box
+
+
+def detect_door_box_with_opencv(room_bgr, expected_aspect_ratio):
+    import cv2
+    import numpy as np
+
+    gray = cv2.cvtColor(room_bgr, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 60, 160)
+    adaptive = cv2.adaptiveThreshold(
+        blurred,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV,
+        31,
+        7,
+    )
+
+    combined = cv2.bitwise_or(edges, adaptive)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=2)
+    combined = cv2.dilate(combined, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(combined, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    image_height, image_width = gray.shape[:2]
+    best_box = None
+    best_score = float('-inf')
+
+    for contour in contours:
+        x, y, candidate_width, candidate_height = cv2.boundingRect(contour)
+        score = score_door_candidate(
+            x,
+            y,
+            candidate_width,
+            candidate_height,
+            image_width,
+            image_height,
+            expected_aspect_ratio,
+            combined,
+        )
+        if score is None:
+            continue
+
+        contour_area = cv2.contourArea(contour)
+        rectangularity = contour_area / float(max(1, candidate_width * candidate_height))
+        total_score = score + (rectangularity * 0.8)
+        if total_score > best_score:
+            best_score = total_score
+            best_box = (x, y, x + candidate_width, y + candidate_height)
+
+    return best_box
+
+
+def default_door_box(image_width, image_height, expected_aspect_ratio):
+    box_height = int(round(image_height * 0.72))
+    box_width = int(round(box_height * expected_aspect_ratio))
+    box_width = max(int(image_width * 0.18), min(box_width, int(image_width * 0.55)))
+
+    left = int(round((image_width - box_width) / 2.0))
+    top = int(round(image_height * 0.14))
+    return sanitize_pixel_box((left, top, left + box_width, top + box_height), image_width, image_height)
+
+
+def detect_door_opening_box(room_bgr, expected_aspect_ratio):
+    yolo_box = detect_door_box_with_yolo(room_bgr, expected_aspect_ratio)
+    if yolo_box is not None:
+        return yolo_box, 'yolo'
+
+    opencv_box = detect_door_box_with_opencv(room_bgr, expected_aspect_ratio)
+    if opencv_box is not None:
+        return opencv_box, 'opencv'
+
+    image_height, image_width = room_bgr.shape[:2]
+    return default_door_box(image_width, image_height, expected_aspect_ratio), 'default'
+
+
+def remove_door_from_room_locally(room_bgr, pixel_box):
+    import cv2
+
+    image_height, image_width = room_bgr.shape[:2]
+    mask = build_box_mask(image_height, image_width, pixel_box, pad_x_ratio=0.04, pad_y_ratio=0.03)
+    return cv2.inpaint(room_bgr, mask, 7, cv2.INPAINT_TELEA)
+
+
+def remove_door_from_room_with_ai(room_bgr, pixel_box, client):
+    import cv2
+    import numpy as np
+    from google.genai import types
+
+    image_height, image_width = room_bgr.shape[:2]
+    mask = build_box_mask(image_height, image_width, pixel_box, pad_x_ratio=0.05, pad_y_ratio=0.04)
+
+    ok_room, room_buf = cv2.imencode('.png', room_bgr)
+    ok_mask, mask_buf = cv2.imencode('.png', mask)
+    if not ok_room or not ok_mask:
+        raise ValueError("Failed to encode room or mask for inpainting")
+
+    reference_image = types.RawReferenceImage(
+        reference_image=types.Image(image_bytes=room_buf.tobytes()),
+        reference_id=0,
+    )
+    mask_image = types.Image(image_bytes=mask_buf.tobytes())
+    prompt = (
+        "Remove the door and frame from the masked area and reconstruct the wall naturally. "
+        "Keep wall texture, molding, trim, skirting, and floor perspective consistent. "
+        "Do not add another door, doorway opening, furniture, or artifacts."
+    )
+
+    last_error = None
+    for edit_mode in ('EDIT_MODE_INPAINT_REMOVAL', 'INPAINT_EDIT'):
+        try:
+            response = client.models.edit_image(
+                model='imagen-3.0-capability-001',
+                prompt=prompt,
+                reference_images=[reference_image],
+                config=types.EditImageConfig(
+                    edit_mode=edit_mode,
+                    number_of_images=1,
+                    output_mime_type='image/png',
+                    mask=mask_image,
+                ),
+            )
+            if not response.generated_images:
+                raise ValueError("No image generated during door removal")
+
+            cleaned = cv2.imdecode(
+                np.frombuffer(response.generated_images[0].image.image_bytes, np.uint8),
+                cv2.IMREAD_COLOR,
+            )
+            if cleaned is None:
+                raise ValueError("Inpainting result could not be decoded")
+            if cleaned.shape[:2] != room_bgr.shape[:2]:
+                cleaned = cv2.resize(cleaned, (image_width, image_height), interpolation=cv2.INTER_LINEAR)
+            return cleaned
+        except Exception as exc:
+            last_error = exc
+
+    raise last_error or ValueError("AI door removal failed")
+
+
+def apply_soft_shadow(room_bgr, alpha_mask, left, top, strength=0.18):
+    import cv2
+    import numpy as np
+
+    image_height, image_width = room_bgr.shape[:2]
+    shadow_alpha = alpha_mask.astype(np.float32) / 255.0
+    shadow_canvas = np.zeros((image_height, image_width), dtype=np.float32)
+
+    door_height, door_width = alpha_mask.shape[:2]
+    offset_x = max(1, door_width // 55)
+    offset_y = max(1, door_height // 35)
+    shadow_left = max(0, left + offset_x)
+    shadow_top = max(0, top + offset_y)
+    shadow_right = min(image_width, shadow_left + door_width)
+    shadow_bottom = min(image_height, shadow_top + door_height)
+
+    if shadow_right <= shadow_left or shadow_bottom <= shadow_top:
+        return room_bgr
+
+    alpha_crop = shadow_alpha[:shadow_bottom - shadow_top, :shadow_right - shadow_left]
+    shadow_canvas[shadow_top:shadow_bottom, shadow_left:shadow_right] = np.maximum(
+        shadow_canvas[shadow_top:shadow_bottom, shadow_left:shadow_right],
+        alpha_crop,
+    )
+
+    blur_size = max(9, ((min(door_width, door_height) // 6) | 1))
+    shadow_canvas = cv2.GaussianBlur(shadow_canvas, (blur_size, blur_size), 0)
+
+    shaded = room_bgr.astype(np.float32)
+    shaded *= (1.0 - (shadow_canvas[..., None] * strength))
+    return np.clip(shaded, 0, 255).astype(np.uint8)
+
+
+def overlay_door_into_room(room_bgr, door_rgba, pixel_box, add_shadow=True):
+    import cv2
+    import numpy as np
+
+    image_height, image_width = room_bgr.shape[:2]
+    left, top, right, bottom = sanitize_pixel_box(pixel_box, image_width, image_height)
+    target_width = max(1, right - left)
+    target_height = max(1, bottom - top)
+
+    if door_rgba.ndim != 3 or door_rgba.shape[2] < 4:
+        if door_rgba.ndim == 2:
+            door_rgba = cv2.cvtColor(door_rgba, cv2.COLOR_GRAY2BGRA)
+        else:
+            alpha = np.full(door_rgba.shape[:2] + (1,), 255, dtype=np.uint8)
+            door_rgba = np.concatenate([door_rgba[:, :, :3], alpha], axis=2)
+
+    door_height, door_width = door_rgba.shape[:2]
+    scale = min(target_width / float(max(1, door_width)), target_height / float(max(1, door_height)))
+    scale = max(scale, 1e-6)
+    resized_width = max(1, int(round(door_width * scale)))
+    resized_height = max(1, int(round(door_height * scale)))
+
+    resized_door = cv2.resize(door_rgba, (resized_width, resized_height), interpolation=cv2.INTER_LANCZOS4)
+    place_left = left + max(0, (target_width - resized_width) // 2)
+    place_top = bottom - resized_height
+    place_left, place_top, place_right, place_bottom = sanitize_pixel_box(
+        (place_left, place_top, place_left + resized_width, place_top + resized_height),
+        image_width,
+        image_height,
+    )
+
+    actual_width = place_right - place_left
+    actual_height = place_bottom - place_top
+    resized_door = resized_door[:actual_height, :actual_width]
+    alpha = resized_door[:, :, 3].astype(np.float32) / 255.0
+
+    composite = room_bgr.copy()
+    if add_shadow:
+        composite = apply_soft_shadow(composite, resized_door[:, :, 3], place_left, place_top)
+
+    region = composite[place_top:place_bottom, place_left:place_right].astype(np.float32)
+    door_rgb = resized_door[:, :, :3].astype(np.float32)
+    blended = (alpha[..., None] * door_rgb) + ((1.0 - alpha[..., None]) * region)
+    composite[place_top:place_bottom, place_left:place_right] = np.clip(blended, 0, 255).astype(np.uint8)
+    return composite
 
 
 class AIService:
@@ -341,162 +708,58 @@ class AIService:
     @staticmethod
     def generate_room_preview(product, room_image_path, result_image_path):
         """
-        Uses Gemini 1.5 Flash to detect door frame coordinates and overlays 
-        the product image locally. This bypasses Imagen 3 limitations.
+        Deterministic room visualization pipeline:
+        1. Detect the existing door opening with YOLO (if configured) or OpenCV.
+        2. Remove the old door from the detected area with AI inpainting.
+        3. Overlay the selected product door into the exact detected box.
         """
-        from google.genai import types
-        import json
-        import re
-        from .ai_utils import create_binary_mask, visualize_door_in_room
-        
-        # Flag to indicate if we have custom boxes
-        box = [200, 300, 850, 700]  # Default central box [ymin, xmin, ymax, xmax]
-        
-        # 1. Try to get AI coordinates, but don't let failures stop us
         try:
-            client = AIService.get_gemini_client()
-            if client:
-                with open(room_image_path, "rb") as f:
-                    room_bytes = f.read()
-                
-                prompt = """
-                Detect the precise rectangular door opening (door frame area) in this room where a new door can be installed. 
-                Return JSON: {"box_2d": [ymin, xmin, ymax, xmax]} scale 0-1000. 
-                Focus strictly on the area between the wall opening. Do not include the whole wall.
-                """
-                response = client.models.generate_content(
-                    model='gemini-1.5-flash',
-                    contents=[prompt, types.Part.from_bytes(data=room_bytes, mime_type='image/jpeg')]
-                )
-                
-                if response and response.text:
-                    match = re.search(r'\{.*\}', response.text, re.DOTALL)
-                    if match:
-                        ai_box = json.loads(match.group(0)).get('box_2d')
-                        if ai_box and len(ai_box) == 4:
-                            box = ai_box
-                            print(f"DEBUG: [AI Service] Using AI coordinates: {box}")
-        except Exception as ai_err:
-            print(f"DEBUG: [AI Service] AI detection ignored (falling back to center): {ai_err}")
+            import cv2
+            import numpy as np
 
-        # 2. Variant B: AI Inpainting (imagen-3.0)
-        try:
-            from PIL import Image
-            
-            # Detect room image size for mask creation
-            # --- New v4 Point-Based Precision ---
+            room_bgr = cv2.imread(room_image_path, cv2.IMREAD_COLOR)
+            if room_bgr is None:
+                raise ValueError("Room image could not be loaded")
+
+            door_path = product.image.path
+            if product.image_no_bg and product.image_no_bg.name and os.path.exists(product.image_no_bg.path):
+                door_path = product.image_no_bg.path
+            elif product.original_image and product.original_image.name and os.path.exists(product.original_image.path):
+                door_path = product.original_image.path
+
+            door_rgba = cv2.imread(door_path, cv2.IMREAD_UNCHANGED)
+            if door_rgba is None:
+                raise ValueError("Door image could not be loaded")
+            if door_rgba.ndim == 2:
+                door_rgba = cv2.cvtColor(door_rgba, cv2.COLOR_GRAY2BGRA)
+            elif door_rgba.shape[2] == 3:
+                alpha = np.full(door_rgba.shape[:2] + (1,), 255, dtype=np.uint8)
+                door_rgba = np.concatenate([door_rgba, alpha], axis=2)
+
+            expected_aspect_ratio = get_expected_door_aspect_ratio(product, door_rgba=door_rgba)
+            detected_box, detection_method = detect_door_opening_box(room_bgr, expected_aspect_ratio)
+            box_1000 = pixels_to_box_1000(detected_box, room_bgr.shape[1], room_bgr.shape[0])
+            print(f"DEBUG: [AI Service] Door opening detected via {detection_method}: {box_1000}")
+
             try:
-                # 1. Calculate door's native aspect ratio
-                door_ar = 0.4 
-                door_path = product.original_image.path if product.original_image else product.image.path
-                with Image.open(door_path) as dp:
-                    dw, dh = dp.size
-                    door_ar = dw / float(dh)
-                
-                # 2. Get Top and Bottom points from Gemini + Validation
-                point_prompt = """
-                Task:
-                1. Check if this image is a photo of a real room interior (bedroom, living room, corridor, etc.).
-                2. If it is NOT a room (e.g., a flyer, poster, graphic, outdoor, or object photo), return: {"is_room": false}
-                3. If it IS a room, identify the [y, x] coordinates for the TOP-CENTER point and BOTTOM-CENTER point of the rectangular door opening.
-                Return JSON in this format: {"is_room": true, "top_center": [y, x], "bottom_center": [y, x]} scale 0-1000.
-                """
-                
-                resp = client.models.generate_content(
-                    model='gemini-1.5-flash',
-                    contents=[point_prompt, types.Part.from_bytes(data=room_bytes, mime_type='image/jpeg')]
-                )
-                
-                import json, re
-                text = resp.text
-                match = re.search(r'\{.*\}', text, re.DOTALL)
-                pts = json.loads(match.group()) if match else {}
-                
-                if not pts.get("is_room", True):
-                    print("DEBUG: [AI Service] Image rejected: Not a room interior.")
-                    raise ValueError("Ushbu rasm xona interyeriga o'xshamaydi. Iltimos, xonaning real rasmini yuklang.")
+                client = AIService.get_gemini_client()
+                cleaned_room = remove_door_from_room_with_ai(room_bgr, detected_box, client)
+                print(f"DEBUG: [AI Service] Old door removed with AI for product {product.id}")
+            except Exception as removal_error:
+                print(f"WARNING: [AI Service] AI door removal failed, using OpenCV inpaint: {removal_error}")
+                cleaned_room = remove_door_from_room_locally(room_bgr, detected_box)
 
-                t_y, t_x = pts.get("top_center", [200, 500])
-                b_y, b_x = pts.get("bottom_center", [850, 500])
-                
-                # --- v7 Scientific Validation Layer ---
-                raw_h = b_y - t_y
-                raw_w = raw_h * door_ar
-                
-                # Rule 1: Height must be realistic (not full floor-to-ceiling)
-                if raw_h > 850 or raw_h < 200:
-                    print(f"DEBUG: [AI Service v7] Unrealistic height ({raw_h}), normalizing to 70% standard.")
-                    # Keep the midpoint, but standardize height
-                    mid_y = (t_y + b_y) / 2
-                    t_y = mid_y - 350
-                    b_y = mid_y + 350
-                    raw_h = 700
-                
-                # Rule 2: Width/Height ratio must look like a door
-                if (raw_w / raw_h) > 0.6:
-                    print(f"DEBUG: [AI Service v7] Unrealistic width ratio ({raw_w/raw_h:.2f}), forcing AR.")
-                    raw_w = raw_h * door_ar
+            final_room = overlay_door_into_room(cleaned_room, door_rgba, detected_box, add_shadow=True)
 
-                # Rule 3: The Deep Anchor & Width Calibration (v13 Master Hybrid)
-                # Sink the door 15 pixels deeper into the floor to guarantee zero floating.
-                # Enforce a minimum width of 0.43x height to hide old frame ghosting.
-                box_h = raw_h + 15
-                box_w = max(raw_h * door_ar * 1.05, raw_h * 0.43)
-                
-                avg_x = (t_x + b_x) / 2
-                
-                new_box = [
-                    t_y,                                # top: anchored to the opening top
-                    max(0, avg_x - box_w/2),            # xmin
-                    min(1000, b_y + 15),                # bottom: deep-anchored into the floor
-                    min(1000, avg_x + box_w/2)          # xmax
-                ]
-                box = new_box
-                print(f"DEBUG: [AI Service v7] Scientific-Validated Box: {box}")
+            if not cv2.imwrite(result_image_path, final_room):
+                raise ValueError("Failed to save final room visualization")
 
-            except Exception as e:
-                print(f"DEBUG: [AI Service v7] Scientific Validation failed, using default: {e}")
-                box = [210, 410, 840, 590]
-
-            # Execute real AI visualization
-            visualize_door_in_room(
-                product=product,
-                room_image_path=room_image_path,
-                result_image_path=result_image_path,
-                box_1000=box
-            )
-            
-            print(f"DEBUG: [AI Service] AI Inpainting SUCCESS for {product.name}")
+            print(f"DEBUG: [AI Service] Deterministic room preview ready: {result_image_path}")
             return result_image_path
 
-        except Exception as e:
-            print(f"ERROR: [AI Service] AI Inpainting failed: {e}")
-            
-            # 3. Final Fallback: Simple PIL Overlay if AI inpainting fails
-            try:
-                print("DEBUG: [AI Service] Falling back to Variant A (PIL Overlay)...")
-                room_img = Image.open(room_image_path).convert("RGBA")
-                rw, rh = room_img.size
-                
-                door_path = product.image.path
-                if product.image_no_bg and product.image_no_bg.name:
-                    if os.path.exists(product.image_no_bg.path):
-                        door_path = product.image_no_bg.path
-                
-                door_img = Image.open(door_path).convert("RGBA")
-                ymin, xmin, ymax, xmax = box
-                left, top = int(xmin * rw / 1000), int(ymin * rh / 1000)
-                right, bottom = int(xmax * rw / 1000), int(ymax * rh / 1000)
-                
-                door_resized = door_img.resize((max(1, right-left), max(1, bottom-top)), Image.Resampling.LANCZOS)
-                room_img.paste(door_resized, (left, top), door_resized)
-                
-                final_res = room_img.convert("RGB")
-                final_res.save(result_image_path, "JPEG", quality=95)
-                return result_image_path
-            except Exception as fallback_err:
-                print(f"ERROR: [AI Service] Final fallback also failed: {fallback_err}")
-                return None
+        except Exception as error:
+            print(f"ERROR: [AI Service] Room preview generation failed: {error}")
+            raise
 
 
 class WishlistService:

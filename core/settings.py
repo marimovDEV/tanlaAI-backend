@@ -225,6 +225,7 @@ TELEGRAM_BOT_TOKEN = env('TELEGRAM_BOT_TOKEN')
 # AI Settings
 GEMINI_API_KEY = env('GEMINI_API_KEY', default='')
 OPENAI_API_KEY = env('OPENAI_API_KEY', default='')
+YOLO_DOOR_MODEL_PATH = env('YOLO_DOOR_MODEL_PATH', default='')
 AI_AUTO_PROCESS_CATEGORIES = ["Eshiklar", "eshiklar", "Eshik", "eshik", "Doors", "doors"]
 GOOGLE_APPLICATION_CREDENTIALS = os.path.join(BASE_DIR, env('GOOGLE_APPLICATION_CREDENTIALS', default='google-cloud-key.json'))
 VERTEX_AI_PROJECT = env('VERTEX_AI_PROJECT', default='project-b79a8b66-7b7a-4251-b56')

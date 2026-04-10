@@ -220,46 +220,35 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         dirty_composite = room_img.copy()
         dirty_composite.paste(door_resized, (final_left, final_top), door_resized)
         
-        # --- v9 Pure-Python High Precision Overlay (Imagen 3 Commented Out) ---
-        from PIL import ImageFilter
+        # 3. Prepare ROI for AI Harmonization
+        side = int(max(resized_w, resized_h) * 1.5)
+        side = min(side, rw, rh)
         
-        # 3.1 Smart Alpha Trimming (Get actual wood dimensions)
-        actual_bbox = door_resized.getbbox()
-        if actual_bbox:
-            # We don't necessarily want to crop the resized door IF our coordinates 
-            # already account for a full-frame door. But usually, trimming helps accuracy.
-            pass
-
-        # 3.2 Create Edge Blending Mask
-        # We use a blurred mask to blend the door edges smoothly into the room
-        mask = Image.new("L", (resized_w, resized_h), 0)
-        draw_mask = ImageDraw.Draw(mask)
-        # Inner rectangle for the mask (slightly smaller than door to avoid hard edges)
-        border = 2
-        draw_mask.rectangle([border, border, resized_w - border, resized_h - border], fill=255)
-        mask = mask.filter(ImageFilter.GaussianBlur(radius=1.5))
+        roi_left = max(0, center_x - side // 2)
+        roi_top = max(0, final_top + resized_h//2 - side // 2)
         
-        # 3.3 Create Synthetic Drop Shadow
-        # We create a dark, blurred version of the door alpha to act as a shadow
-        shadow_img = Image.new("RGBA", (resized_w + 40, resized_h + 40), (0, 0, 0, 0))
-        shadow_color = (0, 0, 0, 90) # Dark translucent
-        shadow_mask = door_resized.split()[3] # Take alpha from door
-        shadow_part = Image.new("RGBA", (resized_w, resized_h), shadow_color)
-        shadow_part.putalpha(shadow_mask)
-        shadow_part = shadow_part.filter(ImageFilter.GaussianBlur(radius=10)) # Soft shadow
+        # Ensure ROI stays in bounds
+        if roi_left + side > rw: roi_left = rw - side
+        if roi_top + side > rh: roi_top = rh - side
+        roi_left = max(0, roi_left)
+        roi_top = max(0, roi_top)
         
-        # 3.4 Compositing
-        full_result = room_img.copy()
+        roi_box = (roi_left, roi_top, roi_left + side, roi_top + side)
+        roi_img = dirty_composite.crop(roi_box)
+        roi_w, roi_h = roi_img.size
         
-        # Paste Shadow (slightly offset)
-        # Offset shadow slightly to the right and down for depth
-        full_result.paste(shadow_part, (final_left + 5, final_top + 5), shadow_part)
+        # Create mask for AI (edges of the door + generous padding for shadows)
+        local_mask = Image.new("L", (roi_w, roi_h), 0)
+        draw = ImageDraw.Draw(local_mask)
+        # Mask covers the door plus a 30% margin for soft shadows and edge blending
+        m_pad = int(resized_w * 0.30)
+        m_left = (final_left - roi_left) - m_pad
+        m_top = (final_top - roi_top) - m_pad
+        m_right = (final_left + resized_w - roi_left) + m_pad
+        m_bottom = (final_top + resized_h - roi_top) + m_pad
+        draw.rectangle([m_left, m_top, m_right, m_bottom], fill=255)
         
-        # Paste Door with feathering mask
-        full_result.paste(door_resized, (final_left, final_top), mask)
-        
-        # --- IMAGEN 3 HARMONIZATION (COMMENTED OUT FOR MANUAL TEST) ---
-        """
+        # 4. AI Harmonization Call
         roi_buf = io.BytesIO()
         roi_img.save(roi_buf, format='JPEG')
         mask_buf = io.BytesIO()
@@ -272,27 +261,38 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             mask=types.Image(image_bytes=mask_buf.getvalue())
         )
         
-        print(f"DEBUG: [Hybrid v5] Harmonizing door {product.id} at ROI {roi_w}x{roi_h}...")
+        print(f"DEBUG: [Hybrid v6] Finishing door {product.id} with Perfect Prompt...")
         response = client.models.edit_image(
             model='imagen-3.0-capability-001',
             prompt=(
-                "Harmonize this wood door into the room naturally. Add realistic shadows and ambient occlusion. "
-                "Blend the door edges with the wall opening perfectly. Maintain the room's global lighting."
+                "Insert the door from image 1 into the specified room area in image 0 naturally. "
+                "The door MUST be embedded into the wall opening, not floating or pasted in front. "
+                "Align with wall and floor correctly. Match perspective with the room perfectly. "
+                "Add soft natural ambient occlusion shadows under the door and on its sides. "
+                "The door should look like it originally belongs to this wall. Maintain 100% room visibility."
             ),
             reference_images=[
                 types.RawReferenceImage(reference_image=types.Image(image_bytes=roi_buf.getvalue()), reference_id=0)
             ],
             config=config
         )
-        ...
-        """
         
+        if not response.generated_images:
+            # Fallback
+            dirty_composite.save(result_image_path, format='JPEG', quality=95)
+            return result_image_path
+            
+        # 5. Stitch back
+        generated_roi_img = Image.open(io.BytesIO(response.generated_images[0].image.image_bytes)).resize((roi_w, roi_h))
+        full_result = room_img.copy()
+        full_result.paste(generated_roi_img, (roi_left, roi_top))
         full_result.save(result_image_path, format='JPEG', quality=95)
-        print(f"DEBUG: [Manual v9] Success! Applied Blending and Drop Shadow. Resolution: {rw}x{rh}")
+        
+        print(f"DEBUG: [Hybrid v5] Final Success Resolution: {rw}x{rh}")
         return result_image_path
 
     except Exception as e:
-        print(f"DEBUG: [Manual v9] Error: {e}")
+        print(f"DEBUG: [Hybrid v5] Error: {e}")
         import traceback
         traceback.print_exc()
         raise e

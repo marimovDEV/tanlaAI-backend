@@ -133,7 +133,16 @@ class AIService:
                 import json
                 import re
 
-                prompt = "Detect the main single door in this image and return only a JSON: {\"box_2d\": [ymin, xmin, ymax, xmax]} using 0-1000 scale."
+                prompt = """
+                Detect the main single door in this image and return only a JSON: {"box_2d": [ymin, xmin, ymax, xmax]} using 0-1000 scale.
+                
+                IMPORTANT RULES:
+                - The door is ONE single rectangular object.
+                - Preserve its full rectangular silhouette.
+                - Include the ENTIRE frame, all glass panels, internal decorations, and handles.
+                - Do NOT exclude inner parts even if they are transparent or look like background.
+                - The bounding box must capture the absolute outermost edges of the door frame.
+                """
                 response = client.models.generate_content(
                     model='gemini-1.5-flash',
                     contents=[prompt, types.Part.from_bytes(data=input_image_bytes, mime_type='image/jpeg')]

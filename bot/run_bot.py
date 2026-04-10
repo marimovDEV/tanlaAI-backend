@@ -26,7 +26,7 @@ class IPv4Session(AiohttpSession):
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
                 connector=aiohttp.TCPConnector(family=socket.AF_INET, enable_cleanup_closed=True),
-                json_serialize=self.json_serialization.dumps,
+                json_serialize=self.json_dumps,
             )
         return self._session
 

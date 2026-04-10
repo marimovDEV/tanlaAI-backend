@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 import socket
+import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
 from aiogram.types import WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
@@ -35,16 +36,19 @@ async def command_start_handler(message: types.Message) -> None:
     )
 
 async def main() -> None:
-    # Force IPv4 to avoid Timeout errors on some VPS
-    session = AiohttpSession()
-    # Adding extra safety with higher timeout
+    # STRONGLY Force IPv4 using TCPConnector
+    connector = aiohttp.TCPConnector(family=socket.AF_INET)
+    session = AiohttpSession(connector=connector)
+    
     bot = Bot(token=TOKEN, session=session)
     
-    # Check bot status before starting
-    bot_user = await bot.get_me()
-    print(f"DEBUG: [Bot Service] Started as @{bot_user.username}")
-    
-    await dp.start_polling(bot)
+    try:
+        # Check bot status
+        bot_user = await bot.get_me()
+        print(f"DEBUG: [Bot Service] Started as @{bot_user.username}")
+        await dp.start_polling(bot)
+    finally:
+        await session.close()
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)

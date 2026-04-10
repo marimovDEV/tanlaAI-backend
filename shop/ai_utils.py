@@ -383,12 +383,33 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         final_top = bottom - resized_h
         LOG(4, f"Joylashtirish: final_left={final_left}, final_top={final_top}")
         
-        # ====== STEP 5: Dirty Composite ======
-        LOG(5, "Dirty composite yaratilmoqda...")
+        # ====== STEP 5: Edge Blur, Shadow va Dirty Composite ======
+        LOG(5, "Dirty composite yaratilmoqda (blur + shadow)...")
+        from PIL import ImageFilter
         dirty_composite = room_img.copy()
+        
         if door_resized.mode == 'RGBA':
+            # Edge Feathering (Yumshatish)
+            alpha = door_resized.split()[3]
+            alpha = alpha.filter(ImageFilter.GaussianBlur(2))
+            door_resized.putalpha(alpha)
+            
+            # Shadow yaratish (Faqat Alpha'dan ko'chiramiz, rectangle bo'lib ketmasligi uchun)
+            shadow_alpha = door_resized.split()[3]
+            shadow_alpha = shadow_alpha.point(lambda p: int(p * 0.65)) # Opacity tushirish
+            shadow_alpha = shadow_alpha.filter(ImageFilter.GaussianBlur(15)) # Blur
+            
+            shadow_color = Image.new("RGBA", door_resized.size, (0, 0, 0, 0))
+            shadow_color.putalpha(shadow_alpha)
+            
+            # Floor contact shadow offset
+            shadow_x, shadow_y = final_left + 8, final_top + 12
+            
+            # Avval shadow paste qilinadi
+            dirty_composite.paste(shadow_color, (shadow_x, shadow_y), shadow_color)
+            # So'ng eshik o'zi
             dirty_composite.paste(door_resized, (final_left, final_top), door_resized)
-            LOG(5, "Alpha-matte paste amalga oshdi")
+            LOG(5, "Alpha-matte: shadow + feathering paste amalga oshdi")
         else:
             dirty_composite.paste(door_resized, (final_left, final_top))
             LOG(5, "Oddiy paste amalga oshdi (alpha yo'q)")
@@ -454,19 +475,15 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             response = client.models.edit_image(
                 model='imagen-3.0-capability-001',
                 prompt=(
-                    "You are an image editing model.\n"
-                    "A door is already placed correctly in the scene.\n"
-                    "STRICT RULES:\n"
-                    "- DO NOT remove the door\n"
-                    "- DO NOT change door shape\n"
-                    "- DO NOT resize door\n"
-                    "- DO NOT replace door\n"
-                    "Your task:\n"
-                    "- match lighting\n"
-                    "- add realistic shadows\n"
-                    "- blend edges smoothly\n"
-                    "The door is a rectangular vertical object.\n"
-                    "Keep it intact."
+                    "A door is already placed in the room.\n"
+                    "IMPORTANT:\n"
+                    "- Do not remove or change the door\n"
+                    "- Do not change size or position\n\n"
+                    "Make the door look realistic:\n"
+                    "- add contact shadow on the floor\n"
+                    "- match lighting with the room\n"
+                    "- slightly blend edges into the wall\n"
+                    "- ensure the door fits naturally into the wall opening"
                 ),
                 reference_images=[
                     types.RawReferenceImage(

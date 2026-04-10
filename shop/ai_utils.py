@@ -249,6 +249,19 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                 LOG(3, f"  {attr_name}: ochishda XATO: {e}")
                 continue
         
+        if asset_source != 'image_no_bg' and door_img:
+            LOG(3, f"'{asset_source}' fon bilan keldi! rembg orqali fonni avtomatik o'chirmoqdamiz...")
+            try:
+                from rembg import remove
+                b = io.BytesIO()
+                door_img.save(b, format='PNG')
+                out_b = remove(b.getvalue())
+                door_img = Image.open(io.BytesIO(out_b)).convert("RGBA")
+                asset_source = 'rembg'
+                LOG(3, "rembg fonni MUVAFFAQIYATLI o'chirdi!")
+            except Exception as e:
+                LOG(3, f"rembg XATOLIGI (o'tkazib yuborilmoqda): {e}")
+
         if not door_img:
             LOG(3, "XATO: HECH QANDAY ASSET TOPILMADI!")
             raise ValueError("NO IMAGE ASSET FOUND for product #" + str(product.id))
@@ -259,8 +272,31 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         # ====== STEP 4: Joylashtirish matematikasi ======
         LOG(4, "Placement hisob-kitob boshlandi...")
         if not box_1000:
-            box_1000 = [200, 400, 850, 600]
-            LOG(4, f"Default box ishlatilmoqda: {box_1000}")
+            LOG(4, "box_1000 mavjud emas. Gemini orqali eshik o'rni izlanmoqda...")
+            try:
+                r_bytes = io.BytesIO()
+                room_img.save(r_bytes, format='JPEG', quality=85)
+                
+                resp = client.models.generate_content(
+                    model='gemini-1.5-flash',
+                    contents=[
+                        "Find the vertical rectangular area (opening or wall) suitable for placing a door.\n"
+                        "Return ONLY valid JSON with no markdown inside exactly like this: {\"box_2d\": [ymin, xmin, ymax, xmax]}.\n"
+                        "Coordinates must be integers from 0 to 1000.",
+                        types.Part.from_bytes(data=r_bytes.getvalue(), mime_type='image/jpeg')
+                    ],
+                    config=types.GenerateContentConfig(response_mime_type="application/json")
+                )
+                import json
+                box_data = json.loads(resp.text)
+                box_1000 = box_data.get('box_2d')
+                if not box_1000 or len(box_1000) != 4:
+                    raise ValueError(f"Noto'g'ri box formati: {box_data}")
+                LOG(4, f"Gemini box topdi: {box_1000}")
+            except Exception as e:
+                LOG(4, f"Gemini detection XATOLIGI: {e}")
+                box_1000 = [200, 400, 850, 600]
+                LOG(4, f"Fallback Default box ishlatilmoqda: {box_1000}")
             
         ymin, xmin, ymax, xmax = box_1000
         left = int(xmin * rw / 1000)
@@ -355,9 +391,19 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             response = client.models.edit_image(
                 model='imagen-3.0-capability-001',
                 prompt=(
-                    "Blend the inserted door into the wall naturally. "
-                    "Do not move, resize, or modify the door shape or texture. "
-                    "Only add realistic shadows, fix seams, and harmonize lighting."
+                    "You are an image editing model.\n"
+                    "A door is already placed correctly in the scene.\n"
+                    "STRICT RULES:\n"
+                    "- DO NOT remove the door\n"
+                    "- DO NOT change door shape\n"
+                    "- DO NOT resize door\n"
+                    "- DO NOT replace door\n"
+                    "Your task:\n"
+                    "- match lighting\n"
+                    "- add realistic shadows\n"
+                    "- blend edges smoothly\n"
+                    "The door is a rectangular vertical object.\n"
+                    "Keep it intact."
                 ),
                 reference_images=[
                     types.RawReferenceImage(

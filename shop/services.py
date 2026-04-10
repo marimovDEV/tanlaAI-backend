@@ -103,13 +103,12 @@ class AIService:
             product.save(update_fields=['ai_status'])
 
     @staticmethod
-    def generate_visualization(product, room_image_path, user_height=None, user_width=None):
+    def generate_room_preview(product, room_image_path, result_image_path):
         """
         Uses Gemini 1.5 Flash to detect door frame coordinates and overlays 
         the product image locally. This bypasses Imagen 3 limitations.
         """
         from google.genai import types
-        result_image_path = room_image_path.replace("ai_temp", "ai_results")
         
         try:
             client = AIService.get_gemini_client()

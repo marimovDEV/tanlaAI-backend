@@ -238,13 +238,15 @@ class AIService:
                     raise ValueError("OpenAI Key missing")
 
                 base64_image = base64.b64encode(input_image_bytes).decode('utf-8')
-                prompt = (
-                    "Identify the main door product and trace ONLY its OUTERMOST visible silhouette. "
-                    "Include the entire door body, frame, panels, glass inserts, and decorations as one solid object. "
-                    "Do not cut holes for white ornaments, glass, or inner details. "
-                    "Return only JSON in this format: {\"polygon\": [[x, y], ...]}. "
-                    "Coordinates must be scaled from 0 to 1000."
-                )
+                prompt = """
+                Trace the absolute outer boundary of the ENTIRE DOOR object. 
+                The door is a single rectangular structure that includes:
+                - The entire wooden frame and all wooden panels.
+                - All glass inserts and internal decorations.
+                - The door handle and hinges.
+                Do NOT exclude any wooden parts. Trace the outermost edges of the frame to capture the full door.
+                Return JSON: {"polygon": [[x, y], ...]} scale 0-1000. Use 40-50 points for maximum precision.
+                """
                 
                 headers = {"Content-Type": "application/json", "Authorization": f"Bearer {openai_key}"}
                 payload = {

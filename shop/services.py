@@ -82,148 +82,88 @@ class AIService:
                 product.original_image.save(name, ContentFile(original_content), save=False)
                 product.save(update_fields=['original_image'])
 
-            # 2. SAM (Segment Anything Model) Pipeline
-            from PIL import Image, ImageEnhance
-            import io
-            import cv2
-            import numpy as np
-            import torch
-            from segment_anything import sam_model_registry, SamPredictor
-            import requests
-
-            # Model configuration
-            SAM_CHECKPOINT = os.path.join(settings.BASE_DIR, "models", "sam_vit_b_01ec64.pth")
-            SAM_MODEL_URL = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
-            MODEL_TYPE = "vit_b"
-
-            # Ensure model exists
-            if not os.path.exists(SAM_CHECKPOINT):
-                print(f"DEBUG: [AI Service] Downloading SAM model (370MB)... This may take a few minutes.")
-                os.makedirs(os.path.dirname(SAM_CHECKPOINT), exist_ok=True)
-                response = requests.get(SAM_MODEL_URL, stream=True)
-                with open(SAM_CHECKPOINT, "wb") as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk: f.write(chunk)
-                print("DEBUG: [AI Service] SAM model downloaded successfully.")
-
-            # Load SAM
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            print(f"DEBUG: [AI Service] Initializing SAM on {device}...")
-            sam = sam_model_registry[MODEL_TYPE](checkpoint=SAM_CHECKPOINT)
-            sam.to(device=device)
-            predictor = SamPredictor(sam)            # Prepare image
+            # Prepare image
             product.original_image.seek(0)
             input_image_bytes = product.original_image.read()
             img_pil = Image.open(io.BytesIO(input_image_bytes)).convert("RGB")
             
-            # Contrast & Sharpness help SAM "see" better
-            img_pil = ImageEnhance.Contrast(img_pil).enhance(1.2)
-            img_pil = ImageEnhance.Sharpness(img_pil).enhance(2.0)
-            
             img_np = np.array(img_pil)
             h, w = img_np.shape[:2]
-            predictor.set_image(img_np)
 
-            # --- HYBRID DETECTION: Use OpenAI (GPT-4o) or Gemini to find the box ---
-            input_box = None
+            # --- GPT-ONLY DETECTION: Use OpenAI (GPT-4o) to Trace the Polygon ---
+            polygon_points = None
             try:
-                # 1. Try OpenAI GPT-4o first (Most precise spatial reasoning)
                 openai_key = getattr(settings, 'OPENAI_API_KEY', None)
-                if openai_key:
-                    print(f"DEBUG: [AI Service] Asking OpenAI (GPT-4o) to detect the door for Product {product.id}...")
-                    import base64
-                    from openai import OpenAI
-                    oa_client = OpenAI(api_key=openai_key)
-                    
-                    base64_image = base64.b64encode(input_image_bytes).decode('utf-8')
-                    
-                    prompt = """
-                    Detect the main single door in this image and return only a JSON: {"box_2d": [ymin, xmin, ymax, xmax]} using 0-1000 scale.
-                    
-                    RULES:
-                    - The door is ONE single rectangular object. Include frame, all glass, and patterns.
-                    - Do NOT exclude inner parts or cut corners.
-                    - Bounding box must cover the absolute outermost edges of the door frame.
-                    """
-                    
-                    response = oa_client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=[
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": prompt},
-                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
-                                ],
-                            }
-                        ],
-                        response_format={"type": "json_object"}
-                    )
-                    
-                    import json
-                    data = json.loads(response.choices[0].message.content)
-                    box_1000 = data.get('box_2d')
-                    if box_1000 and len(box_1000) == 4:
-                        ymin, xmin, ymax, xmax = box_1000
-                        input_box = np.array([xmin * w / 1000, ymin * h / 1000, xmax * w / 1000, ymax * h / 1000])
-                        print(f"DEBUG: [AI Service] OpenAI detected door at: {input_box}")
+                if not openai_key:
+                    raise ValueError("OPENAI_API_KEY is missing. Required for ONLY-GPT mode.")
 
-                # 2. Fallback to Gemini if OpenAI failed or no key
-                if input_box is None:
-                    print(f"DEBUG: [AI Service] Falling back to Gemini for detection...")
-                    client = AIService.get_gemini_client()
-                    from google.genai import types
-                    import json
-                    import re
-
-                    prompt = "Detect the main single door in this image and return JSON: {\"box_2d\": [ymin, xmin, ymax, xmax]} (0-1000 scale)."
-                    response = client.models.generate_content(
-                        model='gemini-1.5-flash',
-                        contents=[prompt, types.Part.from_bytes(data=input_image_bytes, mime_type='image/jpeg')]
-                    )
-
-                    if response and response.text:
-                        match = re.search(r'\{.*\}', response.text, re.DOTALL)
-                        if match:
-                            data = json.loads(match.group(0))
-                            box_1000 = data.get('box_2d')
-                            if box_1000 and len(box_1000) == 4:
-                                ymin, xmin, ymax, xmax = box_1000
-                                input_box = np.array([xmin * w / 1000, ymin * h / 1000, xmax * w / 1000, ymax * h / 1000])
-                                print(f"DEBUG: [AI Service] Gemini detected door at: {input_box}")
-            except Exception as detection_err:
-                print(f"DEBUG: [AI Service] AI detection failed, falling back to center point: {detection_err}")
-
-            # --- SEGMENTATION: Use the box prompt (or fallback point) ---
-            print(f"DEBUG: [AI Service] Executing SAM segmentation for Product {product.id}...")
-            if input_box is not None:
-                # Use detected box
-                masks, scores, logits = predictor.predict(
-                    box=input_box,
-                    multimask_output=True,
+                print(f"DEBUG: [AI Service] Asking GPT-4o to trace the door polygon for Product {product.id}...")
+                import base64
+                import json
+                from openai import OpenAI
+                oa_client = OpenAI(api_key=openai_key)
+                
+                base64_image = base64.b64encode(input_image_bytes).decode('utf-8')
+                
+                # We ask for a detailed polygon (20-40 points) to get smooth edges
+                prompt = """
+                Identify the main door in this image. 
+                Trace its entire outer boundary (including the frame) with a detailed polygon.
+                Return exactly a JSON object: {"polygon": [[x1, y1], [x2, y2], ...]} 
+                Use a 0-1000 scale for x and y coordinates.
+                Return at least 20-30 points to ensure smooth coverage of the rectangular shape.
+                """
+                
+                response = oa_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
+                            ],
+                        }
+                    ],
+                    response_format={"type": "json_object"}
                 )
-            else:
-                # Fallback: Target the center of the image
-                input_point = np.array([[w // 2, h // 2]])
-                input_label = np.array([1]) # 1 = foreground
-                masks, scores, logits = predictor.predict(
-                    point_coords=input_point,
-                    point_labels=input_label,
-                    multimask_output=True,
-                )
+                
+                data = json.loads(response.choices[0].message.content)
+                polygon_1000 = data.get('polygon')
+                if polygon_1000 and len(polygon_1000) >= 3:
+                    # Convert 0-1000 scale to pixel scale
+                    polygon_points = []
+                    for pt in polygon_1000:
+                        px_x = int(pt[0] * w / 1000)
+                        px_y = int(pt[1] * h / 1000)
+                        polygon_points.append([px_x, px_y])
+                    
+                    print(f"DEBUG: [AI Service] GPT-4o successfully traced door with {len(polygon_points)} points.")
+            
+            except Exception as gpt_err:
+                print(f"ERROR: [AI Service] GPT-Only pipeline failed: {gpt_err}")
+                raise gpt_err
 
-            # Select the mask with the highest score
-            mask = masks[np.argmax(scores)].astype(np.uint8)
+            # --- MASK CREATION: Use OpenCV to draw the polygon and cut the image ---
+            if not polygon_points:
+                raise ValueError("No polygon points returned from GPT-4o.")
 
-            # DILATE: Expand slightly to ensure frame edges are in
-            kernel = np.ones((7, 7), np.uint8) # Slightly larger kernel for security
-            dilated_mask = cv2.dilate(mask, kernel, iterations=1)
+            import cv2
+            # Create an empty black alpha mask
+            mask = np.zeros((h, w), dtype=np.uint8)
+            
+            # Fill the polygon with white (255)
+            pts = np.array(polygon_points, np.int32)
+            pts = pts.reshape((-1, 1, 2))
+            cv2.fillPoly(mask, [pts], (255))
+
+            # Optional: Smooth the edges slightly
+            mask = cv2.GaussianBlur(mask, (3, 3), 0)
 
             # Create final RGBA result
             img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
             b, g, r = cv2.split(img_bgr)
-            alpha = (dilated_mask * 255).astype(np.uint8)
-            rgba = cv2.merge((b, g, r, alpha))
+            rgba = cv2.merge((b, g, r, mask))
 
             # Encode and Save
             _, final_encoded = cv2.imencode('.png', rgba)
@@ -235,7 +175,7 @@ class AIService:
             
             product.ai_status = 'completed'
             product.save()
-            print(f"DEBUG: [AI Service] SAM Professional Hybrid Pipeline COMPLETED for Product {product.id}")
+            print(f"DEBUG: [AI Service] GPT-Only (Polygon) Pipeline COMPLETED for Product {product.id}")
 
         except Exception as e:
             print(f"ERROR: [AI Service] Background removal failed: {e}")

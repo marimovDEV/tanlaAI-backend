@@ -873,12 +873,44 @@ class AIService:
             # Prepare image
             product.original_image.seek(0)
             input_image_bytes = product.original_image.read()
+            import cv2
+            import numpy as np
+            from PIL import Image
+
+            # 2. Hybrid OpenCV Segmentation (Area-based contour extraction for white/gray backgrounds)
+            img_pil = Image.open(io.BytesIO(input_image_bytes)).convert("RGBA")
+            img_np = np.array(img_pil)
             
-            # Best model for salient object detection (perfect for doors, retains wood correctly)
-            from rembg import remove, new_session
-            session = new_session("isnet-general-use")
+            bgr = cv2.cvtColor(img_np[:, :, :3], cv2.COLOR_RGB2BGR)
+            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
             
-            output_image_bytes = remove(input_image_bytes, session=session)
+            # Invert threshold: Door becomes white, 240-255 white background becomes black
+            _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
+            
+            # Clean up noise
+            kernel = np.ones((5, 5), np.uint8)
+            thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+            
+            # Find external contours
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if contours:
+                largest = max(contours, key=cv2.contourArea)
+                # Fill the entire contour ignoring interior holes (prevents fragmented glass/wood)
+                mask = np.zeros(gray.shape, dtype=np.uint8)
+                cv2.drawContours(mask, [largest], -1, 255, -1)
+                
+                # Apply mask to alpha channel
+                img_np[..., 3] = cv2.bitwise_and(img_np[..., 3], mask)
+                _, buffer = cv2.imencode('.png', cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGRA))
+                output_image_bytes = buffer.tobytes()
+                print(f"DEBUG: [AI Service] OpenCV Hybrid Masking successful for {product.id}")
+            else:
+                # Fallback to rembg if OpenCV logic fails totally
+                print(f"DEBUG: [AI Service] OpenCV failed, falling back to rembg isnet-general-use for {product.id}")
+                from rembg import remove, new_session
+                session = new_session("isnet-general-use")
+                output_image_bytes = remove(input_image_bytes, session=session)
             
             # Save the new transparent file
             product.image.save(f"isolated_{product.id}.png", ContentFile(output_image_bytes), save=False)

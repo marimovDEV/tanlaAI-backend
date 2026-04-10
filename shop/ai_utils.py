@@ -257,16 +257,36 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         if asset_source != 'image_no_bg' and door_img:
             LOG(3, f"'{asset_source}' fon bilan keldi! rembg orqali fonni avtomatik o'chirmoqdamiz...")
             try:
-                from rembg import remove, new_session
-                session = new_session("isnet-general-use")
-                b = io.BytesIO()
-                door_img.save(b, format='PNG')
-                out_b = remove(b.getvalue(), session=session)
-                door_img = Image.open(io.BytesIO(out_b)).convert("RGBA")
-                asset_source = 'rembg'
-                LOG(3, "rembg fonni MUVAFFAQIYATLI o'chirdi!")
+                import cv2
+                import numpy as np
+                
+                img_np = np.array(door_img)
+                bgr = cv2.cvtColor(img_np[:, :, :3], cv2.COLOR_RGB2BGR)
+                gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+                _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
+                kernel = np.ones((5, 5), np.uint8)
+                thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+                contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                if contours:
+                    largest = max(contours, key=cv2.contourArea)
+                    mask = np.zeros(gray.shape, dtype=np.uint8)
+                    cv2.drawContours(mask, [largest], -1, 255, -1)
+                    img_np[..., 3] = cv2.bitwise_and(img_np[..., 3], mask)
+                    door_img = Image.fromarray(img_np)
+                    asset_source = 'opencv_contour_hybrid'
+                    LOG(3, "OpenCV Hybrid (Area-based) fonni MUVAFFAQIYATLI o'chirdi!")
+                else:
+                    from rembg import remove, new_session
+                    session = new_session("isnet-general-use")
+                    b = io.BytesIO()
+                    door_img.save(b, format='PNG')
+                    out_b = remove(b.getvalue(), session=session)
+                    door_img = Image.open(io.BytesIO(out_b)).convert("RGBA")
+                    asset_source = 'rembg'
+                    LOG(3, "OpenCV contour topolmadi, rembg isnet-general-use o'chirdi!")
             except Exception as e:
-                LOG(3, f"rembg XATOLIGI (o'tkazib yuborilmoqda): {e}")
+                LOG(3, f"Fonni o'chirishda XATOLIK (o'tkazib yuborilmoqda): {e}")
 
         if not door_img:
             LOG(3, "XATO: HECH QANDAY ASSET TOPILMADI!")

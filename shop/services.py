@@ -353,24 +353,161 @@ def default_door_box(image_width, image_height, expected_aspect_ratio):
     return sanitize_pixel_box((left, top, left + box_width, top + box_height), image_width, image_height)
 
 
+def normalize_door_opening_box(pixel_box, image_width, image_height, expected_aspect_ratio):
+    left, top, right, bottom = sanitize_pixel_box(pixel_box, image_width, image_height)
+    width = right - left
+    height = bottom - top
+
+    target_aspect_ratio = min(0.85, max(0.24, expected_aspect_ratio * 1.18))
+    min_height = int(round(image_height * 0.48))
+    desired_height = max(height, min_height)
+    desired_width = max(width, int(round(desired_height * target_aspect_ratio)))
+    desired_width = min(desired_width, int(round(image_width * 0.72)))
+
+    center_x = (left + right) / 2.0
+    bottom = min(image_height, bottom + max(2, int(round(desired_height * 0.03))))
+    top = max(0, int(round(bottom - desired_height)))
+    left = int(round(center_x - (desired_width / 2.0)))
+    right = int(round(center_x + (desired_width / 2.0)))
+    return sanitize_pixel_box((left, top, right, bottom), image_width, image_height)
+
+
+def detect_door_frame_box_with_lines(room_bgr, expected_aspect_ratio, seed_box=None):
+    import cv2
+    import itertools
+    import math
+
+    gray = cv2.cvtColor(room_bgr, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 50, 150)
+    image_height, image_width = gray.shape[:2]
+
+    lines = cv2.HoughLinesP(
+        edges,
+        1,
+        math.pi / 180.0,
+        threshold=max(35, int(image_height * 0.08)),
+        minLineLength=max(30, int(image_height * 0.20)),
+        maxLineGap=max(12, int(image_height * 0.03)),
+    )
+    if lines is None:
+        return None
+
+    preferred_center_x = ((seed_box[0] + seed_box[2]) / 2.0) if seed_box is not None else (image_width / 2.0)
+    vertical_lines = []
+    horizontal_lines = []
+
+    for line in lines[:, 0]:
+        x1, y1, x2, y2 = [int(value) for value in line]
+        dx = abs(x2 - x1)
+        dy = abs(y2 - y1)
+
+        if dy >= max(25, dx * 3) and dy >= int(image_height * 0.18):
+            vertical_lines.append({
+                'x': (x1 + x2) / 2.0,
+                'top': min(y1, y2),
+                'bottom': max(y1, y2),
+                'length': dy,
+            })
+        elif dx >= max(25, dy * 4) and dx >= int(image_width * 0.10):
+            horizontal_lines.append({
+                'y': (y1 + y2) / 2.0,
+                'left': min(x1, x2),
+                'right': max(x1, x2),
+                'length': dx,
+            })
+
+    if len(vertical_lines) < 2:
+        return None
+
+    vertical_lines = sorted(vertical_lines, key=lambda item: item['length'], reverse=True)[:30]
+    target_aspect_ratio = min(0.85, max(0.24, expected_aspect_ratio * 1.18))
+    best_box = None
+    best_score = float('-inf')
+
+    for left_line, right_line in itertools.combinations(vertical_lines, 2):
+        if left_line['x'] > right_line['x']:
+            left_line, right_line = right_line, left_line
+
+        if not (left_line['x'] < preferred_center_x < right_line['x']):
+            continue
+
+        pair_width = right_line['x'] - left_line['x']
+        pair_top = min(left_line['top'], right_line['top'])
+        pair_bottom = max(left_line['bottom'], right_line['bottom'])
+        pair_height = pair_bottom - pair_top
+        if pair_height < image_height * 0.35 or pair_width < image_width * 0.12:
+            continue
+
+        aspect_ratio = pair_width / float(max(1, pair_height))
+        if aspect_ratio < 0.15 or aspect_ratio > 0.95:
+            continue
+
+        center_penalty = abs((((left_line['x'] + right_line['x']) / 2.0) / max(1, image_width)) - 0.5)
+        aspect_penalty = abs(aspect_ratio - target_aspect_ratio)
+        top_delta = abs(left_line['top'] - right_line['top']) / float(max(1, image_height))
+        bottom_ratio = pair_bottom / float(max(1, image_height))
+
+        horizontal_support = 0.0
+        for horizontal in horizontal_lines:
+            if abs(horizontal['y'] - pair_top) > image_height * 0.08:
+                continue
+            if horizontal['left'] > left_line['x'] + (pair_width * 0.15):
+                continue
+            if horizontal['right'] < right_line['x'] - (pair_width * 0.15):
+                continue
+            horizontal_support = max(horizontal_support, horizontal['length'] / float(max(1, pair_width)))
+
+        score = (
+            (left_line['length'] + right_line['length']) / float(max(1, image_height))
+            + (horizontal_support * 1.5)
+            + (bottom_ratio * 1.2)
+            - (center_penalty * 2.2)
+            - (aspect_penalty * 1.6)
+            - (top_delta * 1.2)
+        )
+
+        if score > best_score:
+            best_score = score
+            best_box = (
+                int(round(left_line['x'])),
+                int(round(pair_top)),
+                int(round(right_line['x'])),
+                int(round(pair_bottom)),
+            )
+
+    if best_box is None:
+        return None
+    return normalize_door_opening_box(best_box, image_width, image_height, expected_aspect_ratio)
+
+
 def detect_door_opening_box(room_bgr, expected_aspect_ratio):
     yolo_box = detect_door_box_with_yolo(room_bgr, expected_aspect_ratio)
     if yolo_box is not None:
-        return yolo_box, 'yolo'
+        image_height, image_width = room_bgr.shape[:2]
+        normalized = normalize_door_opening_box(yolo_box, image_width, image_height, expected_aspect_ratio)
+        return normalized, 'yolo'
 
     opencv_box = detect_door_box_with_opencv(room_bgr, expected_aspect_ratio)
+    frame_box = detect_door_frame_box_with_lines(room_bgr, expected_aspect_ratio, seed_box=opencv_box)
+    if frame_box is not None:
+        return frame_box, 'opencv-lines'
+
     if opencv_box is not None:
-        return opencv_box, 'opencv'
+        image_height, image_width = room_bgr.shape[:2]
+        normalized = normalize_door_opening_box(opencv_box, image_width, image_height, expected_aspect_ratio)
+        return normalized, 'opencv'
 
     image_height, image_width = room_bgr.shape[:2]
-    return default_door_box(image_width, image_height, expected_aspect_ratio), 'default'
+    default_box = default_door_box(image_width, image_height, expected_aspect_ratio)
+    normalized = normalize_door_opening_box(default_box, image_width, image_height, expected_aspect_ratio)
+    return normalized, 'default'
 
 
 def remove_door_from_room_locally(room_bgr, pixel_box):
     import cv2
 
     image_height, image_width = room_bgr.shape[:2]
-    mask = build_box_mask(image_height, image_width, pixel_box, pad_x_ratio=0.04, pad_y_ratio=0.03)
+    mask = build_box_mask(image_height, image_width, pixel_box, pad_x_ratio=0.10, pad_y_ratio=0.06)
     return cv2.inpaint(room_bgr, mask, 7, cv2.INPAINT_TELEA)
 
 
@@ -380,7 +517,7 @@ def remove_door_from_room_with_ai(room_bgr, pixel_box, client):
     from google.genai import types
 
     image_height, image_width = room_bgr.shape[:2]
-    mask = build_box_mask(image_height, image_width, pixel_box, pad_x_ratio=0.05, pad_y_ratio=0.04)
+    mask = build_box_mask(image_height, image_width, pixel_box, pad_x_ratio=0.12, pad_y_ratio=0.08)
 
     ok_room, room_buf = cv2.imencode('.png', room_bgr)
     ok_mask, mask_buf = cv2.imencode('.png', mask)

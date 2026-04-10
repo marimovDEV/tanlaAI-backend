@@ -3,7 +3,9 @@ from django.test import SimpleTestCase
 
 from shop.services import (
     build_box_mask,
+    detect_door_opening_box,
     detect_door_box_with_opencv,
+    normalize_door_opening_box,
     overlay_door_into_room,
     remove_door_from_room_locally,
 )
@@ -71,3 +73,24 @@ class RoomPreviewPipelineTests(SimpleTestCase):
 
         self.assertEqual(int(mask[50, 30]), 255)
         self.assertEqual(int(mask[5, 5]), 0)
+
+    def test_normalize_door_opening_box_widens_too_narrow_detection(self):
+        normalized = normalize_door_opening_box((120, 70, 165, 360), 320, 420, expected_aspect_ratio=0.32)
+
+        self.assertLessEqual(normalized[0], 90)
+        self.assertGreaterEqual(normalized[2], 190)
+        self.assertGreater(normalized[3] - normalized[1], 280)
+
+    def test_detect_door_opening_box_prefers_full_frame_not_inner_leaf(self):
+        room = np.full((420, 320, 3), 232, dtype=np.uint8)
+        expected_box = (96, 72, 224, 370)
+
+        room[expected_box[1]:expected_box[3], expected_box[0]:expected_box[2]] = (248, 248, 248)
+        room[expected_box[1] + 10:expected_box[3] - 10, expected_box[0] + 10:expected_box[2] - 10] = (95, 62, 28)
+        room[expected_box[1] + 12:expected_box[3] - 12, 146:182] = (25, 25, 25)
+        room[360:420, :] = (192, 192, 192)
+
+        detected_box, method = detect_door_opening_box(room, expected_aspect_ratio=0.32)
+
+        self.assertIn(method, {'opencv-lines', 'opencv', 'default'})
+        self.assertGreater(compute_iou(detected_box, expected_box), 0.55)

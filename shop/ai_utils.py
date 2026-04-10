@@ -186,74 +186,82 @@ def replace_background_with_green(image_bytes: bytes, mask_bytes: bytes) -> byte
 
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None):
     """
-    Uses Gemini/Imagen to realistically install a door into a room photo.
-    Guarantees zero distortion by using a Perfect Square ROI.
+    Hybrid Perfection Visualization (v5):
+    1. Manually overlay door onto room using PIL (Precision scaling & placement).
+    2. Use Gemini AI to harmonize the composite (Shadows, lighting, and edge blending).
     """
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps, ImageDraw
         import numpy as np
+        import io
         client = get_gemini_client()
         
-        # 1. Load Original Room
+        # 1. Load Original Room & Door
         room_img = Image.open(room_image_path).convert("RGB")
         rw, rh = room_img.size
         
-        # 2. Calculate Perfect Square ROI (1:1 Aspect Ratio)
+        door_source = product.image_no_bg if product.image_no_bg else product.image
+        door_img = Image.open(door_source.path).convert("RGBA")
+        
+        # 2. Precise Manual Overlay (Python Control)
         if not box_1000:
-            box_1000 = [200, 300, 850, 700] # Default
+            box_1000 = [200, 400, 850, 600]
             
         ymin, xmin, ymax, xmax = box_1000
         left, top = int(xmin * rw / 1000), int(ymin * rh / 1000)
         right, bottom = int(xmax * rw / 1000), int(ymax * rh / 1000)
         
-        target_w = right - left
         target_h = bottom - top
+        target_w = right - left
         
-        # Initial side length with 40% padding
-        side = int(max(target_w, target_h) * 1.4)
+        # Resize door to fit target height exactly, maintain its aspect ratio
+        dw, dh = door_img.size
+        door_ratio = dw / float(dh)
+        resized_w = int(target_h * door_ratio)
+        resized_h = target_h
         
-        # Ensure 'side' doesn't exceed the smallest dimension of the image
+        door_resized = door_img.resize((resized_w, resized_h), Image.Resampling.LANCZOS)
+        
+        # Calculate centering for the width
+        center_x = (left + right) // 2
+        final_left = center_x - (resized_w // 2)
+        final_top = top
+        
+        # Create dirty composite (Overlay)
+        dirty_composite = room_img.copy()
+        dirty_composite.paste(door_resized, (final_left, final_top), door_resized)
+        
+        # 3. Prepare ROI for AI Harmonization
+        side = int(max(resized_w, resized_h) * 1.5)
         side = min(side, rw, rh)
         
-        center_x = (left + right) // 2
-        center_y = (top + bottom) // 2
+        roi_left = max(0, center_x - side // 2)
+        roi_top = max(0, final_top + resized_h//2 - side // 2)
         
-        # Calculate bounds for a perfect square
-        roi_left = center_x - side // 2
-        roi_top = center_y - side // 2
-        
-        # Shift ROI if it goes out of bounds while PRESERVING SIDE LENGTH
-        if roi_left < 0: roi_left = 0
-        if roi_top < 0: roi_top = 0
+        # Ensure ROI stays in bounds
         if roi_left + side > rw: roi_left = rw - side
         if roi_top + side > rh: roi_top = rh - side
+        roi_left = max(0, roi_left)
+        roi_top = max(0, roi_top)
         
-        roi_right = roi_left + side
-        roi_bottom = roi_top + side
+        roi_box = (roi_left, roi_top, roi_left + side, roi_top + side)
+        roi_img = dirty_composite.crop(roi_box)
+        roi_w, roi_h = roi_img.size
         
-        roi_box = (roi_left, roi_top, roi_right, roi_bottom)
-        roi_img = room_img.crop(roi_box)
-        roi_w, roi_h = roi_img.size # This is now guaranteed to be a square side x side
-        
-        # 3. Prepare Local Mask (where the door goes within the square ROI)
-        local_left = left - roi_left
-        local_top = top - roi_top
-        local_right = right - roi_left
-        local_bottom = bottom - roi_top
-        
-        from PIL import ImageDraw
+        # Create mask for AI (edges of the door + padding for shadows)
         local_mask = Image.new("L", (roi_w, roi_h), 0)
         draw = ImageDraw.Draw(local_mask)
-        draw.rectangle([local_left, local_top, local_right, local_bottom], fill=255)
+        m_pad = int(resized_w * 0.2)
+        m_left = (final_left - roi_left) - m_pad
+        m_top = (final_top - roi_top) - m_pad
+        m_right = (final_left + resized_w - roi_left) + m_pad
+        m_bottom = (final_top + resized_h - roi_top) + m_pad
+        draw.rectangle([m_left, m_top, m_right, m_bottom], fill=255)
         
-        # 4. AI Inpaint the Square ROI
-        door_source = product.image_no_bg if product.image_no_bg else product.image
-        with open(door_source.path, "rb") as df:
-            door_bytes = df.read()
-            
+        # 4. AI Harmonization Call
+        from .ai_utils import types # Inside visualizer, we might need types
         roi_buf = io.BytesIO()
         roi_img.save(roi_buf, format='JPEG')
-        
         mask_buf = io.BytesIO()
         local_mask.save(mask_buf, format='PNG')
         
@@ -264,33 +272,38 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             mask=types.Image(image_bytes=mask_buf.getvalue())
         )
         
-        print(f"DEBUG: [Gemini/ROI-v4] Point-based installation for door {product.id}...")
+        print(f"DEBUG: [Hybrid v5] Harmonizing door {product.id} at ROI {roi_w}x{roi_h}...")
         response = client.models.edit_image(
             model='imagen-3.0-capability-001',
             prompt=(
-                "Professionally install the wood door from image 1 into the empty rectangular wall opening in image 0. "
-                "The door must perfectly fill the opening, matching the room's depth and perspective. "
-                "IMPORTANT: Do not stretch or distort the door; maintain its original proportions from image 1."
+                "Harmonize this wood door into the room naturally. Add realistic shadows and ambient occlusion. "
+                "Blend the door edges with the wall opening perfectly. Maintain the room's global lighting."
             ),
             reference_images=[
-                types.RawReferenceImage(reference_image=types.Image(image_bytes=roi_buf.getvalue()), reference_id=0),
-                types.RawReferenceImage(reference_image=types.Image(image_bytes=door_bytes), reference_id=1)
+                types.RawReferenceImage(reference_image=types.Image(image_bytes=roi_buf.getvalue()), reference_id=0)
             ],
             config=config
         )
         
         if not response.generated_images:
-            raise ValueError("Gemini failed to generate distortion-free crop.")
+            # Fallback
+            dirty_composite.save(result_image_path, format='JPEG', quality=95)
+            return result_image_path
             
-        # 5. Stitching back
-        # Since crop was 1:1 and result is 1:1, resizing has zero distortion
+        # 5. Stitch back
         generated_roi_img = Image.open(io.BytesIO(response.generated_images[0].image.image_bytes)).resize((roi_w, roi_h))
-        
         full_result = room_img.copy()
         full_result.paste(generated_roi_img, (roi_left, roi_top))
         full_result.save(result_image_path, format='JPEG', quality=95)
         
-        print(f"DEBUG: [Gemini ROI-v2] Perfect square stitch successful: {rw}x{rh}")
+        print(f"DEBUG: [Hybrid v5] Final Success Resolution: {rw}x{rh}")
+        return result_image_path
+
+    except Exception as e:
+        print(f"DEBUG: [Hybrid v5] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise e
 
     except Exception as e:
         print(f"DEBUG: [Gemini ROI-v2] Error during visualization: {e}")

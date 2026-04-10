@@ -892,7 +892,7 @@ class AIService:
             import traceback
             traceback.print_exc()
             product.ai_status = 'error'
-            product.save(update_fields=['ai_status'])])
+            product.save(update_fields=['ai_status'])
 
     @staticmethod
     def generate_room_preview(product, room_image_path, result_image_path):

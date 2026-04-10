@@ -419,43 +419,35 @@ class AIService:
                 t_y, t_x = pts.get("top_center", [200, 500])
                 b_y, b_x = pts.get("bottom_center", [850, 500])
                 
-                # --- v7 Scientific Validation Layer ---
+                # --- v9 Industrial Floor-Anchored Validation ---
                 raw_h = b_y - t_y
-                raw_w = raw_h * door_ar
                 
-                # Rule 1: Height must be realistic (not full floor-to-ceiling)
+                # Height must be realistic (not full floor-to-ceiling) fallback
                 if raw_h > 850 or raw_h < 200:
-                    print(f"DEBUG: [AI Service v7] Unrealistic height ({raw_h}), normalizing to 70% standard.")
-                    # Keep the midpoint, but standardize height
-                    mid_y = (t_y + b_y) / 2
-                    t_y = mid_y - 350
-                    b_y = mid_y + 350
                     raw_h = 700
+                    mid_y = (t_y + b_y) / 2
+                    b_y = mid_y + 350 # Re-anchor floor
                 
-                # Rule 2: Width/Height ratio must look like a door
-                if (raw_w / raw_h) > 0.6:
-                    print(f"DEBUG: [AI Service v7] Unrealistic width ratio ({raw_w/raw_h:.2f}), forcing AR.")
-                    raw_w = raw_h * door_ar
-
-                # Rule 3: Apply final 95% scale for mounting/frame realism
-                box_h = raw_h * 0.95
-                box_w = raw_h * door_ar # Use native AR for width
+                # Rule 1: Anchor to Floor (ymax = b_y)
+                # Apply 5% reduction for top-margin realism
+                target_h = raw_h * 0.95
+                target_w = target_h * door_ar * 1.05 # 5% frame buffer for width to cover opening
                 
-                # Center horizontally based on the average of t_x and b_x
                 avg_x = (t_x + b_x) / 2
                 
-                new_box = [
-                    t_y + ( (raw_h-box_h)/2 ), # Centered shift relative to scale reduction
-                    max(0, avg_x - box_w/2),   # xmin
-                    b_y - ( (raw_h-box_h)/2 ), # ymax
-                    min(1000, avg_x + box_w/2) # xmax
+                # Reconstruct Box: Pin TO FLOOR
+                box = [
+                    b_y - target_h,           # ymin (calculated UP from floor)
+                    max(0, avg_x - target_w/2),# xmin
+                    b_y,                       # ymax (STAYS AT FLOOR)
+                    min(1000, avg_x + target_w/2) # xmax
                 ]
-                box = new_box
-                print(f"DEBUG: [AI Service v7] Scientific-Validated Box: {box}")
+                
+                print(f"DEBUG: [AI Service v9] Floor-Anchored Box: {box}")
 
             except Exception as e:
-                print(f"DEBUG: [AI Service v7] Scientific Validation failed, using default: {e}")
-                box = [210, 410, 840, 590]
+                print(f"DEBUG: [AI Service v9] Validation failed, using default: {e}")
+                box = [150, 420, 850, 580]
 
             # Execute real AI visualization
             visualize_door_in_room(

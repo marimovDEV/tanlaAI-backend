@@ -413,20 +413,21 @@ class AIService:
                 b_y, b_x = pts.get("bottom_center", [850, 500])
                 
                 # 3. Reconstruct Box based on points and AR
-                box_h = b_y - t_y
+                # Apply 5% reduction to height for realism (makes it fit comfortably into the opening)
+                box_h = (b_y - t_y) * 0.95
                 box_w = box_h * door_ar
                 
                 # Center horizontally based on the average of t_x and b_x
                 avg_x = (t_x + b_x) / 2
                 
                 new_box = [
-                    t_y,                     # ymin
-                    max(0, avg_x - box_w/2), # xmin
-                    b_y,                     # ymax
+                    t_y + ( (b_y-t_y)*0.025 ), # Slightly shift down to keep visual center
+                    max(0, avg_x - box_w/2),   # xmin
+                    b_y - ( (b_y-t_y)*0.025 ), # ymax (total height is 0.95 of original)
                     min(1000, avg_x + box_w/2) # xmax
                 ]
                 box = new_box
-                print(f"DEBUG: [AI Service v4] Reconstructed AR-Enforced Box from points: {box}")
+                print(f"DEBUG: [AI Service v6] Reconstructed AR-Enforced Box (Scaled 95%) from points: {box}")
 
             except Exception as e:
                 print(f"DEBUG: [AI Service v4] Point-based failed, using default: {e}")

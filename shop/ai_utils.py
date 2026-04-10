@@ -248,10 +248,11 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         roi_img = dirty_composite.crop(roi_box)
         roi_w, roi_h = roi_img.size
         
-        # Create mask for AI (edges of the door + padding for shadows)
+        # Create mask for AI (edges of the door + generous padding for shadows)
         local_mask = Image.new("L", (roi_w, roi_h), 0)
         draw = ImageDraw.Draw(local_mask)
-        m_pad = int(resized_w * 0.2)
+        # Mask covers the door plus a 30% margin for soft shadows and edge blending
+        m_pad = int(resized_w * 0.30)
         m_left = (final_left - roi_left) - m_pad
         m_top = (final_top - roi_top) - m_pad
         m_right = (final_left + resized_w - roi_left) + m_pad
@@ -271,12 +272,15 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             mask=types.Image(image_bytes=mask_buf.getvalue())
         )
         
-        print(f"DEBUG: [Hybrid v5] Harmonizing door {product.id} at ROI {roi_w}x{roi_h}...")
+        print(f"DEBUG: [Hybrid v6] Finishing door {product.id} with Perfect Prompt...")
         response = client.models.edit_image(
             model='imagen-3.0-capability-001',
             prompt=(
-                "Harmonize this wood door into the room naturally. Add realistic shadows and ambient occlusion. "
-                "Blend the door edges with the wall opening perfectly. Maintain the room's global lighting."
+                "Insert the door from image 1 into the specified room area in image 0 naturally. "
+                "The door MUST be embedded into the wall opening, not floating or pasted in front. "
+                "Align with wall and floor correctly. Match perspective with the room perfectly. "
+                "Add soft natural ambient occlusion shadows under the door and on its sides. "
+                "The door should look like it originally belongs to this wall. Maintain 100% room visibility."
             ),
             reference_images=[
                 types.RawReferenceImage(reference_image=types.Image(image_bytes=roi_buf.getvalue()), reference_id=0)

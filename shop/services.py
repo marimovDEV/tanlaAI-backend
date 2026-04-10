@@ -874,9 +874,9 @@ class AIService:
             product.original_image.seek(0)
             input_image_bytes = product.original_image.read()
             
-            # Simple and extremely stable Background Removal via rembg
+            # Best model for salient object detection (perfect for doors, retains wood correctly)
             from rembg import remove, new_session
-            session = new_session("u2net")
+            session = new_session("isnet-general-use")
             
             output_image_bytes = remove(input_image_bytes, session=session)
             

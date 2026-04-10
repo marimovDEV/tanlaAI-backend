@@ -257,10 +257,11 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         if asset_source != 'image_no_bg' and door_img:
             LOG(3, f"'{asset_source}' fon bilan keldi! rembg orqali fonni avtomatik o'chirmoqdamiz...")
             try:
-                from rembg import remove
+                from rembg import remove, new_session
+                session = new_session("isnet-general-use")
                 b = io.BytesIO()
                 door_img.save(b, format='PNG')
-                out_b = remove(b.getvalue())
+                out_b = remove(b.getvalue(), session=session)
                 door_img = Image.open(io.BytesIO(out_b)).convert("RGBA")
                 asset_source = 'rembg'
                 LOG(3, "rembg fonni MUVAFFAQIYATLI o'chirdi!")

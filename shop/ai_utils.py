@@ -292,6 +292,11 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             LOG(3, "XATO: HECH QANDAY ASSET TOPILMADI!")
             raise ValueError("NO IMAGE ASSET FOUND for product #" + str(product.id))
         
+        # Haqiqiy vizual markaz va qirqish (barcha ortiqcha transparent qirralarni olib tashlaymiz)
+        bbox = door_img.getbbox()
+        if bbox:
+            door_img = door_img.crop(bbox)
+            
         dw, dh = door_img.size
         LOG(3, f"Eshik asseti tayyor: {dw}x{dh} (manba: {asset_source})")
         
@@ -398,7 +403,9 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         LOG(4, f"Eshik resize: {resized_w}x{resized_h}")
         
         center_x = (left + right) // 2
-        final_left = center_x - (resized_w // 2)
+        # Vizual balansni to'g'irlash uchun (eshik tutqichi sababli simmetriya buziladi, -2% fine-tuning)
+        visual_offset = int(resized_w * 0.02)
+        final_left = center_x - (resized_w // 2) - visual_offset
         
         # Floor snap constraint - using the box bottom instead of image bottom
         final_top = bottom - resized_h

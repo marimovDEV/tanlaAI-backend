@@ -178,26 +178,76 @@ def replace_background_with_green(image_bytes: bytes, mask_bytes: bytes) -> byte
         
     return response.generated_images[0].image.image_bytes
 
+def is_alpha_mask_valid(img_rgba):
+    """Checks if the alpha channel is reasonable (not empty and not a solid block)."""
+    import numpy as np
+    alpha = np.array(img_rgba.split()[-1])
+    total_pixels = alpha.size
+    transparent_pixels = np.count_nonzero(alpha < 10)
+    visible_pixels = np.count_nonzero(alpha > 200)
+    
+    # If more than 98% is transparent, it's likely a failed segmentation
+    if transparent_pixels / total_pixels > 0.98:
+        return False
+    # If everything is solid, it's not a transparent PNG
+    if visible_pixels / total_pixels > 0.99:
+        return False
+    return True
+
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None):
     """
-    Hybrid Perfection Visualization (v5):
-    1. Manually overlay door onto room using PIL (Precision scaling & placement).
-    2. Use Gemini AI to harmonize the composite (Shadows, lighting, and edge blending).
+    Bulletproof Hybrid (v14):
+    1. Multi-stage Asset Loading (Validation + Fallback).
+    2. Precise Manual Overlay.
+    3. AI Harmonization with guaranteed Python fallback.
     """
     try:
         from PIL import Image, ImageOps, ImageDraw
         import numpy as np
         import io
+        import rembg
         client = get_gemini_client()
         
-        # 1. Load Original Room & Door
+        # 1. Load Room
         room_img = Image.open(room_image_path).convert("RGB")
         rw, rh = room_img.size
         
-        door_source = product.image_no_bg if product.image_no_bg else product.image
-        door_img = Image.open(door_source.path).convert("RGBA")
+        # 2. Bulletproof Asset Loading
+        door_img = None
+        candidates = [
+            (product.image_no_bg, "isolated PNG"),
+            (product.image, "standard image"),
+            (product.original_image, "original raw")
+        ]
         
-        # 2. Precise Manual Overlay (Python Control)
+        for field, label in candidates:
+            if field and field.name and os.path.exists(field.path):
+                try:
+                    candidate_img = Image.open(field.path).convert("RGBA")
+                    if is_alpha_mask_valid(candidate_img):
+                        door_img = candidate_img
+                        print(f"DEBUG: [Bulletproof] Using {label} as valid asset.")
+                        break
+                    else:
+                        print(f"DEBUG: [Bulletproof] {label} failed alpha validation.")
+                except Exception as e:
+                    print(f"DEBUG: [Bulletproof] Error loading {label}: {e}")
+
+        # Final extreme fallback: Re-render alpha from original if all else fails
+        if not door_img and product.original_image:
+            try:
+                print("DEBUG: [Bulletproof] All assets invalid. Attempting emergency rembg on original...")
+                with open(product.original_image.path, "rb") as f:
+                    orig_bytes = f.read()
+                no_bg_bytes = rembg.remove(orig_bytes)
+                door_img = Image.open(io.BytesIO(no_bg_bytes)).convert("RGBA")
+            except Exception as e:
+                print(f"DEBUG: [Bulletproof] Emergency rembg failed: {e}")
+
+        if not door_img:
+            raise ValueError("No valid door asset found for visualization.")
+
+        # 3. Precise Manual Overlay
         if not box_1000:
             box_1000 = [200, 400, 850, 600]
             
@@ -208,96 +258,98 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         target_h = bottom - top
         target_w = right - left
         
-        # Resize door to fit target height exactly, maintain its aspect ratio
+        # Deep Anchoring (b_y + 15) and Width Calibration (min 0.43 ratio)
         dw, dh = door_img.size
-        door_ratio = dw / float(dh)
-        resized_w = int(target_h * door_ratio)
-        resized_h = target_h
+        door_ar = dw / float(dh)
         
+        # Recalculate target width based on product aspect ratio for realism
+        resized_h = target_h
+        resized_w = int(resized_h * door_ar)
+        
+        # Safety: don't let it be too thin
+        if resized_w < (resized_h * 0.43):
+            resized_w = int(resized_h * 0.43)
+
         door_resized = door_img.resize((resized_w, resized_h), Image.Resampling.LANCZOS)
         
-        # Calculate centering for the width
         center_x = (left + right) // 2
         final_left = center_x - (resized_w // 2)
-        final_top = top
+        # Deep Anchor: lower the door slightly into the floor to avoid floating
+        final_top = top + 15 
         
-        # Create dirty composite (Overlay)
         dirty_composite = room_img.copy()
         dirty_composite.paste(door_resized, (final_left, final_top), door_resized)
         
-        # 3. Prepare ROI for AI Harmonization
+        # 4. ROI for AI Harmonization
         side = int(max(resized_w, resized_h) * 1.5)
         side = min(side, rw, rh)
         
         roi_left = max(0, center_x - side // 2)
         roi_top = max(0, final_top + resized_h//2 - side // 2)
         
-        # Ensure ROI stays in bounds
         if roi_left + side > rw: roi_left = rw - side
         if roi_top + side > rh: roi_top = rh - side
-        roi_left = max(0, roi_left)
-        roi_top = max(0, roi_top)
+        roi_left, roi_top = max(0, roi_left), max(0, roi_top)
         
         roi_box = (roi_left, roi_top, roi_left + side, roi_top + side)
         roi_img = dirty_composite.crop(roi_box)
         roi_w, roi_h = roi_img.size
         
-        # Create mask for AI (edges of the door + generous padding for shadows)
         local_mask = Image.new("L", (roi_w, roi_h), 0)
         draw = ImageDraw.Draw(local_mask)
-        # Mask covers the door plus a 30% margin for soft shadows and edge blending
-        m_pad = int(resized_w * 0.30)
+        m_pad = int(resized_w * 0.35) # Generous padding for shadow inpainting
         m_left = (final_left - roi_left) - m_pad
         m_top = (final_top - roi_top) - m_pad
         m_right = (final_left + resized_w - roi_left) + m_pad
         m_bottom = (final_top + resized_h - roi_top) + m_pad
         draw.rectangle([m_left, m_top, m_right, m_bottom], fill=255)
         
-        # 4. AI Harmonization Call
-        roi_buf = io.BytesIO()
-        roi_img.save(roi_buf, format='JPEG')
-        mask_buf = io.BytesIO()
-        local_mask.save(mask_buf, format='PNG')
-        
-        config = types.EditImageConfig(
-            edit_mode='INPAINT_INSERT',
-            number_of_images=1,
-            output_mime_type='image/png',
-            mask=types.Image(image_bytes=mask_buf.getvalue())
-        )
-        
-        print(f"DEBUG: [Replacement Strategy v12] Replacing door {product.id} with high-fidelity integration...")
-        response = client.models.edit_image(
-            model='imagen-3.0-capability-001',
-            prompt=(
-                "Find the existing door or door opening in the wall and REPLACE it with the provided new door in image 1. "
-                "The new door must be integrated into the wall, fitting perfectly into the exact same space as the original door. "
-                "Completely remove the old door. Align with the floor and wall perspective perfectly. "
-                "Add natural soft ambient occlusion shadows around the door frame and at the floor contact. "
-                "The result must look like a professional installation, not an overlay. Maintain 100% room context."
-            ),
-            reference_images=[
-                types.RawReferenceImage(reference_image=types.Image(image_bytes=roi_buf.getvalue()), reference_id=0)
-            ],
-            config=config
-        )
-        
-        if not response.generated_images:
-            # Fallback
-            dirty_composite.save(result_image_path, format='JPEG', quality=95)
-            return result_image_path
+        # 5. AI Call with Guaranteed Fallback
+        try:
+            roi_buf = io.BytesIO()
+            roi_img.save(roi_buf, format='JPEG')
+            mask_buf = io.BytesIO()
+            local_mask.save(mask_buf, format='PNG')
             
-        # 5. Stitch back
-        generated_roi_img = Image.open(io.BytesIO(response.generated_images[0].image.image_bytes)).resize((roi_w, roi_h))
-        full_result = room_img.copy()
-        full_result.paste(generated_roi_img, (roi_left, roi_top))
-        full_result.save(result_image_path, format='JPEG', quality=95)
-        
-        print(f"DEBUG: [Hybrid v5] Final Success Resolution: {rw}x{rh}")
+            config = types.EditImageConfig(
+                edit_mode='INPAINT_INSERT',
+                number_of_images=1,
+                output_mime_type='image/png',
+                mask=types.Image(image_bytes=mask_buf.getvalue())
+            )
+            
+            print(f"DEBUG: [Bulletproof v14] Calling Imagen 3 for Product {product.id}...")
+            response = client.models.edit_image(
+                model='imagen-3.0-capability-001',
+                prompt=(
+                    "Integrate the new door into the wall naturally. REPLACE the masked area with the provided reference door. "
+                    "Ensure perfect alignment with the floor and wall. Add soft ambient shadows around the door frame. "
+                    "The door must look like it belongs in the room, with consistent lighting and textures. "
+                    "Remove any signs of the previous door completely."
+                ),
+                reference_images=[
+                    types.RawReferenceImage(reference_image=types.Image(image_bytes=roi_buf.getvalue()), reference_id=0)
+                ],
+                config=config
+            )
+            
+            if response.generated_images:
+                generated_roi_img = Image.open(io.BytesIO(response.generated_images[0].image.image_bytes)).resize((roi_w, roi_h))
+                full_result = room_img.copy()
+                full_result.paste(generated_roi_img, (roi_left, roi_top))
+                full_result.save(result_image_path, format='JPEG', quality=95)
+                print(f"DEBUG: [Bulletproof v14] Success with AI Harmonization.")
+                return result_image_path
+        except Exception as ai_e:
+            print(f"WARNING: [Bulletproof v14] AI Harmonization failed: {ai_e}. Falling back to dirty composite.")
+
+        # FINAL FALLBACK (If AI fails or returns nothing)
+        dirty_composite.save(result_image_path, format='JPEG', quality=95)
+        print(f"DEBUG: [Bulletproof v14] Used Dirty Composite as fallback.")
         return result_image_path
 
     except Exception as e:
-        print(f"DEBUG: [Hybrid v5] Error: {e}")
+        print(f"ERROR: [Bulletproof v14] Fatal crash: {e}")
         import traceback
         traceback.print_exc()
         raise e

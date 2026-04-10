@@ -256,6 +256,143 @@ def load_optional_yolo_model(model_path):
     return YOLO(model_path)
 
 
+@lru_cache(maxsize=1)
+def get_rembg_session():
+    import rembg
+
+    return rembg.new_session("u2net")
+
+
+def border_transparency_ratio(alpha_mask):
+    import numpy as np
+
+    if alpha_mask is None:
+        return 0.0
+
+    height, width = alpha_mask.shape[:2]
+    border = max(2, min(height, width) // 16)
+    top = alpha_mask[:border, :]
+    bottom = alpha_mask[max(0, height - border):, :]
+    left = alpha_mask[:, :border]
+    right = alpha_mask[:, max(0, width - border):]
+    border_pixels = np.concatenate([top.reshape(-1), bottom.reshape(-1), left.reshape(-1), right.reshape(-1)])
+    if border_pixels.size == 0:
+        return 0.0
+    return float(np.count_nonzero(border_pixels <= 10)) / float(border_pixels.size)
+
+
+def normalize_door_rgba_asset(door_rgba):
+    import cv2
+    import numpy as np
+
+    if door_rgba is None:
+        return None
+
+    if door_rgba.ndim == 2:
+        door_rgba = cv2.cvtColor(door_rgba, cv2.COLOR_GRAY2BGRA)
+    elif door_rgba.shape[2] == 3:
+        return None
+    elif door_rgba.shape[2] > 4:
+        door_rgba = door_rgba[:, :, :4]
+
+    alpha_mask = refine_product_mask(door_rgba[:, :, 3])
+    if alpha_mask is None or not is_reasonable_door_mask(alpha_mask):
+        return None
+    if border_transparency_ratio(alpha_mask) < 0.20:
+        return None
+
+    normalized = door_rgba.copy()
+    normalized[:, :, 3] = alpha_mask
+    return normalized
+
+
+def rgba_with_full_alpha(image_data):
+    import cv2
+    import numpy as np
+
+    if image_data is None:
+        return None
+    if image_data.ndim == 2:
+        image_data = cv2.cvtColor(image_data, cv2.COLOR_GRAY2BGR)
+    if image_data.shape[2] == 4:
+        return image_data
+
+    alpha = np.full(image_data.shape[:2] + (1,), 255, dtype=np.uint8)
+    return np.concatenate([image_data[:, :, :3], alpha], axis=2)
+
+
+def candidate_product_image_paths(product):
+    seen = set()
+    for attr_name in ('image_no_bg', 'image', 'original_image'):
+        field = getattr(product, attr_name, None)
+        if not field or not getattr(field, 'name', ''):
+            continue
+        try:
+            path = field.path
+        except Exception:
+            continue
+        if not path or not os.path.exists(path) or path in seen:
+            continue
+        seen.add(path)
+        yield attr_name, path
+
+
+def extract_door_rgba_from_bytes(image_bytes):
+    import cv2
+    import numpy as np
+    import rembg
+
+    output_bytes = rembg.remove(image_bytes, session=get_rembg_session())
+    rgba = cv2.imdecode(np.frombuffer(output_bytes, np.uint8), cv2.IMREAD_UNCHANGED)
+    return normalize_door_rgba_asset(rgba)
+
+
+def load_best_door_rgba(product):
+    import cv2
+
+    fallback_bytes = None
+    fallback_image = None
+    original_bytes = None
+
+    for label, path in candidate_product_image_paths(product):
+        image_data = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        normalized = normalize_door_rgba_asset(image_data)
+        if normalized is not None:
+            print(f"DEBUG: [AI Service] Using {label} asset for door overlay: {path}")
+            return normalized
+
+        if fallback_image is None and image_data is not None:
+            fallback_image = image_data
+
+        try:
+            with open(path, 'rb') as source_file:
+                raw_bytes = source_file.read()
+        except Exception:
+            raw_bytes = None
+
+        if raw_bytes and fallback_bytes is None:
+            fallback_bytes = raw_bytes
+        if raw_bytes and label == 'original_image':
+            original_bytes = raw_bytes
+
+    source_bytes = original_bytes or fallback_bytes
+    if source_bytes:
+        try:
+            regenerated = extract_door_rgba_from_bytes(source_bytes)
+            if regenerated is not None:
+                print("DEBUG: [AI Service] Rebuilt door alpha from source image for overlay")
+                return regenerated
+        except Exception as exc:
+            print(f"WARNING: [AI Service] Could not rebuild door alpha: {exc}")
+
+    fallback_rgba = rgba_with_full_alpha(fallback_image)
+    if fallback_rgba is not None:
+        print("WARNING: [AI Service] Falling back to opaque door asset; result may include background")
+        return fallback_rgba
+
+    raise ValueError("No usable door asset found for visualization")
+
+
 def detect_door_box_with_yolo(room_bgr, expected_aspect_ratio):
     model_path = str(getattr(settings, 'YOLO_DOOR_MODEL_PATH', '') or '').strip()
     if not model_path or not os.path.exists(model_path):

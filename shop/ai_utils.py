@@ -129,8 +129,15 @@ def create_binary_mask(width: int, height: int, box_1000: list[int] = None, poly
         points = [(int(p[0]), int(p[1])) for p in polygon]
         draw.polygon(points, fill=fg_color)
     elif box_1000:
-        # Map coordinates for bounding box fallback
+        # Map coordinates with a small 2% buffer to ensure the frame isn't clipped
         ymin, xmin, ymax, xmax = box_1000
+        
+        # Expand box by 2% (20 units in 1000-scale)
+        xmin = max(0, xmin - 20)
+        ymin = max(0, ymin - 20)
+        xmax = min(1000, xmax + 20)
+        ymax = min(1000, ymax + 20)
+
         left = int(xmin * width / 1000)
         top = int(ymin * height / 1000)
         right = int(xmax * width / 1000)

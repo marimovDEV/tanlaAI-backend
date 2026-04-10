@@ -228,24 +228,18 @@ class AIService:
             from .ai_utils import create_binary_mask, replace_background_with_green
 
             img_np = np.array(img_pil)
-            h, w = img_np.shape[:2]
-
-            # STEP 1: Ask GPT-4o for the OUTER door silhouette only.
-            polygon_points = None
+            h, w = img_np.shape[:2]            # --- STEP 1: GPT-4o Detection (Bounding Box) ---
+            door_box = None
             try:
                 openai_key = getattr(settings, 'OPENAI_API_KEY', None)
-                if not openai_key:
-                    raise ValueError("OpenAI Key missing")
+                if not openai_key: raise ValueError("OpenAI Key missing")
 
                 base64_image = base64.b64encode(input_image_bytes).decode('utf-8')
                 prompt = """
-                Trace the absolute outer boundary of the ENTIRE DOOR object. 
-                The door is a single rectangular structure that includes:
-                - The entire wooden frame and all wooden panels.
-                - All glass inserts and internal decorations.
-                - The door handle and hinges.
-                Do NOT exclude any wooden parts. Trace the outermost edges of the frame to capture the full door.
-                Return JSON: {"polygon": [[x, y], ...]} scale 0-1000. Use 40-50 points for maximum precision.
+                Identify the main DOOR product in this image.
+                Return only the bounding box covering the ENTIRE structure including the frame, handle and all panels.
+                Return JSON in this format: {"box_2d": [ymin, xmin, ymax, xmax]} scale 0-1000.
+                The door is the whole large rectangular object. Include the dark wooden frame.
                 """
                 
                 headers = {"Content-Type": "application/json", "Authorization": f"Bearer {openai_key}"}
@@ -261,75 +255,74 @@ class AIService:
                 response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=20)
                 response.raise_for_status()
                 content = json.loads(response.json()['choices'][0]['message']['content'])
-                poly_data = content.get('polygon')
-                if poly_data:
-                    polygon_points = [[int(pt[0] * w / 1000), int(pt[1] * h / 1000)] for pt in poly_data]
+                door_box = content.get('box_2d')
+                print(f"DEBUG: [AI Service] GPT-4o detected Bounding Box: {door_box}")
             except Exception as e:
-                print(f"WARNING: [AI Service] GPT-4o failed: {e}")
-                polygon_points = None
+                print(f"WARNING: [AI Service] GPT-4o detection failed: {e}")
+                door_box = [50, 150, 950, 850] # Fallback to central box
 
-            polygon_mask = build_mask_from_polygon(w, h, polygon_points)
+            # --- STEP 2: Multi-Layer Mask Generation ---
             final_mask = None
+            
+            # 2.1 Start with a Box-based mask (Ensures we cover the frame)
+            box_mask_io = create_binary_mask(w, h, box_1000=door_box, invert=False)
+            box_mask = cv2.imdecode(np.frombuffer(box_mask_io.getvalue(), np.uint8), cv2.IMREAD_GRAYSCALE)
 
-            # STEP 2: Local rembg is the primary engine because it is more stable
-            # for doors than image-edit inpainting.
+            # 2.2 Local rembg (U2Net) - Good for general segmentation
             try:
-                print(f"DEBUG: [AI Service] Running local rembg for Product {product.id}...")
                 import rembg
-
                 session = rembg.new_session("u2net")
-                output_bytes = rembg.remove(input_image_bytes, session=session)
-                nparr = np.frombuffer(output_bytes, np.uint8)
-                rgba_candidate = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+                rembg_bytes = rembg.remove(input_image_bytes, session=session)
+                nparr = np.frombuffer(rembg_bytes, np.uint8)
+                rgba_rembg = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+                if rgba_rembg is not None and rgba_rembg.shape[2] == 4:
+                    rembg_mask = rgba_rembg[:, :, 3]
+                    # Merge: We prioritize rembg for fine edges, but restrict it slightly to the door box
+                    final_mask = cv2.bitwise_and(rembg_mask, box_mask)
+                    # Actually, if rembg is too aggressive, the box should "save" it. 
+                    # Let's try OR to ensure wooden panels inside the box aren't cut
+                    final_mask = cv2.bitwise_or(final_mask, box_mask) # Keep anything GPT-4o box says is door
+                    print(f"DEBUG: [AI Service] Combined Box + rembg mask for {product.id}")
+            except Exception as e:
+                print(f"WARNING: [AI Service] local rembg failed, using box mask only: {e}")
+                final_mask = box_mask
 
-                if rgba_candidate is None or rgba_candidate.ndim < 3 or rgba_candidate.shape[2] < 4:
-                    raise ValueError("rembg did not return a valid RGBA image")
+            # --- STEP 3: Gemini (Nano Banana) Fallback (Optional, if box_mask is still too raw) ---
+            # If the mask is still just a box, we can try to refine it with Gemini
+            # But the user specifically wanted GPT + Nano Banana. 
+            # Let's use Nano Banana to clean up the Box.
+            try:
+                # Tell Nano Banana: Everything OUTSIDE the box is definitely background
+                inv_box_mask_io = create_binary_mask(w, h, box_1000=door_box, invert=True)
+                green_screen_bytes = replace_background_with_green(input_image_bytes, inv_box_mask_io.getvalue())
+                
+                nparr = np.frombuffer(green_screen_bytes, np.uint8)
+                img_green = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                # Chroma-key the green out
+                lower_green = np.array([0, 180, 0])
+                upper_green = np.array([140, 255, 140])
+                green_mask = cv2.inRange(img_green, lower_green, upper_green)
+                refined_door_mask = cv2.bitwise_not(green_mask)
+                
+                # Intersect with the box to be 100% safe
+                final_mask = cv2.bitwise_and(refined_door_mask, box_mask)
+                print(f"DEBUG: [AI Service] Gemini/Nano Banana refinement SUCCESS for {product.id}")
+            except Exception as gem_err:
+                print(f"WARNING: [AI Service] Gemini refinement failed, keeping box/rembg mask: {gem_err}")
 
-                alpha_mask = rgba_candidate[:, :, 3]
-                final_mask = merge_candidate_masks(alpha_mask, polygon_mask)
-                print(f"DEBUG: [AI Service] Local rembg SUCCESS for {product.id}")
-            except Exception as rembg_err:
-                print(f"WARNING: [AI Service] Local rembg failed: {rembg_err}")
+            # Final Cleanup
+            if final_mask is not None:
+                kernel = np.ones((5, 5), np.uint8)
+                final_mask = cv2.morphologyEx(final_mask, cv2.MORPH_CLOSE, kernel)
+                
+                b, g, r = cv2.split(img_np)
+                # Convert RGB to BGR for OpenCV encode
+                img_bgr = cv2.merge((r, g, b))
+                rgba = cv2.merge((r, g, b, final_mask))
 
-            # STEP 3: Gemini green-screen stays as a fallback only.
-            if final_mask is None and polygon_mask is not None:
-                try:
-                    print(f"DEBUG: [AI Service] Trying Gemini green-screen fallback for Product {product.id}...")
-                    mask_io = create_binary_mask(w, h, polygon=polygon_points, invert=True)
-                    green_screen_bytes = replace_background_with_green(input_image_bytes, mask_io.getvalue())
-
-                    nparr = np.frombuffer(green_screen_bytes, np.uint8)
-                    img_green = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                    if img_green is None:
-                        raise ValueError("Gemini returned an unreadable image")
-
-                    green_mask = cv2.inRange(img_green, np.array([0, 180, 0]), np.array([140, 255, 140]))
-                    gemini_mask = cv2.bitwise_not(green_mask)
-                    final_mask = merge_candidate_masks(gemini_mask, polygon_mask)
-                except Exception as gemini_err:
-                    print(f"WARNING: [AI Service] Gemini fallback failed: {gemini_err}")
-
-            # STEP 4: Last resort is the outer polygon itself.
-            if final_mask is None and polygon_mask is not None:
-                print(f"DEBUG: [AI Service] Falling back to solid GPT polygon for Product {product.id}")
-                final_mask = refine_product_mask(polygon_mask)
-
-            # STEP 5: Extremely defensive fallback when no detector responded.
-            if final_mask is None:
-                print(f"WARNING: [AI Service] Using centered rectangle fallback for Product {product.id}")
-                fallback_polygon = [
-                    [int(w * 0.15), int(h * 0.03)],
-                    [int(w * 0.85), int(h * 0.03)],
-                    [int(w * 0.85), int(h * 0.98)],
-                    [int(w * 0.15), int(h * 0.98)],
-                ]
-                final_mask = refine_product_mask(build_mask_from_polygon(w, h, fallback_polygon))
-
-            # Encode and Save Result
-            rgba = compose_rgba_from_mask(img_np, final_mask)
-            if rgba is not None:
                 _, final_encoded = cv2.imencode('.png', rgba)
                 output_image_bytes = final_encoded.tobytes()
+
                 product.image.save(f"isolated_{product.id}.png", ContentFile(output_image_bytes), save=False)
                 product.image_no_bg.save(f"trans_{product.id}.png", ContentFile(output_image_bytes), save=False)
                 product.ai_status = 'completed'

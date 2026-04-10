@@ -111,23 +111,26 @@ class AIService:
         the product image locally. This bypasses Imagen 3 limitations.
         """
         from google.genai import types
+        import json
+        import re
         
         try:
             client = AIService.get_gemini_client()
             
-            # 1. Detect door frame coordinates using Gemini 1.5 Flash
-            with open(room_image_path, "rb") as f:
-                room_bytes = f.read()
-
-            prompt = (
-                "You are a computer vision expert. Identify the bounding box of the main doorway, "
-                "entrance, or door frame in this room image where a new door should be installed. "
-                "Return only a STRICT JSON dictionary: {\"box_2d\": [ymin, xmin, ymax, xmax]}. "
-                "Values must be normalized to 1000. If multiple doors exist, pick the most central one. "
-                "Output ONLY the JSON, no other text."
-            )
-            
+            box = None
             try:
+                # 1. Detect door frame coordinates using Gemini 1.5 Flash
+                with open(room_image_path, "rb") as f:
+                    room_bytes = f.read()
+
+                prompt = (
+                    "You are a computer vision expert. Identify the bounding box of the main doorway, "
+                    "entrance, or door frame in this room image where a new door should be installed. "
+                    "Return only a STRICT JSON dictionary: {\"box_2d\": [ymin, xmin, ymax, xmax]}. "
+                    "Values must be normalized to 1000. If multiple doors exist, pick the most central one. "
+                    "Output ONLY the JSON, no other text."
+                )
+                
                 response = client.models.generate_content(
                     model='gemini-1.5-flash',
                     contents=[
@@ -137,10 +140,7 @@ class AIService:
                 )
                 text = response.text.strip()
                 print(f"DEBUG: [AI Service] Gemini detection response: {text}")
-                
-                import json
-                import re
-                
+
                 # Extract JSON using simple regex
                 json_match = re.search(r'\{.*\}', text, re.DOTALL)
                 
@@ -158,7 +158,7 @@ class AIService:
                 else:
                     box = None
             except Exception as e:
-                print(f"WARNING: Gemini detection failed/errored: {e}. Using fallback center box.")
+                print(f"WARNING: Gemini connection or detection failed: {e}. Using fallback center box.")
                 box = None
 
             # Fallback: if Gemini fails or returns nothing, use a standard center door box

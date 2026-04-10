@@ -393,10 +393,13 @@ class AIService:
                     dw, dh = dp.size
                     door_ar = dw / float(dh)
                 
-                # 2. Get Top and Bottom points from Gemini
+                # 2. Get Top and Bottom points from Gemini + Validation
                 point_prompt = """
-                Identify the [y, x] coordinates for the TOP-CENTER point and BOTTOM-CENTER point of the rectangular door opening in this room.
-                Return JSON in this format: {"top_center": [y, x], "bottom_center": [y, x]} scale 0-1000.
+                Task:
+                1. Check if this image is a photo of a real room interior (bedroom, living room, corridor, etc.).
+                2. If it is NOT a room (e.g., a flyer, poster, graphic, outdoor, or object photo), return: {"is_room": false}
+                3. If it IS a room, identify the [y, x] coordinates for the TOP-CENTER point and BOTTOM-CENTER point of the rectangular door opening.
+                Return JSON in this format: {"is_room": true, "top_center": [y, x], "bottom_center": [y, x]} scale 0-1000.
                 """
                 
                 resp = client.models.generate_content(
@@ -409,6 +412,10 @@ class AIService:
                 match = re.search(r'\{.*\}', text, re.DOTALL)
                 pts = json.loads(match.group()) if match else {}
                 
+                if not pts.get("is_room", True):
+                    print("DEBUG: [AI Service] Image rejected: Not a room interior.")
+                    raise ValueError("Ushbu rasm xona interyeriga o'xshamaydi. Iltimos, xonaning real rasmini yuklang.")
+
                 t_y, t_x = pts.get("top_center", [200, 500])
                 b_y, b_x = pts.get("bottom_center", [850, 500])
                 

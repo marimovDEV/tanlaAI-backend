@@ -303,8 +303,37 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         # ====== STEP 4: Joylashtirish matematikasi ======
         LOG(4, "Placement hisob-kitob boshlandi...")
         if not box_1000:
-            LOG(4, "box_1000 mavjud emas. GPT-4o orqali eshik o'rni izlanmoqda...")
-            try:
+            LOG(4, "Teshikni OpenCV geomtriyasi bilan qidirmoqdamiz...")
+            import cv2
+            import numpy as np
+            gray = cv2.cvtColor(np.array(room_img), cv2.COLOR_RGB2GRAY)
+            edges = cv2.Canny(gray, 50, 150)
+            contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            
+            door_box = None
+            max_area = 0
+            for cnt in contours:
+                approx = cv2.approxPolyDP(cnt, 0.02 * cv2.arcLength(cnt, True), True)
+                if len(approx) == 4:
+                    x, y, w, h = cv2.boundingRect(cnt)
+                    # Eshik teshigi taxminlari
+                    if w > 100 and h > 200 and h > w and h > (rh * 0.3):
+                        if w * h > max_area:
+                            max_area = w * h
+                            door_box = (x, y, w, h)
+                            
+            if door_box:
+                x, y, w, h = door_box
+                box_1000 = [
+                    int(y / rh * 1000), 
+                    int(x / rw * 1000), 
+                    int((y + h) / rh * 1000), 
+                    int((x + w) / rw * 1000)
+                ]
+                LOG(4, f"OpenCV tayyor teshikni topdi: {door_box}")
+            else:
+                LOG(4, "OpenCV geometriyasi topolmadi, GPT-4o ga jo'natilmoqda...")
+                try:
                 r_bytes = io.BytesIO()
                 room_img.save(r_bytes, format='JPEG', quality=85)
                 import base64
@@ -388,28 +417,23 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             left, top, right, bottom = (int(0.40 * rw), int(0.20 * rh), int(0.60 * rw), int(0.85 * rh))
             LOG(4, f"Fallback Pixel box: left={left}, top={top}, right={right}, bottom={bottom}")
 
-        target_h = bottom - top
-        door_ar = dw / float(dh)
+        box_w = right - left
+        box_h = bottom - top
         
-        resized_h = target_h
-        resized_w = int(resized_h * door_ar)
+        # 1. To'g'ri scaling algoritmi (Box ichiga proportion bilan sig'dirish)
+        scale = min(box_w / float(dw), box_h / float(dh))
         
-        if resized_w < (target_h * 0.42):
-            resized_w = int(target_h * 0.42)
-        if resized_w > (target_h * 0.80):
-            resized_w = int(target_h * 0.80)
-
+        resized_w = int(dw * scale)
+        resized_h = int(dh * scale)
+        
         door_resized = door_img.resize((resized_w, resized_h), Image.Resampling.LANCZOS)
-        LOG(4, f"Eshik resize: {resized_w}x{resized_h}")
+        LOG(4, f"Eshik scale: {resized_w}x{resized_h}")
         
-        center_x = (left + right) // 2
-        # Vizual balansni to'g'irlash uchun (eshik tutqichi sababli simmetriya buziladi, -2% fine-tuning)
-        visual_offset = int(resized_w * 0.02)
-        final_left = center_x - (resized_w // 2) - visual_offset
+        # 2. ALIGN - O'rtaga va eng asosiy: POLGA taqab joylashtirish!
+        final_left = left + (box_w - resized_w) // 2
+        final_top = top + (box_h - resized_h)
         
-        # Floor snap constraint - using the box bottom instead of image bottom
-        final_top = bottom - resized_h
-        LOG(4, f"Joylashtirish: final_left={final_left}, final_top={final_top}")
+        LOG(4, f"Align Joylashtirish: final_left={final_left}, final_top={final_top}")
         
         # ====== STEP 5: Edge Blur, Shadow va Dirty Composite ======
         LOG(5, "Dirty composite yaratilmoqda (blur + shadow)...")

@@ -178,33 +178,10 @@ def replace_background_with_green(image_bytes: bytes, mask_bytes: bytes) -> byte
         
     return response.generated_images[0].image.image_bytes
 
-def is_alpha_mask_valid(img_rgba):
-    """
-    Checks if the alpha channel indicates a successful background removal.
-    A valid asset should have a significant visible part and some transparency.
-    """
-    import numpy as np
-    if img_rgba.mode != 'RGBA':
-        return False
-    alpha = np.array(img_rgba.split()[-1])
-    total_pixels = alpha.size
-    visible_pixels = np.count_nonzero(alpha > 128)
-    transparent_pixels = np.count_nonzero(alpha < 10)
-    
-    # If it's mostly transparent (>98%), it's a failed segment
-    if transparent_pixels / total_pixels > 0.98:
-        return False
-    # If it has significant transparency, it's a valid PNG
-    if transparent_pixels / total_pixels > 0.05:
-        return True
-    return False
-
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None):
     """
-    True Restoration (v16):
-    1. Improved Asset Selection (PNG first, then JPG + rembg).
-    2. Stable In-painting prompt (Focused on insertion).
-    3. Guaranteed fallback to Python Overlay.
+    Ironclad Overlay (v17): 
+    Guarantees that a door IS ALWAYS placed, regardless of asset quality.
     """
     try:
         from PIL import Image, ImageOps, ImageDraw
@@ -217,31 +194,40 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         room_img = Image.open(room_image_path).convert("RGB")
         rw, rh = room_img.size
         
-        # 2. Advanced Asset Loading
+        # 2. Ironclad Asset Loading
         door_img = None
         
-        # First pass: try assets that should already be PNGs
-        for field in [product.image_no_bg, product.image]:
-            if field and field.name and os.path.exists(field.path):
-                img = Image.open(field.path).convert("RGBA")
-                if is_alpha_mask_valid(img):
-                    door_img = img
-                    break
-        
-        # Second pass: If no valid PNG, take original or standard image and clean it
-        if not door_img:
-            print("DEBUG: [Restoration] No valid PNG found. Running emergency rembg...")
-            source_field = product.original_image if product.original_image else product.image
-            if source_field and os.path.exists(source_field.path):
-                with open(source_field.path, "rb") as f:
-                    orig_bytes = f.read()
-                clean_bytes = rembg.remove(orig_bytes)
-                door_img = Image.open(io.BytesIO(clean_bytes)).convert("RGBA")
-        
-        if not door_img:
-            raise ValueError("No usable door asset (PNG or raw) found.")
+        # Priority 1: Trusted isolate
+        if product.image_no_bg and product.image_no_bg.name and os.path.exists(product.image_no_bg.path):
+            try:
+                img = Image.open(product.image_no_bg.path).convert("RGBA")
+                # Even if it lacks alpha, we take it if it targets image_no_bg
+                door_img = img
+                print("DEBUG: [Ironclad] Using isolated asset.")
+            except: pass
+            
+        # Priority 2: Standard Image (try to clean it)
+        if not door_img and product.image and os.path.exists(product.image.path):
+            try:
+                print("DEBUG: [Ironclad] Cleaning standard image...")
+                with open(product.image.path, "rb") as f:
+                    data = f.read()
+                clean = rembg.remove(data)
+                door_img = Image.open(io.BytesIO(clean)).convert("RGBA")
+            except:
+                print("DEBUG: [Ironclad] Cleaning failed, using raw image.")
+                door_img = Image.open(product.image.path).convert("RGBA")
 
-        # 3. Precise Manual Overlay
+        # Final Fallback: ANYTHING
+        if not door_img:
+            source = product.original_image if product.original_image else product.image
+            if source and os.path.exists(source.path):
+                door_img = Image.open(source.path).convert("RGBA")
+
+        if not door_img:
+            raise ValueError("NO IMAGE ASSET FOUND.")
+
+        # 3. Placement Math
         if not box_1000:
             box_1000 = [200, 400, 850, 600]
             
@@ -249,30 +235,31 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         left, top = int(xmin * rw / 1000), int(ymin * rh / 1000)
         right, bottom = int(xmax * rw / 1000), int(ymax * rh / 1000)
         
-        # Math adjustments for better grounding
         target_h = bottom - top
         dw, dh = door_img.size
         door_ar = dw / float(dh)
+        
+        # Realistic door width logic
         resized_h = target_h
         resized_w = int(resized_h * door_ar)
         
-        # Sanity check for width
-        if resized_w < (resized_h * 0.40): resized_w = int(resized_h * 0.40)
-        if resized_w > (resized_h * 0.85): resized_w = int(resized_h * 0.85)
+        # Hard limits to prevent "thin" or "wide" glitches
+        if resized_w < (target_h * 0.42): resized_w = int(target_h * 0.42)
+        if resized_w > (target_h * 0.80): resized_w = int(target_h * 0.80)
 
         door_resized = door_img.resize((resized_w, resized_h), Image.Resampling.LANCZOS)
         
         center_x = (left + right) // 2
         final_left = center_x - (resized_w // 2)
-        final_top = top + 10 # Deep Anchor
+        final_top = top + 15 # Ground the door
         
         dirty_composite = room_img.copy()
-        dirty_composite.paste(door_resized, (final_left, final_top), door_resized)
+        # Alpha-matte paste
+        dirty_composite.paste(door_resized, (final_left, final_top), door_resized if door_resized.mode == 'RGBA' else None)
         
-        # 4. Preparation for AI Harmonization
-        side = int(max(resized_w, resized_h) * 1.5)
+        # 4. Preparation
+        side = int(max(resized_w, resized_h) * 1.4)
         side = min(side, rw, rh)
-        
         roi_left = max(0, center_x - side // 2)
         roi_top = max(0, final_top + resized_h//2 - side // 2)
         if roi_left + side > rw: roi_left = rw - side
@@ -285,51 +272,42 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         
         local_mask = Image.new("L", (roi_w, roi_h), 0)
         draw = ImageDraw.Draw(local_mask)
-        m_pad = int(resized_w * 0.30)
+        m_pad = int(resized_w * 0.25)
         m_left, m_top = (final_left - roi_left) - m_pad, (final_top - roi_top) - m_pad
         m_right, m_bottom = (final_left + resized_w - roi_left) + m_pad, (final_top + resized_h - roi_top) + m_pad
         draw.rectangle([m_left, m_top, m_right, m_bottom], fill=255)
         
-        # 5. AI Call
+        # 5. Harmonization
         try:
-            roi_buf = io.BytesIO(); roi_img.save(roi_buf, format='JPEG')
-            mask_buf = io.BytesIO(); local_mask.save(mask_buf, format='PNG')
+            r_buf = io.BytesIO(); roi_img.save(r_buf, format='JPEG')
+            m_buf = io.BytesIO(); local_mask.save(m_buf, format='PNG')
             
-            config = types.EditImageConfig(
-                edit_mode='INPAINT_INSERT',
-                number_of_images=1,
-                output_mime_type='image/png',
-                mask=types.Image(image_bytes=mask_buf.getvalue())
-            )
-            
-            print(f"DEBUG: [Restoration v16] Running Imagen Harmonization for {product.id}...")
             response = client.models.edit_image(
                 model='imagen-3.0-capability-001',
                 prompt=(
-                    "Refine the integration of the new door into the wall. "
-                    "Make it look like a real installation with natural soft ambient shadows at the base and frame. "
-                    "Maintain the door's exact appearance, texture, and color from the provided reference. "
-                    "Ensure seamless edge blending with the wall and floor."
+                    "Cleanly blend this new door into the wall. Match colors, shadows and textures. "
+                    "Make it look like a high-quality professional installation. Harmonize edges."
                 ),
-                reference_images=[
-                    types.RawReferenceImage(reference_image=types.Image(image_bytes=roi_buf.getvalue()), reference_id=0)
-                ],
-                config=config
+                reference_images=[ types.RawReferenceImage(reference_image=types.Image(image_bytes=r_buf.getvalue()), reference_id=0) ],
+                config=types.EditImageConfig(edit_mode='INPAINT_INSERT', number_of_images=1, mask=types.Image(image_bytes=m_buf.getvalue()))
             )
             
             if response.generated_images:
-                generated_roi_img = Image.open(io.BytesIO(response.generated_images[0].image.image_bytes)).resize((roi_w, roi_h))
-                full_result = room_img.copy()
-                full_result.paste(generated_roi_img, (roi_left, roi_top))
-                full_result.save(result_image_path, format='JPEG', quality=95)
-                print(f"DEBUG: [Restoration v16] Harmonization Success.")
+                gen_roi = Image.open(io.BytesIO(response.generated_images[0].image.image_bytes)).resize((roi_w, roi_h))
+                full = room_img.copy()
+                full.paste(gen_roi, (roi_left, roi_top))
+                full.save(result_image_path, format='JPEG', quality=95)
                 return result_image_path
-        except Exception as e:
-            print(f"WARNING: [Restoration v16] AI failed, falling back to Python overlay.")
+        except:
+            print("WARNING: AI failed, using dirty composite.")
 
-        # Fallback
-        dirty_composite.save(result_image_path, format='JPEG', quality=95)
+        dirty_composite.save(result_image_path, format='JPEG', quality=90)
         return result_image_path
+
+    except Exception as e:
+        print(f"FATAL: {e}")
+        import traceback; traceback.print_exc()
+        raise e
 
     except Exception as e:
         print(f"ERROR: [Restoration v16] Fatal: {e}")

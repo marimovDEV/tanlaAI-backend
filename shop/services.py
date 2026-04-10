@@ -100,71 +100,97 @@ class AIService:
             product.save(update_fields=['ai_status'])
 
     @staticmethod
-    def generate_room_preview(product, room_image_path, result_image_path):
+    def generate_visualization(product, room_image_path, user_height=None, user_width=None):
         """
-        Generate door-in-room visualization using Gemini/Imagen.
-        Includes retry logic for reliability.
+        Uses Gemini 1.5 Flash to detect door frame coordinates and overlays 
+        the product image locally. This bypasses Imagen 3 limitations.
         """
         from google.genai import types
+        result_image_path = room_image_path.replace("ai_temp", "ai_results")
+        
+        try:
+            client = AIService.get_gemini_client()
+            
+            # 1. Detect door frame coordinates using Gemini 1.5 Flash
+            with open(room_image_path, "rb") as f:
+                room_bytes = f.read()
 
-        max_retries = 2
-        last_error = None
+            prompt = (
+                "Identify the exact bounding box of the main door opening or entrance where a door should be installed. "
+                "Return the coordinates in JSON format: {\"box_2d\": [ymin, xmin, ymax, xmax]}. "
+                "The values must be normalized to 1000. Return ONLY the JSON."
+            )
+            
+            # Using generate_content instead of edit_image for compatibility
+            response = client.models.generate_content(
+                model='gemini-1.5-flash',
+                contents=[
+                    prompt,
+                    types.Part.from_bytes(data=room_bytes, mime_type='image/jpeg')
+                ]
+            )
 
-        for attempt in range(max_retries):
-            try:
-                client = AIService.get_gemini_client()
+            text = response.text.strip()
+            print(f"DEBUG: [AI Service] Gemini detection response: {text}")
 
-                door_source = product.image_no_bg if product.image_no_bg else product.image
+            # Parse coordinates
+            import json
+            import re
+            
+            # Try to find JSON in the text
+            json_match = re.search(r'\{.*\}', text, re.DOTALL)
+            if not json_match:
+                raise ValueError(f"Could not find bounding box in Gemini response: {text}")
+            
+            coords = json.loads(json_match.group(0))
+            box = coords.get('box_2d')
+            if not box or len(box) != 4:
+                # Try to find list directly
+                list_match = re.search(r'\[\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\]', text)
+                if list_match:
+                    box = json.loads(list_match.group(0))
+                else:
+                    raise ValueError(f"Invalid bounding box format: {text}")
 
-                with open(room_image_path, "rb") as rf:
-                    room_bytes = rf.read()
-                with open(door_source.path, "rb") as df:
-                    door_bytes = df.read()
+            ymin, xmin, ymax, xmax = box
 
-                print(f"DEBUG: [AI Service] Room visualization attempt {attempt + 1} for Product {product.id}...")
+            # 2. Local Overlay using PIL
+            from PIL import Image
+            
+            room_img = Image.open(room_image_path).convert("RGBA")
+            # Prefer the no-background version we created earlier
+            door_source = product.image_no_bg if product.image_no_bg else product.image
+            door_img = Image.open(door_source.path).convert("RGBA")
 
-                response = client.models.edit_image(
-                    model='imagen-3.0-capability-001',
-                    prompt=(
-                        "Install the door from image 1 into the most suitable door frame or entrance wall found in image 0. "
-                        "Ensure correct scale, perspective, and realistic shadows. The final image should look like a real home photo."
-                    ),
-                    reference_images=[
-                        types.RawReferenceImage(
-                            reference_image=types.Image(image_bytes=room_bytes),
-                            reference_id=0
-                        ),
-                        types.RawReferenceImage(
-                            reference_image=types.Image(image_bytes=door_bytes),
-                            reference_id=1
-                        )
-                    ],
-                    config=types.EditImageConfig(
-                        edit_mode='EDIT_MODE_INPAINT_INSERTION',
-                        number_of_images=1,
-                        http_options=types.HttpOptions(timeout=120000)
-                    )
-                )
+            w, h = room_img.size
+            
+            # Convert normalized coordinates to pixels
+            left = xmin * w / 1000
+            top = ymin * h / 1000
+            right = xmax * w / 1000
+            bottom = ymax * h / 1000
+            
+            target_w = int(right - left)
+            target_h = int(bottom - top)
 
-                if not response.generated_images:
-                    raise ValueError("Gemini failed to generate visualization.")
+            if target_w <= 0 or target_h <= 0:
+                raise ValueError(f"Invalid target dimensions: {target_w}x{target_h}")
 
-                generated_img = response.generated_images[0]
-                final_img = Image.open(io.BytesIO(generated_img.image.image_bytes))
-                final_img.save(result_image_path, format='PNG')
+            # Resize door to fit the detected frame
+            door_resized = door_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+            
+            # Paste door onto room
+            room_img.alpha_composite(door_resized, (int(left), int(top)))
+            
+            # Save final result
+            room_img.convert("RGB").save(result_image_path, "JPEG", quality=95)
+            
+            print(f"DEBUG: [AI Service] Visualization success: {result_image_path}")
+            return result_image_path
 
-                print(f"DEBUG: [AI Service] Visualization success: {result_image_path}")
-                return  # Success — exit
-
-            except Exception as e:
-                last_error = e
-                print(f"DEBUG: [AI Service] Attempt {attempt + 1} failed: {e}")
-                if attempt < max_retries - 1:
-                    import time
-                    time.sleep(2)  # Brief pause before retry
-
-        # All retries failed
-        raise last_error
+        except Exception as e:
+            print(f"ERROR: [AI Service] Visualization failed: {str(e)}")
+            raise e
 
 
 class WishlistService:

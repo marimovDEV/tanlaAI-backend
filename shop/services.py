@@ -817,6 +817,16 @@ class AIService:
                 with open(key_path, 'r', encoding='utf-8') as f:
                     info = json.load(f)
 
+                # PEM normalization (fix corrupted \n in private_key)
+                import re
+                pk = info.get('private_key', '')
+                match = re.search(r'-----BEGIN PRIVATE KEY-----(.*)-----END PRIVATE KEY-----', pk, re.DOTALL)
+                if match:
+                    body = "".join(re.findall(r'[A-Za-z0-9+/=]', match.group(1)))
+                    formatted = "\n".join(body[i:i+64] for i in range(0, len(body), 64))
+                    info['private_key'] = f"-----BEGIN PRIVATE KEY-----\n{formatted}\n-----END PRIVATE KEY-----\n"
+                    print("DEBUG: [AI Service] PEM key normalized successfully")
+
                 credentials = service_account.Credentials.from_service_account_info(
                     info, 
                     scopes=['https://www.googleapis.com/auth/cloud-platform']

@@ -210,7 +210,12 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         
         # ====== STEP 2: Room yuklash ======
         LOG(2, "Xona rasmi yuklanmoqda...")
-        room_img = Image.open(room_image_path).convert("RGB")
+        room_img_raw = Image.open(room_image_path)
+        try:
+            from PIL import ImageOps
+            room_img = ImageOps.exif_transpose(room_img_raw).convert("RGB")
+        except Exception:
+            room_img = room_img_raw.convert("RGB")
         rw, rh = room_img.size
         LOG(2, f"Xona o'lchami: {rw}x{rh}")
         
@@ -417,13 +422,24 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         # Mask — faqat chetlarni qamrab oladi
         local_mask = Image.new("L", (roi_w, roi_h), 0)
         draw = ImageDraw.Draw(local_mask)
-        m_pad = int(resized_w * 0.08)
+        m_pad = int(resized_w * 0.10) # 10% outer padding
         m_left = (final_left - roi_left) - m_pad
         m_top_mask = (final_top - roi_top) - m_pad
         m_right = (final_left + resized_w - roi_left) + m_pad
-        m_bottom = (final_top + resized_h - roi_top) + m_pad
+        m_bottom = (final_top + resized_h - roi_top) + int(m_pad * 2) # extend bottom for floor shadows
+        
+        # Outer mask boundary (white)
         draw.rectangle([m_left, m_top_mask, m_right, m_bottom], fill=255)
-        LOG(6, f"Mask: pad={m_pad}, rect=[{m_left},{m_top_mask},{m_right},{m_bottom}]")
+        
+        # Inner mask boundary (black to protect the door itself!)
+        i_pad = int(resized_w * 0.04) # 4% internal protection
+        i_left = (final_left - roi_left) + i_pad
+        i_top = (final_top - roi_top) + i_pad
+        i_right = (final_left + resized_w - roi_left) - i_pad
+        i_bottom = (final_top + resized_h - roi_top) - i_pad
+        draw.rectangle([i_left, i_top, i_right, i_bottom], fill=0)
+        
+        LOG(6, f"Mask: ring around door generated to protect original door")
         
         # Serialize
         m_buf = io.BytesIO()

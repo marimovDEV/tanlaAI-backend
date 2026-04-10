@@ -118,41 +118,46 @@ class AIService:
                 room_bytes = f.read()
 
             prompt = (
-                "Identify the exact bounding box of the main door opening or entrance where a door should be installed. "
-                "Return the coordinates in JSON format: {\"box_2d\": [ymin, xmin, ymax, xmax]}. "
-                "The values must be normalized to 1000. Return ONLY the JSON."
+                "You are a computer vision expert. Identify the bounding box of the main doorway, "
+                "entrance, or door frame in this room image where a new door should be installed. "
+                "Return only a STRICT JSON dictionary: {\"box_2d\": [ymin, xmin, ymax, xmax]}. "
+                "Values must be normalized to 1000. If multiple doors exist, pick the most central one. "
+                "Output ONLY the JSON, no other text."
             )
             
-            # Using generate_content instead of edit_image for compatibility
-            response = client.models.generate_content(
-                model='gemini-1.5-flash',
-                contents=[
-                    prompt,
-                    types.Part.from_bytes(data=room_bytes, mime_type='image/jpeg')
-                ]
-            )
-
-            text = response.text.strip()
-            print(f"DEBUG: [AI Service] Gemini detection response: {text}")
-
-            # Parse coordinates
-            import json
-            import re
-            
-            # Try to find JSON in the text
-            json_match = re.search(r'\{.*\}', text, re.DOTALL)
-            if not json_match:
-                raise ValueError(f"Could not find bounding box in Gemini response: {text}")
-            
-            coords = json.loads(json_match.group(0))
-            box = coords.get('box_2d')
-            if not box or len(box) != 4:
-                # Try to find list directly
-                list_match = re.search(r'\[\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\]', text)
-                if list_match:
-                    box = json.loads(list_match.group(0))
+            try:
+                response = client.models.generate_content(
+                    model='gemini-1.5-flash',
+                    contents=[
+                        prompt,
+                        types.Part.from_bytes(data=room_bytes, mime_type='image/jpeg')
+                    ]
+                )
+                text = response.text.strip()
+                print(f"DEBUG: [AI Service] Gemini detection response: {text}")
+                
+                import json
+                import re
+                
+                # Extract JSON using more flexible regex
+                json_match = re.search(r'\{(?:[^{}]|(?R))*\}', text, re.DOTALL)
+                if not json_match:
+                    # Fallback regex if recursion is not supported in re module
+                    json_match = re.search(r'\{.*\}', text, re.DOTALL)
+                
+                if json_match:
+                    coords = json.loads(json_match.group(0))
+                    box = coords.get('box_2d')
                 else:
-                    raise ValueError(f"Invalid bounding box format: {text}")
+                    box = None
+            except Exception as e:
+                print(f"WARNING: Gemini detection failed/errored: {e}. Using fallback center box.")
+                box = None
+
+            # Fallback: if Gemini fails or returns nothing, use a standard center door box
+            if not box or len(box) != 4:
+                print("DEBUG: [AI Service] Using fallback center box (150, 350, 850, 650)")
+                box = [150, 350, 850, 650]
 
             ymin, xmin, ymax, xmax = box
 

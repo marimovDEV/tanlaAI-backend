@@ -33,7 +33,7 @@ ai_executor = ThreadPoolExecutor(max_workers=2)
 
 
 def run_api_ai_background(product_id, room_path, result_path, tg_user_id):
-    logger.info(f"DEBUG: [AI Service] Background task STARTED for product {product_id}")
+    print(f"DEBUG: [AI Service] Background task STARTED for product {product_id}")
     try:
         product = Product.objects.get(pk=product_id)
         AIService.generate_room_preview(product, room_path, result_path)
@@ -335,9 +335,9 @@ class ProductViewSet(viewsets.ModelViewSet):
         product.ai_status = 'processing'
         product.save(update_fields=['ai_status'])
 
-        logger.info(f"DEBUG: [AI Service] Submitting background task for product {product.id}")
+        print(f"DEBUG: [AI Service] Submitting background task for product {product.id}")
         ai_executor.submit(run_api_ai_background, product.id, room_path, result_path, tg_user.id)
-        logger.info(f"DEBUG: [AI Service] Task submitted successfully")
+        print(f"DEBUG: [AI Service] Task submitted successfully")
 
         return Response({'status': 'ok'})
 

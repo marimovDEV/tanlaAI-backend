@@ -36,7 +36,8 @@ def run_api_ai_background(product_id, room_path, result_path, tg_user_id):
     print(f"DEBUG: [AI Service] Background task STARTED for product {product_id}")
     try:
         product = Product.objects.get(pk=product_id)
-        AIService.generate_room_preview(product, room_path, result_path)
+        from ..ai_utils import visualize_door_in_room
+        visualize_door_in_room(product, room_path, result_path)
 
         if tg_user_id:
             user = TelegramUser.objects.filter(id=tg_user_id).first()

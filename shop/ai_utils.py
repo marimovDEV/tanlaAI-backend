@@ -465,42 +465,34 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         
         # ====== STEP 6: ROI va Mask tayyorlash ======
         LOG(6, "ROI va mask tayyorlanmoqda...")
-        side = int(max(resized_w, resized_h) * 1.4)
-        side = min(side, rw, rh)
-        roi_left = max(0, (final_left + resized_w // 2) - side // 2)
-        roi_top = max(0, final_top + resized_h // 2 - side // 2)
-        if roi_left + side > rw: roi_left = rw - side
-        if roi_top + side > rh: roi_top = rh - side
-        roi_left, roi_top = max(0, roi_left), max(0, roi_top)
+        # ROI ni ancha zichroq qilamiz (1.15x), Imagen boshqa narsalarga tegmasligi uchun
+        side_w = int(resized_w * 1.3)
+        side_h = int(resized_h * 1.15)
         
-        roi_box = (roi_left, roi_top, roi_left + side, roi_top + side)
-        LOG(6, f"ROI box: {roi_box} (side={side})")
+        roi_left = max(0, final_left - (side_w - resized_w) // 2)
+        roi_top = max(0, final_top - (side_h - resized_h) // 2)
+        
+        roi_box = (roi_left, roi_top, min(rw, roi_left + side_w), min(rh, roi_top + side_h))
+        LOG(6, f"Tight ROI box: {roi_box}")
         
         roi_img = dirty_composite.crop(roi_box)
         roi_w, roi_h = roi_img.size
-        LOG(6, f"ROI o'lchami: {roi_w}x{roi_h}")
         
-        # Mask — faqat chetlarni qamrab oladi
+        # --- PRECISE ALPHA MASK (User maslahati) ---
+        # Eshikning o'zidan olingan alpha kanali - bu eng aniq maska!
+        door_alpha = door_resized.split()[3]
         local_mask = Image.new("L", (roi_w, roi_h), 0)
-        draw = ImageDraw.Draw(local_mask)
-        m_pad = int(resized_w * 0.10) # 10% outer padding
-        m_left = (final_left - roi_left) - m_pad
-        m_top_mask = (final_top - roi_top) - m_pad
-        m_right = (final_left + resized_w - roi_left) + m_pad
-        m_bottom = (final_top + resized_h - roi_top) + int(m_pad * 2) # extend bottom for floor shadows
         
-        # Outer mask boundary (white)
-        draw.rectangle([m_left, m_top_mask, m_right, m_bottom], fill=255)
+        # Eshikni ROI ichidagi nisbiy koordinatasiga past qilamiz
+        rel_left = final_left - roi_left
+        rel_top = final_top - roi_top
+        local_mask.paste(door_alpha, (rel_left, rel_top))
         
-        # Inner mask boundary (black to protect the door itself!)
-        i_pad = int(resized_w * 0.04) # 4% internal protection
-        i_left = (final_left - roi_left) + i_pad
-        i_top = (final_top - roi_top) + i_pad
-        i_right = (final_left + resized_w - roi_left) - i_pad
-        i_bottom = (final_top + resized_h - roi_top) - i_pad
-        draw.rectangle([i_left, i_top, i_right, i_bottom], fill=0)
+        # Maskani bir oz kengaytiramiz (Dilation), chetlari yaxshi blend bo'lishi uchun
+        local_mask = local_mask.filter(ImageFilter.MaxFilter(7)) # 7px tashqariga kengaytirish
+        local_mask = local_mask.filter(ImageFilter.GaussianBlur(3)) # Yumshoq o'tish
         
-        LOG(6, f"Mask: ring around door generated to protect original door")
+        LOG(6, "Precise Alpha-Mask tayyorlandi (devor himoyalangan)")
         
         # Serialize
         m_buf = io.BytesIO()
@@ -515,13 +507,14 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             response = client.models.edit_image(
                 model='imagen-3.0-capability-001',
                 prompt=(
-                    "The door is already placed in the wall opening.\n"
-                    "Do not move or resize the door.\n\n"
-                    "Make it realistic:\n"
-                    "- embed the door into the wall (not on top)\n"
-                    "- add contact shadow on floor\n"
-                    "- darken edges where door meets wall\n"
-                    "- match lighting and perspective"
+                    "Insert the door into the wall opening naturally.\n\n"
+                    "STRICT RULES:\n"
+                    "- Do NOT modify the wall texture or color.\n"
+                    "- Preserve the background exactly as it is.\n"
+                    "- Only blend the contact edges of the door with the wall.\n"
+                    "- Add soft contact shadows on the floor.\n"
+                    "- Ensure consistent lighting and perspective.\n"
+                    "The door must look like it is built into the wall."
                 ),
                 reference_images=[
                     types.RawReferenceImage(
@@ -533,12 +526,11 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                         reference_image=types.Image(image_bytes=m_buf.getvalue()),
                         config=types.MaskReferenceConfig(
                             mask_mode='MASK_MODE_USER_PROVIDED',
-                            mask_dilation=0.03,
                         ),
                     ),
                 ],
                 config=types.EditImageConfig(
-                    edit_mode='EDIT_MODE_INPAINT_INSERTION',
+                    edit_mode='EDIT_MODE_INPAINT_EDIT',
                     number_of_images=1,
                     output_mime_type='image/png',
                 ),

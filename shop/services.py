@@ -3,10 +3,8 @@ import io
 from PIL import Image
 from django.core.files.base import ContentFile
 from django.conf import settings
-import rembg
 import requests
-from rembg import new_session
-from .ai_utils import visualize_door_in_room, create_binary_mask
+# Moved rembg imports inside functions to prevent startup crashes
 
 
 class AIService:
@@ -203,6 +201,7 @@ class AIService:
         from google.genai import types
         import json
         import re
+        from .ai_utils import create_binary_mask, visualize_door_in_room
         
         # Flag to indicate if we have custom boxes
         box = [200, 300, 850, 700]  # Default central box [ymin, xmin, ymax, xmax]

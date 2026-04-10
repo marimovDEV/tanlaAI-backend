@@ -252,25 +252,46 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         roi_img = dirty_composite.crop(roi_box)
         roi_w, roi_h = roi_img.size
         
+        # 4b. Create mask — ONLY cover edges/seams, not the door itself
         local_mask = Image.new("L", (roi_w, roi_h), 0)
         draw = ImageDraw.Draw(local_mask)
-        m_pad = int(resized_w * 0.25)
-        m_left, m_top = (final_left - roi_left) - m_pad, (final_top - roi_top) - m_pad
-        m_right, m_bottom = (final_left + resized_w - roi_left) + m_pad, (final_top + resized_h - roi_top) + m_pad
-        draw.rectangle([m_left, m_top, m_right, m_bottom], fill=255)
+        m_pad = int(resized_w * 0.08)  # v19: tight 8% pad — AI touches edges only
+        m_left = (final_left - roi_left) - m_pad
+        m_top_mask = (final_top - roi_top) - m_pad
+        m_right = (final_left + resized_w - roi_left) + m_pad
+        m_bottom = (final_top + resized_h - roi_top) + m_pad
+        draw.rectangle([m_left, m_top_mask, m_right, m_bottom], fill=255)
         
-        # 5. Harmonization
+        # 4c. Serialize mask to buffer (v19 BUGFIX: was missing!)
+        m_buf = io.BytesIO()
+        local_mask.save(m_buf, format='PNG')
+        
+        # 5. Harmonization — preserve the door, only blend edges
         try:
-            r_buf = io.BytesIO(); roi_img.save(r_buf, format='JPEG')
-            print(f"DEBUG: [v18] Starting Harmonization... (Time so far: {time.time()-start_t:.2f}s)")
+            r_buf = io.BytesIO()
+            roi_img.save(r_buf, format='PNG')
+            print(f"DEBUG: [v19] Starting Harmonization... (Time so far: {time.time()-start_t:.2f}s)")
             response = client.models.edit_image(
                 model='imagen-3.0-capability-001',
                 prompt=(
-                    "Cleanly blend this new door into the wall. Match colors, shadows and textures. "
-                    "Make it look like a high-quality professional installation. Harmonize edges."
+                    "The door has already been placed in this image. "
+                    "DO NOT change the door's color, texture, wood grain, or design. "
+                    "Only harmonize the edges where the door meets the wall — "
+                    "add realistic shadows, fix seams, and blend the frame into the wall naturally. "
+                    "Keep the door EXACTLY as it appears."
                 ),
-                reference_images=[ types.RawReferenceImage(reference_image=types.Image(image_bytes=r_buf.getvalue()), reference_id=0) ],
-                config=types.EditImageConfig(edit_mode='INPAINT_INSERT', number_of_images=1, mask=types.Image(image_bytes=m_buf.getvalue()))
+                reference_images=[
+                    types.RawReferenceImage(
+                        reference_image=types.Image(image_bytes=r_buf.getvalue()),
+                        reference_id=0,
+                    )
+                ],
+                config=types.EditImageConfig(
+                    edit_mode='INPAINT_INSERT',
+                    number_of_images=1,
+                    output_mime_type='image/png',
+                    mask=types.Image(image_bytes=m_buf.getvalue()),
+                ),
             )
             
             if response.generated_images:
@@ -278,27 +299,17 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                 full = room_img.copy()
                 full.paste(gen_roi, (roi_left, roi_top))
                 full.save(result_image_path, format='JPEG', quality=95)
-                print(f"DEBUG: [v18] SUCCESS total time: {time.time()-start_t:.2f}s")
+                print(f"DEBUG: [v19] SUCCESS total time: {time.time()-start_t:.2f}s")
                 return result_image_path
         except Exception as e:
-            print(f"WARNING: [v18] AI failed or timed out: {e}. (Time so far: {time.time()-start_t:.2f}s)")
+            print(f"WARNING: [v19] AI harmonization failed: {e}. (Time so far: {time.time()-start_t:.2f}s)")
 
+        # Fallback: save the dirty composite (door is still placed, just no edge blending)
         dirty_composite.save(result_image_path, format='JPEG', quality=90)
-        print(f"DEBUG: [v18] FALLBACK total time: {time.time()-start_t:.2f}s")
+        print(f"DEBUG: [v19] FALLBACK (dirty composite) total time: {time.time()-start_t:.2f}s")
         return result_image_path
 
     except Exception as e:
-        print(f"FATAL: {e}")
+        print(f"FATAL: [v19] visualize_door_in_room error: {e}")
         import traceback; traceback.print_exc()
-        raise e
-
-    except Exception as e:
-        print(f"ERROR: [Restoration v16] Fatal: {e}")
-        import traceback; traceback.print_exc()
-        raise e
-
-    except Exception as e:
-        print(f"DEBUG: [Gemini ROI-v2] Error during visualization: {e}")
-        import traceback
-        traceback.print_exc()
         raise e

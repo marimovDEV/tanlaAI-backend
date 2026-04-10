@@ -790,27 +790,32 @@ class AIService:
     @staticmethod
     def get_gemini_client():
         """
-        Initialize Gemini client. 
-        v18: Prioritize Service Account (Vertex AI) as it is more robust for Imagen 3 features.
+        Initialize Gemini client.
+        API Key FIRST (ishlab turgan usul), Service Account fallback.
         """
         import json
         from google import genai
-        from google.oauth2 import service_account
 
-        # 1. Try Service Account (Vertex AI) FIRST
+        # 1. API Key FIRST (user confirmed this was working)
+        api_key = getattr(settings, 'GEMINI_API_KEY', None)
+        if isinstance(api_key, str):
+            api_key = api_key.strip()
+        
+        if api_key:
+            print("DEBUG: [AI Service] Initializing client with API KEY...")
+            return genai.Client(api_key=api_key)
+
+        # 2. Fallback: Service Account (Vertex AI)
         key_path = getattr(settings, 'GOOGLE_APPLICATION_CREDENTIALS', None)
         if key_path and os.path.exists(key_path):
             try:
-                print("DEBUG: [AI Service] Initializing client with SERVICE ACCOUNT (Vertex AI priority)...")
+                from google.oauth2 import service_account
+                print("DEBUG: [AI Service] Trying Service Account fallback...")
                 project = getattr(settings, 'VERTEX_AI_PROJECT', '')
                 location = getattr(settings, 'VERTEX_AI_LOCATION', 'us-central1')
                 
                 with open(key_path, 'r', encoding='utf-8') as f:
                     info = json.load(f)
-                
-                pk = info.get('private_key', '')
-                if pk:
-                    info['private_key'] = pk.replace('\\n', '\n')
 
                 credentials = service_account.Credentials.from_service_account_info(
                     info, 
@@ -824,18 +829,9 @@ class AIService:
                     credentials=credentials
                 )
             except Exception as e:
-                print(f"WARNING: [AI Service] Service Account auth failed, trying API Key: {e}")
-
-        # 2. Fallback to API Key
-        api_key = getattr(settings, 'GEMINI_API_KEY', None)
-        if isinstance(api_key, str):
-            api_key = api_key.strip()
+                print(f"WARNING: [AI Service] Service Account failed: {e}")
         
-        if api_key:
-            print("DEBUG: [AI Service] Initializing client with API KEY fallback...")
-            return genai.Client(api_key=api_key)
-        
-        raise ValueError("Neither valid google-cloud-key.json nor GEMINI_API_KEY found.")
+        raise ValueError("GEMINI_API_KEY yoki google-cloud-key.json topilmadi.")
 
     @staticmethod
     def process_product_background(product):

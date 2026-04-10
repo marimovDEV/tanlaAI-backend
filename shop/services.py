@@ -67,6 +67,12 @@ class AIService:
             product.ai_status = 'processing'
             product.save(update_fields=['ai_status'])
 
+            # Ensure we have original image
+            if not product.original_image:
+                product.image.seek(0)
+                original_content = product.image.read()
+                product.original_image.save(os.path.basename(product.image.name), ContentFile(original_content), save=False)
+
             # Load model session
             session = new_session("isnet-general-use")
             

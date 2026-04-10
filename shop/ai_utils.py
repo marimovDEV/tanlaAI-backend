@@ -264,13 +264,13 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             mask=types.Image(image_bytes=mask_buf.getvalue())
         )
         
-        print(f"DEBUG: [Gemini/ROI-v3] Installing door {product.id} into opening {roi_w}x{roi_h}...")
+        print(f"DEBUG: [Gemini/ROI-v4] Point-based installation for door {product.id}...")
         response = client.models.edit_image(
             model='imagen-3.0-capability-001',
             prompt=(
                 "Professionally install the wood door from image 1 into the empty rectangular wall opening in image 0. "
-                "The door must perfectly fill the opening, matching the room's depth, shadows, and perspective accurately. "
-                "The door should look like it was originally built into this room."
+                "The door must perfectly fill the opening, matching the room's depth and perspective. "
+                "IMPORTANT: Do not stretch or distort the door; maintain its original proportions from image 1."
             ),
             reference_images=[
                 types.RawReferenceImage(reference_image=types.Image(image_bytes=roi_buf.getvalue()), reference_id=0),

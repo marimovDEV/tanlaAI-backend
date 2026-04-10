@@ -384,33 +384,53 @@ class AIService:
             from PIL import Image
             
             # Detect room image size for mask creation
-            with Image.open(room_image_path) as room_img:
-                width, height = room_img.size
-            
-            # --- Aspect Ratio Enforcement ---
-            # Calculate native aspect ratio of the door product to prevent distortion
-            door_ar = 0.4 # Default tall door
+            # --- New v4 Point-Based Precision ---
             try:
+                # 1. Calculate door's native aspect ratio
+                door_ar = 0.4 
                 door_path = product.original_image.path if product.original_image else product.image.path
                 with Image.open(door_path) as dp:
                     dw, dh = dp.size
                     door_ar = dw / float(dh)
-                    print(f"DEBUG: [AI Service] Product native Aspect Ratio: {door_ar:.3f}")
-            except Exception as ar_err:
-                print(f"DEBUG: [AI Service] AR calculation failed, using default: {ar_err}")
+                
+                # 2. Get Top and Bottom points from Gemini
+                point_prompt = """
+                Identify the [y, x] coordinates for the TOP-CENTER point and BOTTOM-CENTER point of the rectangular door opening in this room.
+                Return JSON in this format: {"top_center": [y, x], "bottom_center": [y, x]} scale 0-1000.
+                """
+                
+                resp = client.models.generate_content(
+                    model='gemini-1.5-flash',
+                    contents=[point_prompt, types.Part.from_bytes(data=room_bytes, mime_type='image/jpeg')]
+                )
+                
+                import json, re
+                text = resp.text
+                match = re.search(r'\{.*\}', text, re.DOTALL)
+                pts = json.loads(match.group()) if match else {}
+                
+                t_y, t_x = pts.get("top_center", [200, 500])
+                b_y, b_x = pts.get("bottom_center", [850, 500])
+                
+                # 3. Reconstruct Box based on points and AR
+                box_h = b_y - t_y
+                box_w = box_h * door_ar
+                
+                # Center horizontally based on the average of t_x and b_x
+                avg_x = (t_x + b_x) / 2
+                
+                new_box = [
+                    t_y,                     # ymin
+                    max(0, avg_x - box_w/2), # xmin
+                    b_y,                     # ymax
+                    min(1000, avg_x + box_w/2) # xmax
+                ]
+                box = new_box
+                print(f"DEBUG: [AI Service v4] Reconstructed AR-Enforced Box from points: {box}")
 
-            # Recalculate box width based on height to maintain AR
-            ymin, xmin, ymax, xmax = box
-            box_h = ymax - ymin
-            # Width should be Height * Ratio
-            new_box_w = box_h * door_ar
-            
-            # Center the new width box around the original center_x
-            center_x = (xmin + xmax) / 2
-            xmin = max(0, center_x - new_box_w / 2)
-            xmax = min(1000, center_x + new_box_w / 2)
-            box = [ymin, xmin, ymax, xmax]
-            print(f"DEBUG: [AI Service] Adjusted AR-Enforced Box: {box}")
+            except Exception as e:
+                print(f"DEBUG: [AI Service v4] Point-based failed, using default: {e}")
+                box = [200, 400, 850, 600]
 
             # Execute real AI visualization
             visualize_door_in_room(

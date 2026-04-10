@@ -71,8 +71,8 @@ def test_settings():
     
     project = getattr(settings, 'VERTEX_AI_PROJECT', '')
     location = getattr(settings, 'VERTEX_AI_LOCATION', '')
-    log(PASS if project else FAIL, f"VERTEX_AI_PROJECT: {project or 'BO'SH'}")
-    log(PASS if location else FAIL, f"VERTEX_AI_LOCATION: {location or 'BO'SH'}")
+    log(PASS if project else FAIL, f"VERTEX_AI_PROJECT: {project or 'EMPTY'}")
+    log(PASS if location else FAIL, f"VERTEX_AI_LOCATION: {location or 'EMPTY'}")
     results.append(("Sozlamalar", bool(api_key or (key_path and os.path.exists(key_path)))))
 
 

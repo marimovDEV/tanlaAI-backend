@@ -334,70 +334,70 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             else:
                 LOG(4, "OpenCV geometriyasi topolmadi, GPT-4o ga jo'natilmoqda...")
                 try:
-                r_bytes = io.BytesIO()
-                room_img.save(r_bytes, format='JPEG', quality=85)
-                import base64
-                import requests
-                from django.conf import settings
+                    r_bytes = io.BytesIO()
+                    room_img.save(r_bytes, format='JPEG', quality=85)
+                    import base64
+                    import requests
+                    from django.conf import settings
 
-                base64_image = base64.b64encode(r_bytes.getvalue()).decode('utf-8')
-                openai_key = getattr(settings, 'OPENAI_API_KEY', os.getenv("OPENAI_API_KEY"))
-                if not openai_key: raise ValueError("OpenAI Key missing. Please set it in .env")
+                    base64_image = base64.b64encode(r_bytes.getvalue()).decode('utf-8')
+                    openai_key = getattr(settings, 'OPENAI_API_KEY', os.getenv("OPENAI_API_KEY"))
+                    if not openai_key: raise ValueError("OpenAI Key missing. Please set it in .env")
 
-                prompt = (
-                    "You are a computer vision system.\n"
-                    "Analyze this room image and find the best place where a door can be installed.\n"
-                    "Rules:\n"
-                    "- Door must be placed ONLY on a wall\n"
-                    "- Door must NOT be placed on windows\n"
-                    "- Door must be vertical rectangle\n"
-                    "- Door must touch the floor\n"
-                    "- Door must not overlap furniture\n"
-                    "Return ONLY JSON:\n"
-                    "{\n"
-                    "  \"x\": number (0-1),\n"
-                    "  \"y\": number (0-1),\n"
-                    "  \"width\": number (0-1),\n"
-                    "  \"height\": number (0-1)\n"
-                    "}"
-                )
-                
-                headers = {"Content-Type": "application/json", "Authorization": f"Bearer {openai_key}"}
-                payload = {
-                    "model": "gpt-4o",
-                    "messages": [{"role": "user", "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    ]}],
-                    "response_format": {"type": "json_object"}
-                }
-                
-                LOG(4, "Sending room image to GPT...")
-                response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=20)
-                response.raise_for_status()
-                
-                import json
-                content = json.loads(response.json()['choices'][0]['message']['content'])
-                LOG(4, f"GPT BOX: {content}")
-                
-                # Validation rule from user
-                if content.get("width", 0) < 0.1 or content.get("height", 0) < 0.2 or (content.get("y", 0) + content.get("height", 0)) > 1.0:
-                    raise ValueError("GPT box failed validation rules")
-                
-                box_x = content["x"]
-                box_y = content["y"]
-                box_w = content["width"]
-                box_h = content["height"]
-                box_1000 = [
-                    int(box_y * 1000), 
-                    int(box_x * 1000), 
-                    int((box_y + box_h) * 1000), 
-                    int((box_x + box_w) * 1000)
-                ]
-            except Exception as e:
-                LOG(4, f"GPT detection XATOLIGI: {e}")
-                box_1000 = [200, 400, 850, 600]
-                LOG(4, f"Fallback Default box ishlatilmoqda: {box_1000}")
+                    prompt = (
+                        "You are a computer vision system.\n"
+                        "Analyze this room image and find the best place where a door can be installed.\n"
+                        "Rules:\n"
+                        "- Door must be placed ONLY on a wall\n"
+                        "- Door must NOT be placed on windows\n"
+                        "- Door must be vertical rectangle\n"
+                        "- Door must touch the floor\n"
+                        "- Door must not overlap furniture\n"
+                        "Return ONLY JSON:\n"
+                        "{\n"
+                        "  \"x\": number (0-1),\n"
+                        "  \"y\": number (0-1),\n"
+                        "  \"width\": number (0-1),\n"
+                        "  \"height\": number (0-1)\n"
+                        "}"
+                    )
+                    
+                    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {openai_key}"}
+                    payload = {
+                        "model": "gpt-4o",
+                        "messages": [{"role": "user", "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                        ]}],
+                        "response_format": {"type": "json_object"}
+                    }
+                    
+                    LOG(4, "Sending room image to GPT...")
+                    response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=20)
+                    response.raise_for_status()
+                    
+                    import json
+                    content = json.loads(response.json()['choices'][0]['message']['content'])
+                    LOG(4, f"GPT BOX: {content}")
+                    
+                    # Validation rule from user
+                    if content.get("width", 0) < 0.1 or content.get("height", 0) < 0.2 or (content.get("y", 0) + content.get("height", 0)) > 1.0:
+                        raise ValueError("GPT box failed validation rules")
+                    
+                    box_x = content["x"]
+                    box_y = content["y"]
+                    box_w = content["width"]
+                    box_h = content["height"]
+                    box_1000 = [
+                        int(box_y * 1000), 
+                        int(box_x * 1000), 
+                        int((box_y + box_h) * 1000), 
+                        int((box_x + box_w) * 1000)
+                    ]
+                except Exception as e:
+                    LOG(4, f"GPT detection XATOLIGI: {e}")
+                    box_1000 = [200, 400, 850, 600]
+                    LOG(4, f"Fallback Default box ishlatilmoqda: {box_1000}")
             
         ymin, xmin, ymax, xmax = box_1000
         left = int(xmin * rw / 1000)

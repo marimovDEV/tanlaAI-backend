@@ -9,7 +9,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
 from aiogram.types import WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.session.aiohttp import AiohttpSession, _prepare_connector
 
 import environ
 
@@ -21,12 +21,21 @@ TOKEN = env('TELEGRAM_BOT_TOKEN')
 WEBAPP_URL = env('NGROK_URL')
 PROXY_URL = env('PROXY_URL', default=None)
 
-# Custom Session to force IPv4 in aiogram 3.x with optional Proxy
+# Custom Session to force IPv4 in aiogram 3.x with optional Proxy support
 class IPv4Session(AiohttpSession):
     async def create_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
+            connector_type = aiohttp.TCPConnector
+            connector_init = {"family": socket.AF_INET, "enable_cleanup_closed": True}
+
+            if self.proxy:
+                # Use aiohttp_socks to handle proxy with fixed family
+                connector_type, connector_init = _prepare_connector(self.proxy)
+                # Ensure the proxy connector also uses IPv4 if possible
+                # (most proxy connectors handle this through the proxy server)
+
             self._session = aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(family=socket.AF_INET, enable_cleanup_closed=True),
+                connector=connector_type(**connector_init),
                 json_serialize=self.json_dumps,
             )
         return self._session

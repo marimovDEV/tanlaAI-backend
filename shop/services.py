@@ -173,7 +173,15 @@ class AIService:
             
             room_img = Image.open(room_image_path).convert("RGBA")
             # Prefer the no-background version we created earlier
-            door_source = product.image_no_bg if product.image_no_bg else product.image
+            door_source = None
+            if product.image_no_bg and product.image_no_bg.name:
+                # Check if the file actually exists on disk
+                if os.path.exists(product.image_no_bg.path):
+                    door_source = product.image_no_bg
+            
+            if not door_source:
+                door_source = product.image
+                
             door_img = Image.open(door_source.path).convert("RGBA")
 
             w, h = room_img.size

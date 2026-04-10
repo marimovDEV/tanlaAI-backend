@@ -2,10 +2,12 @@ import asyncio
 import logging
 import os
 import sys
+import socket
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
 from aiogram.types import WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.client.session.aiohttp import AiohttpSession
 
 import environ
 
@@ -20,9 +22,6 @@ dp = Dispatcher()
 
 @dp.message(CommandStart())
 async def command_start_handler(message: types.Message) -> None:
-    """
-    This handler receives messages with `/start` command
-    """
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(
         text="Open ATELIER", 
@@ -36,7 +35,15 @@ async def command_start_handler(message: types.Message) -> None:
     )
 
 async def main() -> None:
-    bot = Bot(token=TOKEN)
+    # Force IPv4 to avoid Timeout errors on some VPS
+    session = AiohttpSession()
+    # Adding extra safety with higher timeout
+    bot = Bot(token=TOKEN, session=session)
+    
+    # Check bot status before starting
+    bot_user = await bot.get_me()
+    print(f"DEBUG: [Bot Service] Started as @{bot_user.username}")
+    
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

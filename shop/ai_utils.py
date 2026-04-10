@@ -318,14 +318,17 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                 mask=types.Image(image_bytes=mask_buf.getvalue())
             )
             
-            print(f"DEBUG: [Bulletproof v14] Calling Imagen 3 for Product {product.id}...")
+            print(f"DEBUG: [Super Aggressive v15] Forcing replacement for Product {product.id}...")
             response = client.models.edit_image(
                 model='imagen-3.0-capability-001',
                 prompt=(
-                    "Integrate the new door into the wall naturally. REPLACE the masked area with the provided reference door. "
-                    "Ensure perfect alignment with the floor and wall. Add soft ambient shadows around the door frame. "
-                    "The door must look like it belongs in the room, with consistent lighting and textures. "
-                    "Remove any signs of the previous door completely."
+                    "This image already contains an existing door. You MUST: "
+                    "1. Find the existing door in the masked area. "
+                    "2. REMOVE it completely from the wall. "
+                    "3. REPLACE it with the new provided reference door. "
+                    "Do NOT return the original image. Do NOT keep the old door. "
+                    "The result must clearly show a DIFFERENT door from the original. "
+                    "The new door must be perfectly integrated into the wall, matching the floor perspective."
                 ),
                 reference_images=[
                     types.RawReferenceImage(reference_image=types.Image(image_bytes=roi_buf.getvalue()), reference_id=0)

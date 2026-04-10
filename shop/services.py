@@ -387,10 +387,30 @@ class AIService:
             with Image.open(room_image_path) as room_img:
                 width, height = room_img.size
             
-            # Create binary mask from detected box
-            print(f"DEBUG: [AI Service] Creating mask for box {box} on {width}x{height} image...")
-            mask_io = create_binary_mask(width, height, box)
-            mask_bytes = mask_io.getvalue()
+            # --- Aspect Ratio Enforcement ---
+            # Calculate native aspect ratio of the door product to prevent distortion
+            door_ar = 0.4 # Default tall door
+            try:
+                door_path = product.original_image.path if product.original_image else product.image.path
+                with Image.open(door_path) as dp:
+                    dw, dh = dp.size
+                    door_ar = dw / float(dh)
+                    print(f"DEBUG: [AI Service] Product native Aspect Ratio: {door_ar:.3f}")
+            except Exception as ar_err:
+                print(f"DEBUG: [AI Service] AR calculation failed, using default: {ar_err}")
+
+            # Recalculate box width based on height to maintain AR
+            ymin, xmin, ymax, xmax = box
+            box_h = ymax - ymin
+            # Width should be Height * Ratio
+            new_box_w = box_h * door_ar
+            
+            # Center the new width box around the original center_x
+            center_x = (xmin + xmax) / 2
+            xmin = max(0, center_x - new_box_w / 2)
+            xmax = min(1000, center_x + new_box_w / 2)
+            box = [ymin, xmin, ymax, xmax]
+            print(f"DEBUG: [AI Service] Adjusted AR-Enforced Box: {box}")
 
             # Execute real AI visualization
             visualize_door_in_room(

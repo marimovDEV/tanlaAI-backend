@@ -462,7 +462,7 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         LOG(6, "ROI va mask tayyorlanmoqda...")
         side = int(max(resized_w, resized_h) * 1.4)
         side = min(side, rw, rh)
-        roi_left = max(0, center_x - side // 2)
+        roi_left = max(0, (final_left + resized_w // 2) - side // 2)
         roi_top = max(0, final_top + resized_h // 2 - side // 2)
         if roi_left + side > rw: roi_left = rw - side
         if roi_top + side > rh: roi_top = rh - side

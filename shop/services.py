@@ -841,16 +841,15 @@ class AIService:
             except Exception as e:
                 print(f"WARNING: [AI Service] Service Account failed: {e}")
         
-        raise ValueError("GEMINI_API_KEY yoki google-cloud-key.json topilmadi.")
-
-    @staticmethod
+        raise ValueError("GEMINI_API_KEY yoki google-cloud-key.json topilmadi.")    @staticmethod
     def process_product_background(product):
         """
-        Remove only the outer background while keeping the full door silhouette solid.
-        Decorative white inserts or glass cutouts must stay part of the product.
+        Remove the background using rembg (U2Net) and save the transparent version.
         """
         from .models import Product
         from django.core.files.base import ContentFile
+        import os
+        import io
 
         try:
             # Refresh instance
@@ -858,7 +857,7 @@ class AIService:
             if product.ai_status == 'completed':
                 return
 
-            print(f"DEBUG: [AI Service] Processing Background for Product {product.id} (u2net)...")
+            print(f"DEBUG: [AI Service] Processing Background for Product {product.id} (rembg)...")
             product.ai_status = 'processing'
             product.save(update_fields=['ai_status'])
 
@@ -874,124 +873,26 @@ class AIService:
             # Prepare image
             product.original_image.seek(0)
             input_image_bytes = product.original_image.read()
-            img_pil = Image.open(io.BytesIO(input_image_bytes)).convert("RGB")
             
-            import numpy as np
-            import cv2
-            import base64
-            import json
-            from .ai_utils import create_binary_mask, replace_background_with_green
-
-            img_np = np.array(img_pil)
-            h, w = img_np.shape[:2]            # --- STEP 1: GPT-4o Detection (Bounding Box) ---
-            door_box = None
-            try:
-                openai_key = getattr(settings, 'OPENAI_API_KEY', None)
-                if not openai_key: raise ValueError("OpenAI Key missing")
-
-                base64_image = base64.b64encode(input_image_bytes).decode('utf-8')
-                prompt = """
-                Identify the main DOOR product. 
-                Return a GENEROUS bounding box for the ENTIRE DOOR including vertical frames, hinges, handle, and the decorative TOP CROWN/cornice.
-                ERR ON THE SIDE OF INCLUDING EXTRA SPACE; it is better to have more background than to clip the door.
-                Return JSON: {"box_2d": [ymin, xmin, ymax, xmax]} scale 0-1000.
-                """
-                
-                headers = {"Content-Type": "application/json", "Authorization": f"Bearer {openai_key}"}
-                payload = {
-                    "model": "gpt-4o",
-                    "messages": [{"role": "user", "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    ]}],
-                    "response_format": {"type": "json_object"}
-                }
-                
-                response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=20)
-                response.raise_for_status()
-                content = json.loads(response.json()['choices'][0]['message']['content'])
-                door_box = content.get('box_2d')
-                print(f"DEBUG: [AI Service] GPT-4o detected Bounding Box: {door_box}")
-            except Exception as e:
-                print(f"WARNING: [AI Service] GPT-4o detection failed: {e}")
-                door_box = [50, 150, 950, 850] # Fallback to central box
-
-            # --- STEP 2: Multi-Layer Mask Generation ---
-            final_mask = None
+            # Simple and extremely stable Background Removal via rembg
+            from rembg import remove, new_session
+            session = new_session("u2net")
             
-            # 2.1 Start with a Box-based mask (Ensures we cover the frame)
-            box_mask_io = create_binary_mask(w, h, box_1000=door_box, invert=False)
-            box_mask = cv2.imdecode(np.frombuffer(box_mask_io.getvalue(), np.uint8), cv2.IMREAD_GRAYSCALE)
-
-            # 2.2 Local rembg (U2Net) - Good for general segmentation
-            try:
-                import rembg
-                session = rembg.new_session("u2net")
-                rembg_bytes = rembg.remove(input_image_bytes, session=session)
-                nparr = np.frombuffer(rembg_bytes, np.uint8)
-                rgba_rembg = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
-                if rgba_rembg is not None and rgba_rembg.shape[2] == 4:
-                    rembg_mask = rgba_rembg[:, :, 3]
-                    # Merge: We prioritize rembg for fine edges, but restrict it slightly to the door box
-                    final_mask = cv2.bitwise_and(rembg_mask, box_mask)
-                    # Actually, if rembg is too aggressive, the box should "save" it. 
-                    # Let's try OR to ensure wooden panels inside the box aren't cut
-                    final_mask = cv2.bitwise_or(final_mask, box_mask) # Keep anything GPT-4o box says is door
-                    print(f"DEBUG: [AI Service] Combined Box + rembg mask for {product.id}")
-            except Exception as e:
-                print(f"WARNING: [AI Service] local rembg failed, using box mask only: {e}")
-                final_mask = box_mask
-
-            # --- STEP 3: Gemini (Nano Banana) Fallback (Optional, if box_mask is still too raw) ---
-            # If the mask is still just a box, we can try to refine it with Gemini
-            # But the user specifically wanted GPT + Nano Banana. 
-            # Let's use Nano Banana to clean up the Box.
-            try:
-                # Tell Nano Banana: Everything OUTSIDE the box is definitely background
-                inv_box_mask_io = create_binary_mask(w, h, box_1000=door_box, invert=True)
-                green_screen_bytes = replace_background_with_green(input_image_bytes, inv_box_mask_io.getvalue())
-                
-                nparr = np.frombuffer(green_screen_bytes, np.uint8)
-                img_green = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                # Chroma-key the green out
-                lower_green = np.array([0, 180, 0])
-                upper_green = np.array([140, 255, 140])
-                green_mask = cv2.inRange(img_green, lower_green, upper_green)
-                refined_door_mask = cv2.bitwise_not(green_mask)
-                
-                # Intersect with the box to be 100% safe
-                final_mask = cv2.bitwise_and(refined_door_mask, box_mask)
-                print(f"DEBUG: [AI Service] Gemini/Nano Banana refinement SUCCESS for {product.id}")
-            except Exception as gem_err:
-                print(f"WARNING: [AI Service] Gemini refinement failed, keeping box/rembg mask: {gem_err}")
-
-            # Final Cleanup
-            if final_mask is not None:
-                kernel = np.ones((5, 5), np.uint8)
-                final_mask = cv2.morphologyEx(final_mask, cv2.MORPH_CLOSE, kernel)
-                
-                b, g, r = cv2.split(img_np)
-                # Convert RGB to BGR for OpenCV encode
-                img_bgr = cv2.merge((r, g, b))
-                rgba = cv2.merge((r, g, b, final_mask))
-
-                _, final_encoded = cv2.imencode('.png', rgba)
-                output_image_bytes = final_encoded.tobytes()
-
-                product.image.save(f"isolated_{product.id}.png", ContentFile(output_image_bytes), save=False)
-                product.image_no_bg.save(f"trans_{product.id}.png", ContentFile(output_image_bytes), save=False)
-                product.ai_status = 'completed'
-                product.save()
-                print(f"DEBUG: [AI Service] Final result saved for {product.id}")
-            else:
-                raise ValueError("All AI pipelines failed to produce an image.")
+            output_image_bytes = remove(input_image_bytes, session=session)
+            
+            # Save the new transparent file
+            product.image.save(f"isolated_{product.id}.png", ContentFile(output_image_bytes), save=False)
+            product.image_no_bg.save(f"trans_{product.id}.png", ContentFile(output_image_bytes), save=False)
+            product.ai_status = 'completed'
+            product.save()
+            print(f"DEBUG: [AI Service] Final rembg result saved for {product.id}")
 
         except Exception as e:
             print(f"ERROR: [AI Service] UNRECOVERABLE AI Failure for {product.id}: {e}")
             import traceback
             traceback.print_exc()
             product.ai_status = 'error'
-            product.save(update_fields=['ai_status'])
+            product.save(update_fields=['ai_status'])])
 
     @staticmethod
     def generate_room_preview(product, room_image_path, result_image_path):

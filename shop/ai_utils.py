@@ -158,7 +158,11 @@ def replace_background_with_green(image_bytes: bytes, mask_bytes: bytes) -> byte
     print("DEBUG: [Gemini/Nano Banana] Replacing background with Green Screen (#00FF00)...")
     response = client.models.edit_image(
         model='imagen-3.0-capability-001',
-        prompt="Replace the entire background with a solid, flat, bright green color (#00FF00). The door must remain exactly as it is without any changes.",
+        prompt=(
+            "Keep the main door object exactly as it is, preserving all its dark wooden textures, frame details, and glass panels. "
+            "The background behind and around the door must be replaced with a solid, flat, bright green color (#00FF00). "
+            "Do not alter the door's structure or colors."
+        ),
         reference_images=[
             types.RawReferenceImage(
                 reference_image=types.Image(image_bytes=image_bytes),

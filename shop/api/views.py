@@ -6,7 +6,7 @@ import subprocess
 
 from django.db import models
 from django.utils import timezone
-from rest_framework import viewsets, permissions, status, views
+from rest_framework import viewsets, permissions, status, views, parsers
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.conf import settings
@@ -166,6 +166,7 @@ class ProductViewSet(viewsets.ModelViewSet):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
     permission_classes = [permissions.AllowAny]
+    parser_classes = [parsers.MultiPartParser, parsers.FormParser, parsers.JSONParser]
     
     def get_queryset(self):
         queryset = Product.objects.select_related('category', 'company', 'owner').all()
@@ -301,21 +302,17 @@ class ProductViewSet(viewsets.ModelViewSet):
         if not room_photo:
             return Response({'status': 'error', 'message': 'Please upload a room photo.', 'code': 'no_photo'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if product.height and product.width:
+        if product.height and product.width and user_height and user_width:
             tolerance = 5.0
             try:
                 if abs(float(user_height) - float(product.height)) > tolerance or abs(float(user_width) - float(product.width)) > tolerance:
                     return Response({
                         'status': 'error',
-                        'message': 'Door dimensions do not match the selected product.',
+                        'message': 'Door o‘lchamlari tanlangan mahsulotga mos kelmayapti.',
                         'code': 'dimension_mismatch',
                     }, status=status.HTTP_400_BAD_REQUEST)
             except (TypeError, ValueError):
-                return Response({
-                    'status': 'error',
-                    'message': 'Please enter valid numeric dimensions.',
-                    'code': 'invalid_dimensions',
-                }, status=status.HTTP_400_BAD_REQUEST)
+                pass # Fallback if dimensions are invalidly formatted
 
         request_id = str(uuid.uuid4())
         room_dir = os.path.join(settings.MEDIA_ROOT, 'ai_temp')

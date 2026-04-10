@@ -112,6 +112,19 @@ class AdminProductViewSet(viewsets.ModelViewSet):
             qs = qs.filter(category_id=category)
         return qs
 
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminUser])
+    def reprocess_ai(self, request, pk=None):
+        """Forces the AI to re-process the background removal using the latest model (SAM)."""
+        product = self.get_object()
+        product.ai_status = 'processing'
+        product.save(update_fields=['ai_status'])
+        
+        import threading
+        from ..services import AIService
+        threading.Thread(target=AIService.process_product_background, args=(product,)).start()
+        
+        return Response({'status': 'processing'})
+
     def perform_destroy(self, instance):
         instance.delete()
 

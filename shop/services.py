@@ -7,6 +7,142 @@ import requests
 # Moved rembg imports inside functions to prevent startup crashes
 
 
+def build_mask_from_polygon(width, height, polygon_points):
+    import cv2
+    import numpy as np
+
+    if not polygon_points or len(polygon_points) < 3:
+        return None
+
+    mask = np.zeros((height, width), dtype=np.uint8)
+    pts = np.array(polygon_points, np.int32).reshape((-1, 1, 2))
+    cv2.fillPoly(mask, [pts], 255)
+    return mask
+
+
+def refine_product_mask(mask):
+    """
+    Convert a noisy alpha/mask into one solid silhouette so door inserts,
+    glass cutouts, and decorative white areas are not punched out.
+    """
+    import cv2
+    import numpy as np
+
+    if mask is None:
+        return None
+
+    clean = np.where(mask > 10, 255, 0).astype(np.uint8)
+    if not np.any(clean):
+        return None
+
+    kernel = np.ones((5, 5), np.uint8)
+    clean = cv2.morphologyEx(clean, cv2.MORPH_CLOSE, kernel, iterations=2)
+    clean = cv2.morphologyEx(clean, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8), iterations=1)
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(clean, connectivity=8)
+    if num_labels <= 1:
+        return clean
+
+    height, width = clean.shape[:2]
+    image_center = (width / 2.0, height / 2.0)
+    best_label = None
+    best_score = -1.0
+
+    for label in range(1, num_labels):
+        x, y, w, h, area = stats[label]
+        if area <= 0:
+            continue
+
+        component_center = (x + (w / 2.0), y + (h / 2.0))
+        distance = ((component_center[0] - image_center[0]) ** 2 + (component_center[1] - image_center[1]) ** 2) ** 0.5
+        score = float(area) - (distance * 2.0)
+        if score > best_score:
+            best_score = score
+            best_label = label
+
+    if best_label is None:
+        return clean
+
+    clean = np.where(labels == best_label, 255, 0).astype(np.uint8)
+
+    contours, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return clean
+
+    filled = np.zeros_like(clean)
+    cv2.drawContours(filled, contours, -1, 255, thickness=cv2.FILLED)
+    filled = cv2.morphologyEx(filled, cv2.MORPH_CLOSE, kernel, iterations=1)
+    return filled
+
+
+def mask_stats(mask):
+    import cv2
+
+    if mask is None:
+        return 0, 0.0, (0, 0, 0, 0)
+
+    area = int(cv2.countNonZero(mask))
+    height, width = mask.shape[:2]
+    area_ratio = area / float(max(1, height * width))
+    if area == 0:
+        return area, area_ratio, (0, 0, 0, 0)
+    bbox = cv2.boundingRect(mask)
+    return area, area_ratio, bbox
+
+
+def is_reasonable_door_mask(mask):
+    if mask is None:
+        return False
+
+    area, area_ratio, bbox = mask_stats(mask)
+    if area == 0:
+        return False
+
+    _, _, bbox_width, bbox_height = bbox
+    height, width = mask.shape[:2]
+    height_ratio = bbox_height / float(max(1, height))
+    width_ratio = bbox_width / float(max(1, width))
+
+    return 0.03 <= area_ratio <= 0.95 and height_ratio >= 0.35 and width_ratio >= 0.12
+
+
+def merge_candidate_masks(primary_mask, polygon_mask):
+    import cv2
+
+    primary_mask = refine_product_mask(primary_mask)
+    polygon_mask = refine_product_mask(polygon_mask)
+
+    if primary_mask is None:
+        return polygon_mask
+    if polygon_mask is None:
+        return primary_mask
+    if not is_reasonable_door_mask(polygon_mask):
+        return primary_mask
+
+    primary_area, _, _ = mask_stats(primary_mask)
+    polygon_area, _, _ = mask_stats(polygon_mask)
+    overlap = cv2.countNonZero(cv2.bitwise_and(primary_mask, polygon_mask))
+    smaller_area = max(1, min(primary_area, polygon_area))
+
+    # Reject obviously unrelated polygons while still allowing slightly loose unions.
+    if overlap / float(smaller_area) < 0.10 and polygon_area > primary_area * 2.5:
+        return primary_mask
+
+    return refine_product_mask(cv2.bitwise_or(primary_mask, polygon_mask))
+
+
+def compose_rgba_from_mask(rgb_image, alpha_mask):
+    import cv2
+
+    refined_mask = refine_product_mask(alpha_mask)
+    if refined_mask is None:
+        return None
+
+    img_bgr = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR)
+    b, g, r = cv2.split(img_bgr)
+    return cv2.merge((b, g, r, refined_mask))
+
+
 class AIService:
     """Service layer for all AI operations — background removal and room visualization."""
     
@@ -55,12 +191,12 @@ class AIService:
     @staticmethod
     def process_product_background(product):
         """
-        Background removal using ONLY the free local rembg library.
-        No API keys or internet required for this step.
+        Remove only the outer background while keeping the full door silhouette solid.
+        Decorative white inserts or glass cutouts must stay part of the product.
         """
         from .models import Product
-        import os
         from django.core.files.base import ContentFile
+
         try:
             # Refresh instance
             product = Product.objects.get(id=product.id)
@@ -89,20 +225,26 @@ class AIService:
             import cv2
             import base64
             import json
-            import requests
             from .ai_utils import create_binary_mask, replace_background_with_green
 
             img_np = np.array(img_pil)
             h, w = img_np.shape[:2]
 
-            # --- STEP 1: GPT-4o Detection ---
+            # STEP 1: Ask GPT-4o for the OUTER door silhouette only.
             polygon_points = None
             try:
                 openai_key = getattr(settings, 'OPENAI_API_KEY', None)
-                if not openai_key: raise ValueError("OpenAI Key missing")
+                if not openai_key:
+                    raise ValueError("OpenAI Key missing")
 
                 base64_image = base64.b64encode(input_image_bytes).decode('utf-8')
-                prompt = 'Identify the main door. Trace outer boundary with a polygon. JSON: {"polygon": [[x, y], ...]} scale 0-1000.'
+                prompt = (
+                    "Identify the main door product and trace ONLY its OUTERMOST visible silhouette. "
+                    "Include the entire door body, frame, panels, glass inserts, and decorations as one solid object. "
+                    "Do not cut holes for white ornaments, glass, or inner details. "
+                    "Return only JSON in this format: {\"polygon\": [[x, y], ...]}. "
+                    "Coordinates must be scaled from 0 to 1000."
+                )
                 
                 headers = {"Content-Type": "application/json", "Authorization": f"Bearer {openai_key}"}
                 payload = {
@@ -122,50 +264,67 @@ class AIService:
                     polygon_points = [[int(pt[0] * w / 1000), int(pt[1] * h / 1000)] for pt in poly_data]
             except Exception as e:
                 print(f"WARNING: [AI Service] GPT-4o failed: {e}")
-                # Fallback to a central box if GPT fails to detect
-                polygon_points = [[int(w*0.1), int(h*0.05)], [int(w*0.9), int(h*0.05)], [int(w*0.9), int(h*0.95)], [int(w*0.1), int(h*0.95)]]
+                polygon_points = None
 
-            # --- STEP 2: Gemini (Nano Banana) or Local Fallback ---
-            rgba = None
+            polygon_mask = build_mask_from_polygon(w, h, polygon_points)
+            final_mask = None
+
+            # STEP 2: Local rembg is the primary engine because it is more stable
+            # for doors than image-edit inpainting.
             try:
-                # 2.1 Gemini Green Screen
-                mask_io = create_binary_mask(w, h, polygon=polygon_points, invert=True)
-                green_screen_bytes = replace_background_with_green(input_image_bytes, mask_io.getvalue())
-                
-                # 2.2 OpenCV Chroma Key
-                nparr = np.frombuffer(green_screen_bytes, np.uint8)
-                img_green = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                green_mask = cv2.inRange(img_green, np.array([0, 180, 0]), np.array([140, 255, 140]))
-                door_mask = cv2.bitwise_not(green_mask)
-                door_mask = cv2.morphologyEx(door_mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-                
-                b, g, r = cv2.split(img_green)
-                rgba = cv2.merge((b, g, r, door_mask))
-                print(f"DEBUG: [AI Service] Triple-AI Success for {product.id}")
-            except Exception as gemini_err:
-                print(f"WARNING: [AI Service] Gemini/Chroma failed: {gemini_err}")
-                
-                # FALLBACK 1: Local rembg (Extremely reliable, offline)
+                print(f"DEBUG: [AI Service] Running local rembg for Product {product.id}...")
+                import rembg
+
+                session = rembg.new_session("u2net")
+                output_bytes = rembg.remove(input_image_bytes, session=session)
+                nparr = np.frombuffer(output_bytes, np.uint8)
+                rgba_candidate = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+
+                if rgba_candidate is None or rgba_candidate.ndim < 3 or rgba_candidate.shape[2] < 4:
+                    raise ValueError("rembg did not return a valid RGBA image")
+
+                alpha_mask = rgba_candidate[:, :, 3]
+                final_mask = merge_candidate_masks(alpha_mask, polygon_mask)
+                print(f"DEBUG: [AI Service] Local rembg SUCCESS for {product.id}")
+            except Exception as rembg_err:
+                print(f"WARNING: [AI Service] Local rembg failed: {rembg_err}")
+
+            # STEP 3: Gemini green-screen stays as a fallback only.
+            if final_mask is None and polygon_mask is not None:
                 try:
-                    print(f"DEBUG: [AI Service] Activating Local rembg Fallback for {product.id}...")
-                    import rembg
-                    session = rembg.new_session("u2net")
-                    output_bytes = rembg.remove(input_image_bytes, session=session)
-                    nparr = np.frombuffer(output_bytes, np.uint8)
-                    rgba = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
-                    print(f"DEBUG: [AI Service] Local rembg SUCCESS for {product.id}")
-                except Exception as rembg_err:
-                    print(f"ERROR: [AI Service] Local rembg ALSO failed: {rembg_err}")
-                    
-                    # FALLBACK 2: Direct GPT-Polygon Cut (Final Effort)
-                    mask = np.zeros((h, w), dtype=np.uint8)
-                    pts = np.array(polygon_points, np.int32).reshape((-1, 1, 2))
-                    cv2.fillPoly(mask, [pts], (255))
-                    img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-                    b, g, r = cv2.split(img_bgr)
-                    rgba = cv2.merge((b, g, r, mask))
+                    print(f"DEBUG: [AI Service] Trying Gemini green-screen fallback for Product {product.id}...")
+                    mask_io = create_binary_mask(w, h, polygon=polygon_points, invert=True)
+                    green_screen_bytes = replace_background_with_green(input_image_bytes, mask_io.getvalue())
+
+                    nparr = np.frombuffer(green_screen_bytes, np.uint8)
+                    img_green = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                    if img_green is None:
+                        raise ValueError("Gemini returned an unreadable image")
+
+                    green_mask = cv2.inRange(img_green, np.array([0, 180, 0]), np.array([140, 255, 140]))
+                    gemini_mask = cv2.bitwise_not(green_mask)
+                    final_mask = merge_candidate_masks(gemini_mask, polygon_mask)
+                except Exception as gemini_err:
+                    print(f"WARNING: [AI Service] Gemini fallback failed: {gemini_err}")
+
+            # STEP 4: Last resort is the outer polygon itself.
+            if final_mask is None and polygon_mask is not None:
+                print(f"DEBUG: [AI Service] Falling back to solid GPT polygon for Product {product.id}")
+                final_mask = refine_product_mask(polygon_mask)
+
+            # STEP 5: Extremely defensive fallback when no detector responded.
+            if final_mask is None:
+                print(f"WARNING: [AI Service] Using centered rectangle fallback for Product {product.id}")
+                fallback_polygon = [
+                    [int(w * 0.15), int(h * 0.03)],
+                    [int(w * 0.85), int(h * 0.03)],
+                    [int(w * 0.85), int(h * 0.98)],
+                    [int(w * 0.15), int(h * 0.98)],
+                ]
+                final_mask = refine_product_mask(build_mask_from_polygon(w, h, fallback_polygon))
 
             # Encode and Save Result
+            rgba = compose_rgba_from_mask(img_np, final_mask)
             if rgba is not None:
                 _, final_encoded = cv2.imencode('.png', rgba)
                 output_image_bytes = final_encoded.tobytes()
@@ -179,13 +338,6 @@ class AIService:
 
         except Exception as e:
             print(f"ERROR: [AI Service] UNRECOVERABLE AI Failure for {product.id}: {e}")
-            import traceback
-            traceback.print_exc()
-            product.ai_status = 'error'
-            product.save(update_fields=['ai_status'])
-
-        except Exception as e:
-            print(f"ERROR: [AI Service] Background removal failed: {e}")
             import traceback
             traceback.print_exc()
             product.ai_status = 'error'

@@ -95,20 +95,14 @@ class AIService:
             img_np = np.array(img_pil)
             h, w = img_np.shape[:2]
 
-            # --- STEP 1: GPT-4o Detection (Polygon) ---
+            # --- STEP 1: GPT-4o Detection ---
             polygon_points = None
             try:
                 openai_key = getattr(settings, 'OPENAI_API_KEY', None)
-                if not openai_key:
-                    raise ValueError("OPENAI_API_KEY is missing.")
+                if not openai_key: raise ValueError("OpenAI Key missing")
 
-                print(f"DEBUG: [AI Service] Asking GPT-4o for door polygon...")
                 base64_image = base64.b64encode(input_image_bytes).decode('utf-8')
-                
-                prompt = """
-                Identify the main door in this image. Trace its ABSOLUTE outer boundary including the frame with a polygon.
-                Return JSON: {"polygon": [[x, y], ...]} scale 0-1000. Use at least 30-40 points for precision.
-                """
+                prompt = 'Identify the main door. Trace outer boundary with a polygon. JSON: {"polygon": [[x, y], ...]} scale 0-1000.'
                 
                 headers = {"Content-Type": "application/json", "Authorization": f"Bearer {openai_key}"}
                 payload = {
@@ -120,70 +114,75 @@ class AIService:
                     "response_format": {"type": "json_object"}
                 }
                 
-                response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+                response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=20)
                 response.raise_for_status()
                 content = json.loads(response.json()['choices'][0]['message']['content'])
-                polygon_1000 = content.get('polygon')
-                if polygon_1000:
-                    polygon_points = [[int(pt[0] * w / 1000), int(pt[1] * h / 1000)] for pt in polygon_1000]
+                poly_data = content.get('polygon')
+                if poly_data:
+                    polygon_points = [[int(pt[0] * w / 1000), int(pt[1] * h / 1000)] for pt in poly_data]
             except Exception as e:
-                print(f"ERROR: GPT-4o detection failed: {e}")
-                raise e
+                print(f"WARNING: [AI Service] GPT-4o failed: {e}")
+                # Fallback to a central box if GPT fails to detect
+                polygon_points = [[int(w*0.1), int(h*0.05)], [int(w*0.9), int(h*0.05)], [int(w*0.9), int(h*0.95)], [int(w*0.1), int(h*0.95)]]
 
-            # --- STEP 2: Gemini (Nano Banana) Green Screen Preparation ---
-            if not polygon_points:
-                raise ValueError("Polygon points missing.")
-
+            # --- STEP 2: Gemini (Nano Banana) or Local Fallback ---
+            rgba = None
             try:
-                # Create an INVERTED mask for Gemini (masking what to change: the background)
+                # 2.1 Gemini Green Screen
                 mask_io = create_binary_mask(w, h, polygon=polygon_points, invert=True)
-                mask_bytes = mask_io.getvalue()
+                green_screen_bytes = replace_background_with_green(input_image_bytes, mask_io.getvalue())
                 
-                # Try Nano Banana (Gemini/Imagen) to paint background solid green #00FF00
-                green_screen_bytes = replace_background_with_green(input_image_bytes, mask_bytes)
-                
-                # --- STEP 3: OpenCV Chroma Keying ---
+                # 2.2 OpenCV Chroma Key
                 nparr = np.frombuffer(green_screen_bytes, np.uint8)
                 img_green = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-                lower_green = np.array([0, 200, 0])
-                upper_green = np.array([120, 255, 120])
-                green_mask = cv2.inRange(img_green, lower_green, upper_green)
+                green_mask = cv2.inRange(img_green, np.array([0, 180, 0]), np.array([140, 255, 140]))
                 door_mask = cv2.bitwise_not(green_mask)
+                door_mask = cv2.morphologyEx(door_mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
                 
-                kernel = np.ones((3, 3), np.uint8)
-                door_mask = cv2.morphologyEx(door_mask, cv2.MORPH_OPEN, kernel)
-
                 b, g, r = cv2.split(img_green)
                 rgba = cv2.merge((b, g, r, door_mask))
-                print(f"DEBUG: [AI Service] Triple-AI Chroma Key Pipeline SUCCESS for Product {product.id}")
-
+                print(f"DEBUG: [AI Service] Triple-AI Success for {product.id}")
             except Exception as gemini_err:
-                print(f"WARNING: [AI Service] Gemini/GreenScreen failed, falling back to direct polygon cut: {gemini_err}")
-                with open(os.path.join(settings.BASE_DIR, 'ai_pipeline.log'), 'a') as f:
-                    f.write(f"Product {product.id} Gemini Error: {gemini_err}\n")
+                print(f"WARNING: [AI Service] Gemini/Chroma failed: {gemini_err}")
                 
-                # FALLBACK: Use GPT polygon directly to cut the image
-                mask = np.zeros((h, w), dtype=np.uint8)
-                pts = np.array(polygon_points, np.int32).reshape((-1, 1, 2))
-                cv2.fillPoly(mask, [pts], (255))
-                
-                img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-                b, g, r = cv2.split(img_bgr)
-                rgba = cv2.merge((b, g, r, mask))
-                print(f"DEBUG: [AI Service] Fallback Direct Cut SUCCESS for Product {product.id}")
+                # FALLBACK 1: Local rembg (Extremely reliable, offline)
+                try:
+                    print(f"DEBUG: [AI Service] Activating Local rembg Fallback for {product.id}...")
+                    import rembg
+                    session = rembg.new_session("u2net")
+                    output_bytes = rembg.remove(input_image_bytes, session=session)
+                    nparr = np.frombuffer(output_bytes, np.uint8)
+                    rgba = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+                    print(f"DEBUG: [AI Service] Local rembg SUCCESS for {product.id}")
+                except Exception as rembg_err:
+                    print(f"ERROR: [AI Service] Local rembg ALSO failed: {rembg_err}")
+                    
+                    # FALLBACK 2: Direct GPT-Polygon Cut (Final Effort)
+                    mask = np.zeros((h, w), dtype=np.uint8)
+                    pts = np.array(polygon_points, np.int32).reshape((-1, 1, 2))
+                    cv2.fillPoly(mask, [pts], (255))
+                    img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+                    b, g, r = cv2.split(img_bgr)
+                    rgba = cv2.merge((b, g, r, mask))
 
             # Encode and Save Result
-            _, final_encoded = cv2.imencode('.png', rgba)
-            output_image_bytes = final_encoded.tobytes()
+            if rgba is not None:
+                _, final_encoded = cv2.imencode('.png', rgba)
+                output_image_bytes = final_encoded.tobytes()
+                product.image.save(f"isolated_{product.id}.png", ContentFile(output_image_bytes), save=False)
+                product.image_no_bg.save(f"trans_{product.id}.png", ContentFile(output_image_bytes), save=False)
+                product.ai_status = 'completed'
+                product.save()
+                print(f"DEBUG: [AI Service] Final result saved for {product.id}")
+            else:
+                raise ValueError("All AI pipelines failed to produce an image.")
 
-            image_name = f"isolated_{product.id}.png"
-            product.image.save(image_name, ContentFile(output_image_bytes), save=False)
-            product.image_no_bg.save(f"trans_{product.id}.png", ContentFile(output_image_bytes), save=False)
-            
-            product.ai_status = 'completed'
-            product.save()
-            print(f"DEBUG: [AI Service] Background Removal Processed Successfully for {product.id}")
+        except Exception as e:
+            print(f"ERROR: [AI Service] UNRECOVERABLE AI Failure for {product.id}: {e}")
+            import traceback
+            traceback.print_exc()
+            product.ai_status = 'error'
+            product.save(update_fields=['ai_status'])
 
         except Exception as e:
             print(f"ERROR: [AI Service] Background removal failed: {e}")

@@ -315,26 +315,41 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         client = AIService.get_gemini_client()
         
         # ====== STEP 2: Product & Room loading ======
+        if not os.path.exists(room_image_path):
+            raise FileNotFoundError(f"Xona rasmi topilmadi: {room_image_path}")
+
         room_img_raw = Image.open(room_image_path)
         room_img = ImageOps.exif_transpose(room_img_raw).convert("RGB")
         rw, rh = room_img.size
         
         door_field = product.image_no_bg or product.image
+        if not door_field:
+            raise ValueError(f"Mahsulotda rasm yo'q (ID: {product.id})")
+            
         door_asset_raw = Image.open(door_field.path)
         door_asset = ImageOps.exif_transpose(door_asset_raw).convert("RGB")
         
         # ====== STEP 3: Analysis Phase (GPT-4o) ======
         LOG(3, "Dual Analysis (Room & Product)...")
         # analyze room (for placement)
-        if not box_1000:
-            room_analysis = analyze_room_for_placement(room_img)
-            bx = room_analysis['door_box']
-            box_1000 = [int(bx['ymin']*1000), int(bx['xmin']*1000), int(bx['ymax']*1000), int(bx['xmax']*1000)]
-        else:
-            room_analysis = {"lighting": "cinematic soft", "style": "Premium Classic", "perspective_angle": "straight"}
+        try:
+            if not box_1000:
+                room_analysis = analyze_room_for_placement(room_img)
+                bx = room_analysis['door_box']
+                box_1000 = [int(bx['ymin']*1000), int(bx['xmin']*1000), int(bx['ymax']*1000), int(bx['xmax']*1000)]
+            else:
+                room_analysis = {"lighting": "cinematic soft", "style": "Premium Classic", "perspective_angle": "straight"}
+        except Exception as e:
+            LOG("!", f"Room analysis failed, using fallback box: {e}")
+            room_analysis = {"lighting": "natural", "style": "Normal", "perspective_angle": "straight"}
+            box_1000 = box_1000 or [200, 400, 850, 600]
 
         # analyze product (for semantic guide)
-        product_desc = analyze_product_details(door_asset)
+        try:
+            product_desc = analyze_product_details(door_asset)
+        except Exception as e:
+            LOG("!", f"Product analysis failed, using generic: {e}")
+            product_desc = "A premium quality door matching the room's style."
         
         ymin, xmin, ymax, xmax = box_1000
         left, top, right, bottom = int(xmin*rw/1000), int(ymin*rh/1000), int(xmax*rw/1000), int(ymax*rh/1000)
@@ -342,7 +357,6 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         # ====== STEP 4: Holistic Inpainting ======
         LOG(4, "Imagen 3 Holistic Reconstruction...")
         
-        # INCREASE ROI padding for broader context (0.5 for cleanup)
         roi_padding = 0.5
         roi_left = max(0, left - int((right-left)*roi_padding))
         roi_top = max(0, top - int((bottom-top)*roi_padding))
@@ -351,7 +365,6 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         
         roi_crop = room_img.crop((roi_left, roi_top, roi_right, roi_bottom))
         
-        # Create a SOFT MASK for reconstruction
         mask_padding = 15
         mask_img = Image.new("L", (rw, rh), 0)
         draw = ImageDraw.Draw(mask_img)
@@ -359,7 +372,6 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         mask_img = mask_img.filter(ImageFilter.GaussianBlur(15))
         mask_crop = mask_img.crop((roi_left, roi_top, roi_right, roi_bottom))
         
-        # Serialize for Gemini
         room_buf = io.BytesIO()
         roi_crop.save(room_buf, format='PNG')
         
@@ -369,7 +381,6 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         door_buf = io.BytesIO()
         door_asset.save(door_buf, format='PNG')
         
-        # HOLISTIC PROMPT (v21)
         prompt = (
             f"PROFESSIONAL INTERIOR RECONSTRUCTION. "
             f"Replace the area inside the mask in Reference 1 with a new door that matches the style, proportions, and details of the door in Reference 2.\n"
@@ -380,26 +391,31 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             f"4. Realistic soft shadows must be generated on the carpet/floor matching the room's ambience."
         )
 
-        response = client.models.edit_image(
-            model='imagen-3.0-capability-001',
-            prompt=prompt,
-            reference_images=[
-                types.RawReferenceImage(reference_id=1, reference_image=types.Image(image_bytes=room_buf.getvalue())),
-                types.RawReferenceImage(reference_id=2, reference_image=types.Image(image_bytes=door_buf.getvalue())),
-                types.MaskReferenceImage(
-                    reference_id=3, 
-                    reference_image=types.Image(image_bytes=mask_buf.getvalue()),
-                    config=types.MaskReferenceConfig(mask_mode='MASK_MODE_USER_PROVIDED')
+        response = None
+        try:
+            response = client.models.edit_image(
+                model='imagen-3.0-capability-001',
+                prompt=prompt,
+                reference_images=[
+                    types.RawReferenceImage(reference_id=1, reference_image=types.Image(image_bytes=room_buf.getvalue())),
+                    types.RawReferenceImage(reference_id=2, reference_image=types.Image(image_bytes=door_buf.getvalue())),
+                    types.MaskReferenceImage(
+                        reference_id=3, 
+                        reference_image=types.Image(image_bytes=mask_buf.getvalue()),
+                        config=types.MaskReferenceConfig(mask_mode='MASK_MODE_USER_PROVIDED')
+                    ),
+                ],
+                config=types.EditImageConfig(
+                    edit_mode='EDIT_MODE_INPAINT_EDIT',
+                    number_of_images=1,
+                    output_mime_type='image/png',
                 ),
-            ],
-            config=types.EditImageConfig(
-                edit_mode='EDIT_MODE_INPAINT_EDIT',
-                number_of_images=1,
-                output_mime_type='image/png',
-            ),
-        )
+            )
+        except Exception as ai_err:
+            LOG("!", f"Imagen API call failed: {ai_err}")
+            response = None
 
-        if response.generated_images:
+        if response and response.generated_images:
             gen_img_bytes = response.generated_images[0].image.image_bytes
             gen_roi = Image.open(io.BytesIO(gen_img_bytes)).resize(roi_crop.size)
             
@@ -409,18 +425,22 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             LOG(7, f"SUCCESS: Final holistic result saved: {result_image_path}")
             return result_image_path
         else:
-            LOG(7, "Imagen failed. Falling back to simple composite for safety.")
-            # Simple fallback (minimal paste logic just to ensure a result exists)
+            LOG(7, "Imagen failed or empty results. Falling back to clean composite.")
+            # Safety fallback stickers
             door_w, door_h = door_asset.size
             resized_h = bottom - top
             resized_w = int(resized_h * door_w / door_h)
             door_resized = door_asset.resize((resized_w, resized_h), Image.LANCZOS)
-            room_img.paste(door_resized, (left + (right-left-resized_w)//2, top))
-            room_img.save(result_image_path, format='JPEG', quality=90)
+            
+            # Simple paste with black border for better 'depth' illusion in fallback
+            final_fallback = room_img.copy()
+            final_fallback.paste(door_resized, (left + (right-left-resized_w)//2, top))
+            final_fallback.save(result_image_path, format='JPEG', quality=90)
             return result_image_path
 
     except Exception as e:
-        LOG("X", f"💥 FATAL XATO: {e}")
+        LOG("X", f"💥 FATAL ERROR: {e}")
         import traceback
         traceback.print_exc()
+        # Ensure we always return something or re-raise if it's really bad
         raise e

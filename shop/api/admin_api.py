@@ -17,7 +17,8 @@ from ..models import (
 from rest_framework import serializers as drf_serializers
 from .serializers import (
     ProductSerializer, CategorySerializer, TelegramUserSerializer,
-    HomeBannerSerializer,
+    HomeBannerSerializer, CompanySerializer, LeadRequestSerializer,
+    AdminLeadRequestSerializer, AdminAIResultSerializer
 )
 
 
@@ -79,12 +80,8 @@ class AdminDashboardApiView(views.APIView):
         recent_ai = AIResult.objects.select_related('user', 'product').order_by('-created_at')[:5]
         recent_leads = LeadRequest.objects.select_related('user', 'product').order_by('-created_at')[:5]
 
-        # Use centralized serializers from .serializers
-        from .serializers import (
-            ProductSerializer, 
-            AdminAIResultSerializer, 
-            AdminLeadRequestSerializer
-        )
+        # Centralized serializers are now imported at module level
+
 
         return Response({
             'counts': {

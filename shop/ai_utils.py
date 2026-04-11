@@ -210,12 +210,10 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         
         # ====== STEP 2: Room yuklash ======
         LOG(2, "Xona rasmi yuklanmoqda...")
+        from PIL import Image, ImageOps
         room_img_raw = Image.open(room_image_path)
-        try:
-            from PIL import ImageOps
-            room_img = ImageOps.exif_transpose(room_img_raw).convert("RGB")
-        except Exception:
-            room_img = room_img_raw.convert("RGB")
+        # Fix orientation (EXIF)
+        room_img = ImageOps.exif_transpose(room_img_raw).convert("RGB")
         rw, rh = room_img.size
         LOG(2, f"Xona o'lchami: {rw}x{rh}")
         
@@ -508,13 +506,15 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                 model='imagen-3.0-capability-001',
                 prompt=(
                     "Insert the door into the wall opening naturally.\n\n"
-                    "STRICT RULES:\n"
-                    "- Do NOT modify the wall texture or color.\n"
-                    "- Preserve the background exactly as it is.\n"
+                    "STRICT RULES (CRITICAL):\n"
+                    "- DO NOT rotate the door.\n"
+                    "- DO NOT scale or resize the door.\n"
+                    "- DO NOT modify the wall texture or color.\n"
+                    "- Preserve the background EXACTLY as it is.\n"
                     "- Only blend the contact edges of the door with the wall.\n"
                     "- Add soft contact shadows on the floor.\n"
                     "- Ensure consistent lighting and perspective.\n"
-                    "The door must look like it is built into the wall."
+                    "The door must look like it is built into the wall, unchanged."
                 ),
                 reference_images=[
                     types.RawReferenceImage(

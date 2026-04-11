@@ -29,7 +29,7 @@ class TelegramUserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = TelegramUser
-        fields = ['id', 'telegram_id', 'first_name', 'last_name', 'username', 'role', 'photo_url', 'has_company']
+        fields = ['id', 'telegram_id', 'first_name', 'last_name', 'username', 'role', 'photo_url', 'has_company', 'created_at']
 
     def get_has_company(self, obj):
         return hasattr(obj, 'company')

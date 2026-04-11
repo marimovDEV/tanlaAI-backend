@@ -187,15 +187,45 @@ class AdminUserViewSet(viewsets.ModelViewSet):
             )
         return qs
 
+    @action(detail=True, methods=['post'], url_path='set-role')
+    def set_role(self, request, pk=None):
+        user = self.get_object()
+        new_role = request.data.get('role')
+        
+        if new_role not in dict(TelegramUser.ROLE_CHOICES).keys():
+            return Response({'error': 'Invalid role choice'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        user.role = new_role
+        user.save(update_fields=['role'])
+        
+        # Automation: If promoted to COMPANY, ensure company record exists
+        if new_role == 'COMPANY':
+            if not hasattr(user, 'company'):
+                from ..models import Company, Subscription
+                from django.utils.text import slugify
+                
+                # Create a placeholder company
+                company_name = f"{user.first_name}'s Collection" if user.first_name else f"Company {user.id}"
+                company = Company.objects.create(
+                    user=user,
+                    name=company_name,
+                    description="Professional boutique collection.",
+                    location="O'zbekiston"
+                )
+                # Ensure subscription exists
+                Subscription.objects.get_or_create(company=company)
+        
+        return Response(TelegramUserSerializer(user).data)
+
     @action(detail=True, methods=['post'], url_path='toggle-role')
     def toggle_role(self, request, pk=None):
+        """Deprecated in favor of set_role, but kept for legacy UI compatibility until updated."""
         user = self.get_object()
-        if user.role == 'USER':
-            user.role = 'COMPANY'
-        else:
-            user.role = 'USER'
-        user.save(update_fields=['role'])
-        return Response(TelegramUserSerializer(user).data)
+        new_role = 'COMPANY' if user.role == 'USER' else 'USER'
+        
+        # Use our more robust set_role logic conceptually
+        request.data['role'] = new_role
+        return self.set_role(request, pk=pk)
 
 
 # ── Companies ───────────────────────────────────────────────

@@ -285,21 +285,21 @@ def analyze_room_for_placement(room_img) -> dict:
 
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None):
     """
-    v30 — The Generative AI Designer.
-    REMOVED: Image Editing / Inpainting / Masking.
-    IMPLEMENTED: Holistic Generation (Ref Style + Ref Subject).
+    v31 — Robust Generative Architect.
+    Primary: Holistic Scene Reconstruction (generate_images).
+    Fallback: Surgical Inpainting (edit_image).
     """
     import time
     start_t = time.time()
     
     def LOG(step, msg):
         elapsed = time.time() - start_t
-        print(f"[v30 {elapsed:6.2f}s] STEP {step}: {msg}")
+        print(f"[v31 {elapsed:6.2f}s] STEP {step}: {msg}")
     
-    LOG(0, f"=== GENERATIVE ARCHITECT RECONSTRUCTION (v30) ===")
+    LOG(0, f"=== ROBUST GENERATIVE ARCHITECT (v31) ===")
     
     try:
-        from PIL import Image, ImageOps
+        from PIL import Image, ImageOps, ImageDraw, ImageFilter
         from google.genai import types
         import io
         import os
@@ -308,87 +308,95 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         from shop.services import AIService
         client = AIService.get_gemini_client()
         
-        # ====== STEP 2: Resource Loading (1024 Canvas) ======
+        # ====== STEP 2: Resource Loading ======
         room_img_raw = ImageOps.exif_transpose(Image.open(room_image_path)).convert("RGB")
         room_img = room_img_raw.resize((1024, 1024), Image.LANCZOS)
+        rw, rh = room_img.size
         
         door_field = product.original_image or product.image
         door_asset = ImageOps.exif_transpose(Image.open(door_field.path)).convert("RGB")
-        # Subject references work best with high-res thumbnails
         door_asset.thumbnail((1024, 1024))
-        LOG(2, f"Loaded Scene Resources: {os.path.basename(door_field.path)}")
+        LOG(2, "Resources Loaded.")
         
-        # ====== STEP 3: Holistic Scene Analysis ======
-        LOG(3, "GPT-4o Vision: Extracting Design DNA...")
+        # ====== STEP 3: Analysis ======
+        LOG(3, "Analyzing Scene DNA...")
         room_analysis = analyze_room_for_placement(room_img)
         product_desc = analyze_product_details(door_asset)
         
-        # ====== STEP 4: Reference Preparation ======
-        room_buf = io.BytesIO()
-        room_img.save(room_buf, format='PNG')
+        # Byte buffers
+        room_buf = io.BytesIO(); room_img.save(room_buf, format='PNG')
+        door_buf = io.BytesIO(); door_asset.save(door_buf, format='PNG')
         
-        door_buf = io.BytesIO()
-        door_asset.save(door_buf, format='PNG')
-        
-        # ====== STEP 5: Holistic Generative Prompt ======
-        # By referencing IDs [1] and [2], we anchor the style and subject.
-        prompt = (
-            f"HIGH-END ARCHITECTURAL INTERIOR RECONSTRUCTION.\n"
-            f"STYLE SOURCE [1]: {room_analysis.get('design_dna', 'A premium room')}.\n"
-            f"SUBJECT SOURCE [2]: {product_desc}.\n"
-            f"TASK:\n"
-            f"Generate a professional, photorealistic rendering of the room in Style [1].\n"
-            f"Precisely maintain the layout, wall structure, and furniture placement of Style [1].\n"
-            f"Install the door from Subject [2] into the doorway. Ensure it is closed and perfectly integrated.\n"
-            f"Match the {room_analysis.get('lighting', 'natural day')} lighting from Style [1].\n"
-            f"Final output: A flawless 3D architectural visualization (8k quality)."
+        # ====== STEP 4: Mode A - Holistic Reconstruction ======
+        LOG(4, "Attempting Mode A: Holistic Reconstruction...")
+        prompt_h = (
+            f"HIGH-END ARCHITECTURAL RECONSTRUCTION.\n"
+            f"STYLE [0]: {room_analysis.get('design_dna', 'A premium room')}.\n"
+            f"SUBJECT [1]: {product_desc}.\n"
+            f"Generate a professional photo following the layout of Style [0]. "
+            f"Install the door from Subject [1] into the doorway. CLOSED DOOR. "
+            f"8k quality, perfect lighting."
         )
-
-        LOG(5, "Invoking Imagen 3 Generative Reconstructor...")
-        response = None
+        
         try:
-            # We use generate_images for a holistic NEW image based on references
-            response = client.models.generate_images(
+            resp_h = client.models.generate_images(
                 model='imagen-3.0-capability-001',
-                prompt=prompt,
+                prompt=prompt_h,
                 config=types.GenerateImagesConfig(
                     number_of_images=1,
                     output_mime_type='image/png',
-                    # STYLE REFERENCE 1 (Room)
                     style_reference_config=types.StyleReferenceConfig(
-                        style_reference_images=[
-                            types.StyleReferenceImage(
-                                reference_id=1,
-                                image=types.Image(image_bytes=room_buf.getvalue()),
-                            )
-                        ]
+                        style_reference_images=[types.StyleReferenceImage(reference_id=0, image=types.Image(image_bytes=room_buf.getvalue()))]
                     ),
-                    # SUBJECT REFERENCE 2 (Door)
                     subject_reference_config=types.SubjectReferenceConfig(
-                        subject_reference_images=[
-                            types.SubjectReferenceImage(
-                                reference_id=2,
-                                image=types.Image(image_bytes=door_buf.getvalue()),
-                                subject_type='SUBJECT_REFERENCE_TYPE_PRODUCT'
-                            )
-                        ]
+                        subject_reference_images=[types.SubjectReferenceImage(reference_id=1, image=types.Image(image_bytes=door_buf.getvalue()), subject_type='SUBJECT_REFERENCE_TYPE_PRODUCT')]
                     )
                 ),
             )
-        except Exception as ai_err:
-            LOG("!", f"Imagen call failed: {ai_err}")
-            response = None
+            if resp_h and resp_h.generated_images:
+                gen_bytes = resp_h.generated_images[0].image.image_bytes
+                final_img = Image.open(io.BytesIO(gen_bytes)).resize(room_img_raw.size).convert("RGB")
+                final_img.save(result_image_path, format='JPEG', quality=95)
+                LOG(7, "SUCCESS: Mode A (Holistic) completed.")
+                return result_image_path
+        except Exception as e_h:
+            LOG("!", f"Mode A Failed: {e_h}. Falling back to Mode B...")
 
-        if response and response.generated_images:
-            gen_img_bytes = response.generated_images[0].image.image_bytes
-            # The result is already a complete, holistic scene. 
-            # We resize it back to the original aspect ratio for the user dashboard.
-            final_img = Image.open(io.BytesIO(gen_img_bytes)).resize(room_img_raw.size)
+        # ====== STEP 5: Mode B - Surgical Inpainting Fallback ======
+        LOG(5, "Executing Mode B: Surgical Inpainting Fallback...")
+        # Prepare Mask
+        bx = room_analysis.get('door_box', {'ymin': 0.2, 'xmin': 0.4, 'ymax': 0.8, 'xmax': 0.6})
+        left, top, right, bottom = int(bx['xmin']*rw), int(bx['ymin']*rh), int(bx['xmax']*rw), int(bx['ymax']*rh)
+        mask_img = Image.new("L", (1024, 1024), 0)
+        draw = ImageDraw.Draw(mask_img)
+        draw.rectangle([left-20, top-20, right+20, bottom+20], fill=255)
+        mask_img = mask_img.filter(ImageFilter.GaussianBlur(5))
+        mask_buf = io.BytesIO(); mask_img.save(mask_buf, format='PNG')
+
+        prompt_i = (
+            f"INSERTION TASK: Install Subject [1] into Reference [0] mask.\n"
+            f"DESIGN: {product_desc}. CLOSED DOOR. No corridor. 8k photo realism."
+        )
+        
+        resp_i = client.models.edit_image(
+            model='imagen-3.0-capability-001',
+            prompt=prompt_i,
+            reference_images=[
+                types.RawReferenceImage(reference_id=0, reference_image=types.Image(image_bytes=room_buf.getvalue())),
+                types.SubjectReferenceImage(reference_id=1, image=types.Image(image_bytes=door_buf.getvalue()), config=types.SubjectReferenceConfig(subject_type='SUBJECT_REFERENCE_TYPE_PRODUCT')),
+                types.MaskReferenceImage(reference_id=2, reference_image=types.Image(image_bytes=mask_buf.getvalue()))
+            ],
+            config=types.EditImageConfig(edit_mode='EDIT_MODE_INPAINT_INSERTION', number_of_images=1, output_mime_type='image/png'),
+        )
+        
+        if resp_i and resp_i.generated_images:
+            gen_bytes = resp_i.generated_images[0].image.image_bytes
+            final_img = Image.open(io.BytesIO(gen_bytes)).resize(room_img_raw.size).convert("RGB")
             final_img.save(result_image_path, format='JPEG', quality=95)
-            LOG(7, f"SUCCESS: v30 Generative Architect result saved: {result_image_path}")
+            LOG(7, "SUCCESS: Mode B (Inpainting) completed.")
             return result_image_path
         else:
-            LOG(7, "AI Failed. Returning fallback.")
+            LOG("X", "AI Mode B also failed. Fatal.")
             room_img_raw.save(result_image_path, format='JPEG', quality=90)
             return result_image_path
 

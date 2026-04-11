@@ -291,18 +291,18 @@ def analyze_room_for_placement(room_img) -> dict:
 
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None):
     """
-    v27 — The Master Builder.
-    BALANCED REPLACEMENT: Strong Removal + Strong Insertion.
-    Forces the specific subject design into the surgical opening.
+    v28 — Subject Dominance.
+    MODE: EDIT_MODE_INPAINT_INSERTION.
+    Forces the AI to 'fill' the hole with the subject, preventing corridor hallucinations.
     """
     import time
     start_t = time.time()
     
     def LOG(step, msg):
         elapsed = time.time() - start_t
-        print(f"[v27 {elapsed:6.2f}s] STEP {step}: {msg}")
+        print(f"[v28 {elapsed:6.2f}s] STEP {step}: {msg}")
     
-    LOG(0, f"=== THE MASTER BUILDER (v27) ===")
+    LOG(0, f"=== SUBJECT DOMINANCE (v28) ===")
     
     try:
         from PIL import Image, ImageOps, ImageDraw, ImageFilter
@@ -315,16 +315,15 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         from shop.services import AIService
         client = AIService.get_gemini_client()
         
-        # ====== STEP 2: Resource Loading (1024 Resolution) ======
+        # ====== STEP 2: Resource Loading (1024 Canvas) ======
         room_img_raw = ImageOps.exif_transpose(Image.open(room_image_path)).convert("RGB")
         room_img = room_img_raw.resize((1024, 1024), Image.LANCZOS)
         rw, rh = room_img.size
         
-        # Use ORIGINAL image for subject reference (cleanest design)
         door_field = product.original_image or product.image
         door_asset = ImageOps.exif_transpose(Image.open(door_field.path)).convert("RGB")
         door_asset.thumbnail((1024, 1024))
-        LOG(2, f"Loaded Global Resources: {os.path.basename(door_field.path)}")
+        LOG(2, f"Loaded Optimized Resources: {os.path.basename(door_field.path)}")
         
         # ====== STEP 3: Surgical Target Analysis ======
         try:
@@ -335,20 +334,20 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             else:
                 room_analysis = {"lighting": "natural", "style": "Premium"}
         except Exception:
-            box_1000 = box_1000 or [200, 350, 950, 650]
-            room_analysis = {"lighting": "natural", "style": "Premium"}
+            box_1000 = [200, 400, 850, 600]
+            room_analysis = {"lighting": "neutral", "style": "Premium"}
 
-        # Extract semantic details to 'anchor' the AI's understanding
         product_desc = analyze_product_details(door_asset)
         
         ymin, xmin, ymax, xmax = box_1000
         left, top, right, bottom = int(xmin*rw/1000), int(ymin*rh/1000), int(xmax*rw/1000), int(ymax*rh/1000)
         
-        # MASK: Solid core with minimal 5px blur for surgical insertion
+        # ====== STEP 4: Insertion Masking ======
+        # High-strength mask (5px blur only) to block original content
         mask_img = Image.new("L", (1024, 1024), 0)
         draw = ImageDraw.Draw(mask_img)
-        # Wider mask to capture the entire frame area
-        draw.rectangle([left-25, top-25, right+25, bottom+25], fill=255)
+        # Surgical rectangle covering the doorway
+        draw.rectangle([left-15, top-15, right+15, bottom+15], fill=255)
         mask_img = mask_img.filter(ImageFilter.GaussianBlur(5))
         
         room_buf = io.BytesIO()
@@ -360,20 +359,19 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         door_buf = io.BytesIO()
         door_asset.save(door_buf, format='PNG')
         
-        # ====== STEP 4: Forceful Insertion Prompt ======
+        # ====== STEP 5: Strict Insertion Prompt ======
         prompt = (
-            f"HIGH-FIDELITY ARCHITECTURAL INSTALLATION.\n"
-            f"Reference 1: Interior wall with an entry opening.\n"
-            f"Reference 2: Specific custom door product (Subject).\n"
-            f"GOAL:\n"
-            f"Install the EXACT DOOR from Reference 2 into the opening in Reference 1.\n"
-            f"MANDATORY DESIGN: {product_desc}. Replicate the precise colors, geometric patterns, and hardware.\n"
-            f"CONFIGURATION: The door MUST be CLOSED. Do not show the interior of the doorway.\n"
-            f"INTEGRATION: Connect the door frame to the Reference 1 walls seamlessly. "
-            f"Match lighting and shadows of the room. Photorealistic 8k quality."
+            f"HIGH-END ARCHITECTURAL INSERTION TASK.\n"
+            f"Reference 1 is the room environment. Reference 2 contains the NEW DOOR SUBJECT.\n"
+            f"INSTRUCTIONS:\n"
+            f"1. MANIFEST: Generate the exact door design from Reference 2 into the mask in Reference 1.\n"
+            f"2. CLOSED DOOR: The door MUST BE CLOSED. Do not generate a hallway, corridor, or depth into the room.\n"
+            f"3. SUBJECT MATCHING: Strictly use the color, pinstripe patterns, and handle style of Reference 2 ({product_desc}).\n"
+            f"4. INTEGRATION: Seamlessly blend the new door frames with Reference 1's walls. No gaps.\n"
+            f"Final result must be a solid, well-installed door. No dark holes."
         )
 
-        LOG(5, "Invoking Imagen 3 Master Builder...")
+        LOG(5, "Invoking Imagen 3 Inpaint Insertion...")
         response = None
         try:
             response = client.models.edit_image(
@@ -393,7 +391,7 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                     ),
                 ],
                 config=types.EditImageConfig(
-                    edit_mode='EDIT_MODE_INPAINT_EDIT',
+                    edit_mode='EDIT_MODE_INPAINT_INSERTION',
                     number_of_images=1,
                     output_mime_type='image/png',
                 ),
@@ -406,10 +404,10 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             gen_img_bytes = response.generated_images[0].image.image_bytes
             final_img = Image.open(io.BytesIO(gen_img_bytes)).resize(room_img_raw.size)
             final_img.save(result_image_path, format='JPEG', quality=95)
-            LOG(7, f"SUCCESS: v27 result saved: {result_image_path}")
+            LOG(7, f"SUCCESS: v28 result saved: {result_image_path}")
             return result_image_path
         else:
-            LOG(7, "AI Failed. Returning fallback.")
+            LOG(7, "AI Failed. Falling back.")
             room_img_raw.save(result_image_path, format='JPEG', quality=90)
             return result_image_path
 
@@ -417,13 +415,6 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         LOG("X", f"💥 FATAL ERROR: {e}")
         import traceback
         traceback.print_exc()
-        raise e
-
-    except Exception as e:
-        LOG("X", f"💥 FATAL ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-        raise e
 
     except Exception as e:
         LOG("X", f"💥 FATAL ERROR: {e}")

@@ -4,25 +4,30 @@ from ..models import (
     AIResult, HomeBanner, Wishlist, LeadRequest, Subscription
 )
 
+class AbsoluteImageField(serializers.ImageField):
+    """
+    Custom ImageField that returns an absolute URL in the representation
+    while remaining writable for create/update operations.
+    """
+    def to_representation(self, value):
+        if not value:
+            return None
+        url = value.url
+        if url and not url.startswith('/') and not url.startswith('http'):
+            url = f"/media/{url}"
+        
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(url)
+        return url
+
 class CategorySerializer(serializers.ModelSerializer):
     product_count = serializers.IntegerField(read_only=True, default=0)
-    icon = serializers.SerializerMethodField()
+    icon = AbsoluteImageField(required=False, allow_null=True)
 
     class Meta:
         model = Category
         fields = ['id', 'name', 'icon', 'product_count']
-
-    def get_icon(self, obj):
-        if not obj.icon:
-            return None
-        name = str(obj.icon.name)
-        # Ensure name is relative or absolute correctly
-        path = name if name.startswith('/') or name.startswith('http') else f"/media/{name}"
-        
-        request = self.context.get('request')
-        if request:
-            return request.build_absolute_uri(path)
-        return path
 
 class TelegramUserSerializer(serializers.ModelSerializer):
     has_company = serializers.SerializerMethodField()
@@ -36,26 +41,12 @@ class TelegramUserSerializer(serializers.ModelSerializer):
 
 class CompanySerializer(serializers.ModelSerializer):
     is_currently_active = serializers.ReadOnlyField()
-    logo = serializers.SerializerMethodField()
+    logo = AbsoluteImageField(required=False, allow_null=True)
     
     class Meta:
         model = Company
         fields = '__all__'
         read_only_fields = ['user', 'is_active', 'subscription_deadline', 'created_at', 'is_currently_active']
-
-    def get_logo(self, obj):
-        if not obj.logo:
-            return None
-        name = str(obj.logo.name)
-        if not name.startswith('http'):
-            url = f"/media/{name}"
-        else:
-            url = name
-            
-        request = self.context.get('request')
-        if request:
-            return request.build_absolute_uri(url)
-        return url
 
 class ProductSerializer(serializers.ModelSerializer):
     category_name = serializers.ReadOnlyField(source='category.name')
@@ -63,31 +54,15 @@ class ProductSerializer(serializers.ModelSerializer):
     owner_details = TelegramUserSerializer(source='owner', read_only=True)
     is_wishlisted = serializers.SerializerMethodField()
     
-    # Absolute URL fields
-    image = serializers.SerializerMethodField()
-    original_image = serializers.SerializerMethodField()
-    image_no_bg = serializers.SerializerMethodField()
+    # Absolute URL fields (Writable)
+    image = AbsoluteImageField(required=False, allow_null=True)
+    original_image = AbsoluteImageField(required=False, allow_null=True)
+    image_no_bg = AbsoluteImageField(required=False, allow_null=True)
     
     class Meta:
         model = Product
         fields = '__all__'
         read_only_fields = ['owner', 'company', 'category_name', 'company_details', 'owner_details', 'is_wishlisted', 'ai_status']
-        
-    def _get_abs_url(self, field):
-        if not field:
-            return None
-        url = field.url
-        if url and not url.startswith('/') and not url.startswith('http'):
-            url = f"/media/{url}"
-            
-        request = self.context.get('request')
-        if request:
-            return request.build_absolute_uri(url)
-        return url
-
-    def get_image(self, obj): return self._get_abs_url(obj.image)
-    def get_original_image(self, obj): return self._get_abs_url(obj.original_image)
-    def get_image_no_bg(self, obj): return self._get_abs_url(obj.image_no_bg)
 
     def get_is_wishlisted(self, obj):
         request = self.context.get('request')
@@ -100,46 +75,19 @@ class ProductSerializer(serializers.ModelSerializer):
 
 class AIResultSerializer(serializers.ModelSerializer):
     product_details = ProductSerializer(source='product', read_only=True)
-    image = serializers.SerializerMethodField()
-    input_image = serializers.SerializerMethodField()
+    image = AbsoluteImageField(read_only=True)
+    input_image = AbsoluteImageField(read_only=True)
 
     class Meta:
         model = AIResult
         fields = '__all__'
 
-    def _get_abs_url(self, field):
-        if not field:
-            return None
-        url = field.url
-        if url and not url.startswith('/') and not url.startswith('http'):
-            url = f"/media/{url}"
-            
-        request = self.context.get('request')
-        if request:
-            return request.build_absolute_uri(url)
-        return url
-
-    def get_image(self, obj): return self._get_abs_url(obj.image)
-    def get_input_image(self, obj): return self._get_abs_url(obj.input_image)
-
 class HomeBannerSerializer(serializers.ModelSerializer):
-    image = serializers.SerializerMethodField()
+    image = AbsoluteImageField(required=False, allow_null=True)
 
     class Meta:
         model = HomeBanner
         fields = '__all__'
-
-    def get_image(self, obj):
-        # Using a reliable helper for absolute URLs
-        request = self.context.get('request')
-        if not obj.image:
-            return None
-        url = obj.image.url
-        if url and not url.startswith('/') and not url.startswith('http'):
-            url = f"/media/{url}"
-        if request:
-            return request.build_absolute_uri(url)
-        return url
 
 class WishlistSerializer(serializers.ModelSerializer):
     product_details = ProductSerializer(source='product', read_only=True)
@@ -164,25 +112,14 @@ AdminLeadRequestSerializer = LeadRequestSerializer
 class AdminAIResultSerializer(serializers.ModelSerializer):
     user_name = serializers.CharField(source='user.first_name', read_only=True)
     product_name = serializers.CharField(source='product.name', read_only=True)
-    image = serializers.SerializerMethodField()
+    image = AbsoluteImageField(read_only=True)
 
     class Meta:
         model = AIResult
         fields = '__all__'
-    
-    def get_image(self, obj):
-        if not obj.image:
-            return None
-        url = obj.image.url
-        if url and not url.startswith('/') and not url.startswith('http'):
-            url = f"/media/{url}"
-            
-        request = self.context.get('request')
-        if request:
-            return request.build_absolute_uri(url)
-        return url
 
 class SubscriptionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Subscription
         fields = '__all__'
+

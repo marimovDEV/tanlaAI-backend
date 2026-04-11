@@ -80,6 +80,7 @@ class Product(models.Model):
         ], 
         default='none'
     )
+    ai_error = models.TextField(null=True, blank=True)
     
     # Discount fields
     discount_price = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)

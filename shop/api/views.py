@@ -54,17 +54,10 @@ def run_api_ai_background(product_id, room_path, result_path, tg_user_id):
         product.save(update_fields=['ai_status'])
         logger.info(f"DEBUG: [AI Service] Background task COMPLETED for product {product_id}")
     except Exception as error:
-        Product.objects.filter(pk=product_id).update(ai_status='error')
+        import traceback
+        error_msg = traceback.format_exc()
+        Product.objects.filter(pk=product_id).update(ai_status='error', ai_error=error_msg)
         logger.error(f"DEBUG: API AI generation error for product {product_id}: {error}")
-        # DEBUG: Write error to file for antigravity to see
-        try:
-            with open(os.path.join(settings.MEDIA_ROOT, 'ai_debug.txt'), 'a') as f:
-                import traceback
-                f.write(f"\n--- ERROR at {timezone.now()} ---\n")
-                f.write(f"Product ID: {product_id}\n")
-                f.write(traceback.format_exc())
-        except:
-            pass
 
 
 def get_tg_user(request):

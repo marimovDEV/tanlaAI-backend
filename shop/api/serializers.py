@@ -68,14 +68,22 @@ class WishlistSerializer(serializers.ModelSerializer):
         model = Wishlist
         fields = '__all__'
 
-class LeadRequestSerializer(serializers.ModelSerializer):
+class AdminLeadRequestSerializer(serializers.ModelSerializer):
+    company_name = serializers.CharField(source='company.name', read_only=True)
+    user_name = serializers.CharField(source='user.first_name', read_only=True)
     product_name = serializers.ReadOnlyField(source='product.name')
-    user_details = TelegramUserSerializer(source='user', read_only=True)
-    
+
     class Meta:
         model = LeadRequest
         fields = '__all__'
-        read_only_fields = ['user', 'company', 'created_at', 'product_name', 'user_details']
+
+class AdminAIResultSerializer(serializers.ModelSerializer):
+    user_name = serializers.CharField(source='user.first_name', read_only=True)
+    product_name = serializers.CharField(source='product.name', read_only=True)
+
+    class Meta:
+        model = AIResult
+        fields = '__all__'
 
 class SubscriptionSerializer(serializers.ModelSerializer):
     class Meta:

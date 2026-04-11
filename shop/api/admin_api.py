@@ -21,24 +21,7 @@ from .serializers import (
 )
 
 
-class AdminLeadRequestSerializer(drf_serializers.ModelSerializer):
-    company_name = drf_serializers.CharField(source='company.name', read_only=True)
-    user_name = drf_serializers.CharField(source='user.first_name', read_only=True)
-    product_name = drf_serializers.CharField(source='product.name', read_only=True)
-
-    class Meta:
-        model = LeadRequest
-        fields = '__all__'
-
-
-class AdminAIResultSerializer(drf_serializers.ModelSerializer):
-    user_name = drf_serializers.CharField(source='user.first_name', read_only=True)
-    product_name = drf_serializers.CharField(source='product.name', read_only=True)
-
-    class Meta:
-        model = AIResult
-        fields = '__all__'
-
+# Admin serializers moved to serializers.py
 
 class AdminCompanySerializer(drf_serializers.ModelSerializer):
     """Company serializer for admin — all fields writable except computed ones."""
@@ -88,16 +71,20 @@ class AdminDashboardApiView(views.APIView):
             ai_breakdown[item['ai_status']] = item['count']
         
         # Calculate success rate
-        total_ai = ai_breakdown.get('completed', 0) + ai_breakdown.get('error', 0)
-        success_rate = round((ai_breakdown.get('completed', 0) / total_ai * 100), 1) if total_ai > 0 else 100
+        total_ai_processed = ai_breakdown.get('completed', 0) + ai_breakdown.get('error', 0)
+        success_rate = round((ai_breakdown.get('completed', 0) / total_ai_processed * 100), 1) if total_ai_processed > 0 else 100
         
         # Recent activity
         recent_products = Product.objects.select_related('category').order_by('-id')[:5]
         recent_ai = AIResult.objects.select_related('user', 'product').order_by('-created_at')[:5]
         recent_leads = LeadRequest.objects.select_related('user', 'product').order_by('-created_at')[:5]
 
-        from .serializers import ProductSerializer
-        from .admin_api import AdminAIResultSerializer, AdminLeadRequestSerializer
+        # Use centralized serializers from .serializers
+        from .serializers import (
+            ProductSerializer, 
+            AdminAIResultSerializer, 
+            AdminLeadRequestSerializer
+        )
 
         return Response({
             'counts': {
@@ -108,6 +95,7 @@ class AdminDashboardApiView(views.APIView):
                 'banner_count': HomeBanner.objects.count(),
                 'lead_count': LeadRequest.objects.count(),
                 'ai_result_count': AIResult.objects.count(),
+                'ai_error_count': Product.objects.filter(ai_status='error').count() + AIResult.objects.filter(status='error').count(),
                 'active_promotions': Product.objects.filter(
                     is_on_sale=True
                 ).filter(
@@ -117,7 +105,7 @@ class AdminDashboardApiView(views.APIView):
             'ai_status': ai_breakdown,
             'ai_performance': {
                 'success_rate': success_rate,
-                'avg_time': 2.3, # Static for now as requested
+                'avg_time': 2.3, 
             },
             'recent_activity': {
                 'products': ProductSerializer(recent_products, many=True).data,

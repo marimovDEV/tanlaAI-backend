@@ -291,18 +291,18 @@ def analyze_room_for_placement(room_img) -> dict:
 
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None):
     """
-    v26 — High-Force Reconstruction.
-    SURGICAL MASKING & MANDATORY REPLACEMENT.
-    Forces the AI to completely overwrite the existing door.
+    v27 — The Master Builder.
+    BALANCED REPLACEMENT: Strong Removal + Strong Insertion.
+    Forces the specific subject design into the surgical opening.
     """
     import time
     start_t = time.time()
     
     def LOG(step, msg):
         elapsed = time.time() - start_t
-        print(f"[v26 {elapsed:6.2f}s] STEP {step}: {msg}")
+        print(f"[v27 {elapsed:6.2f}s] STEP {step}: {msg}")
     
-    LOG(0, f"=== HIGH-FORCE RECONSTRUCTION (v26) ===")
+    LOG(0, f"=== THE MASTER BUILDER (v27) ===")
     
     try:
         from PIL import Image, ImageOps, ImageDraw, ImageFilter
@@ -315,19 +315,18 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         from shop.services import AIService
         client = AIService.get_gemini_client()
         
-        # ====== STEP 2: Resource Loading (Full Canvas 1024) ======
+        # ====== STEP 2: Resource Loading (1024 Resolution) ======
         room_img_raw = ImageOps.exif_transpose(Image.open(room_image_path)).convert("RGB")
-        # Standardize to 1024 for consistent AI geometry
         room_img = room_img_raw.resize((1024, 1024), Image.LANCZOS)
         rw, rh = room_img.size
         
+        # Use ORIGINAL image for subject reference (cleanest design)
         door_field = product.original_image or product.image
         door_asset = ImageOps.exif_transpose(Image.open(door_field.path)).convert("RGB")
         door_asset.thumbnail((1024, 1024))
-        LOG(2, f"Loaded Resources: {os.path.basename(door_field.path)}")
+        LOG(2, f"Loaded Global Resources: {os.path.basename(door_field.path)}")
         
-        # ====== STEP 3: Precise Surgical Masking ======
-        LOG(3, "Creating Surgical High-Force Mask...")
+        # ====== STEP 3: Surgical Target Analysis ======
         try:
             if not box_1000:
                 room_analysis = analyze_room_for_placement(room_img)
@@ -339,19 +338,18 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             box_1000 = box_1000 or [200, 350, 950, 650]
             room_analysis = {"lighting": "natural", "style": "Premium"}
 
+        # Extract semantic details to 'anchor' the AI's understanding
         product_desc = analyze_product_details(door_asset)
         
         ymin, xmin, ymax, xmax = box_1000
         left, top, right, bottom = int(xmin*rw/1000), int(ymin*rh/1000), int(xmax*rw/1000), int(ymax*rh/1000)
         
-        # SURGICAL MASK: Solid core to FORCE replacement
+        # MASK: Solid core with minimal 5px blur for surgical insertion
         mask_img = Image.new("L", (1024, 1024), 0)
         draw = ImageDraw.Draw(mask_img)
-        # Add +20px padding to the rectangle to ensure old frame is completely inside
-        mask_padding = 20
-        draw.rectangle([left-mask_padding, top-mask_padding, right+mask_padding, bottom+mask_padding], fill=255)
-        # Narrow blur (10px) to prevent layout leakage while allowing edge blending
-        mask_img = mask_img.filter(ImageFilter.GaussianBlur(10))
+        # Wider mask to capture the entire frame area
+        draw.rectangle([left-25, top-25, right+25, bottom+25], fill=255)
+        mask_img = mask_img.filter(ImageFilter.GaussianBlur(5))
         
         room_buf = io.BytesIO()
         room_img.save(room_buf, format='PNG')
@@ -362,19 +360,20 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         door_buf = io.BytesIO()
         door_asset.save(door_buf, format='PNG')
         
-        # ====== STEP 4: Aggressive Removal Prompt ======
+        # ====== STEP 4: Forceful Insertion Prompt ======
         prompt = (
-            f"PROFESSIONAL ARCHITECTURAL RECONSTRUCTION.\n"
-            f"Reference 1: Original room with an OLD BROWN DOOR.\n"
-            f"Reference 2: NEW DOOR product subject.\n"
-            f"TASK:\n"
-            f"YOU MUST COMPLETELY REMOVE the existing brown door from Reference 1.\n"
-            f"STRICTLY REPLACE IT with the new door design from Reference 2 ({product_desc}).\n"
-            f"DO NOT keep any parts of the original door or its frame. Recess the new door into the wall.\n"
-            f"Match lighting and perspective of Reference 1 exactly. Flawless 8k architectural quality."
+            f"HIGH-FIDELITY ARCHITECTURAL INSTALLATION.\n"
+            f"Reference 1: Interior wall with an entry opening.\n"
+            f"Reference 2: Specific custom door product (Subject).\n"
+            f"GOAL:\n"
+            f"Install the EXACT DOOR from Reference 2 into the opening in Reference 1.\n"
+            f"MANDATORY DESIGN: {product_desc}. Replicate the precise colors, geometric patterns, and hardware.\n"
+            f"CONFIGURATION: The door MUST be CLOSED. Do not show the interior of the doorway.\n"
+            f"INTEGRATION: Connect the door frame to the Reference 1 walls seamlessly. "
+            f"Match lighting and shadows of the room. Photorealistic 8k quality."
         )
 
-        LOG(5, "Invoking Imagen 3 Forced Replacement...")
+        LOG(5, "Invoking Imagen 3 Master Builder...")
         response = None
         try:
             response = client.models.edit_image(
@@ -407,12 +406,18 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             gen_img_bytes = response.generated_images[0].image.image_bytes
             final_img = Image.open(io.BytesIO(gen_img_bytes)).resize(room_img_raw.size)
             final_img.save(result_image_path, format='JPEG', quality=95)
-            LOG(7, f"SUCCESS: v26 result saved: {result_image_path}")
+            LOG(7, f"SUCCESS: v27 result saved: {result_image_path}")
             return result_image_path
         else:
-            LOG(7, "AI Failed. Falling back to original room.")
+            LOG(7, "AI Failed. Returning fallback.")
             room_img_raw.save(result_image_path, format='JPEG', quality=90)
             return result_image_path
+
+    except Exception as e:
+        LOG("X", f"💥 FATAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        raise e
 
     except Exception as e:
         LOG("X", f"💥 FATAL ERROR: {e}")

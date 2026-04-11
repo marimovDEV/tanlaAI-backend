@@ -895,53 +895,60 @@ class AIService:
             session = new_session("isnet-general-use")
             output_raw_bytes = remove(input_bytes_cleaned, session=session)
             
-            # 4. Post-processing: Alpha Mask Solidification (Hole Filling)
-            # rembg ba'zan eshik ichidagi oq/bej qismlarni ham o'chirib yuboradi (holes).
-            # Biz eshikni yagona butun silhouette deb hisoblaymiz.
+            # 4. Post-processing: Alpha Mask Solidification & Texture Preservation
+            # rembg ba'zan eshik ichidagi oq/bej qismlarni o'chirib yuboradi (holes).
+            # Biz maskani original rasmga qayta kiydiramiz, shunda tekstura saqlanib qoladi.
             import numpy as np
             import cv2
             from PIL import Image
             
-            # rembg natijasini PIL Image qilib yuklaymiz
-            res_img = Image.open(io.BytesIO(output_raw_bytes)).convert("RGBA")
-            res_np = np.array(res_img)
+            # rembg'dan faqat alpha kanalini olamiz (maska sifatida)
+            tmp_res = Image.open(io.BytesIO(output_raw_bytes)).convert("RGBA")
+            tmp_alpha = np.array(tmp_res)[:, :, 3]
             
-            # Alpha kanalini olamiz
-            alpha = res_np[:, :, 3]
+            # --- Maskani takomillashtiramiz ---
+            # a) Shovqinlarni tozalash (Morphology Close)
+            kernel = np.ones((7,7), np.uint8)
+            cleaned_alpha = cv2.morphologyEx(tmp_alpha, cv2.MORPH_CLOSE, kernel)
             
-            # Konturlarni qidiramiz
-            # cv2.RETR_EXTERNAL faqat tashqi konturni oladi, ichki teshiklarni filtrlaydi
-            contours, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            if contours:
-                # Eng katta konturni topamiz (eshikning o'zi)
-                largest_cnt = max(contours, key=cv2.contourArea)
-                
-                # Yangi qattiq maska yaratamiz
-                solid_mask = np.zeros_like(alpha)
-                cv2.drawContours(solid_mask, [largest_cnt], -1, 255, thickness=cv2.FILLED)
-                
-                # Morphological closing - kontur qirralarini yanada tekislash uchun (optional but good)
-                kernel = np.ones((5,5), np.uint8)
-                solid_mask = cv2.morphologyEx(solid_mask, cv2.MORPH_CLOSE, kernel)
-                
-                # Yangi maskani rasmga qo'llaymiz
-                res_np[:, :, 3] = solid_mask
-                
-                # Natijani yana bytes ga o'tkazamiz
-                final_buf = io.BytesIO()
-                Image.fromarray(res_np).save(final_buf, format='PNG')
-                output_image_bytes = final_buf.getvalue()
-                print(f"DEBUG: [AI Service] Alpha mask solidified (holes filled) for {product.id}")
+            # b) Faqat eng katta bog'langan obyektni (eshikni) qoldiramiz
+            # Bu mayda nuqtalar va noto'g'ri segmentlarni o'chirish uchun
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(cleaned_alpha, connectivity=8)
+            if num_labels > 1:
+                # 0 - background, biz 1 dan boshlab eng katta maydonni qidiramiz
+                largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+                perfect_mask = np.where(labels == largest_label, 255, 0).astype(np.uint8)
             else:
-                output_image_bytes = output_raw_bytes
+                perfect_mask = cleaned_alpha
+
+            # c) Tashqi konturni to'ldirish (Hole filling)
+            # Bu eshik ichidagi original panellarni yopib tashlamasligi uchun qat'iy mantiq
+            contours, _ = cv2.findContours(perfect_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                largest_cnt = max(contours, key=cv2.contourArea)
+                cv2.drawContours(perfect_mask, [largest_cnt], -1, 255, thickness=cv2.FILLED)
+                # Kichik yumshatish
+                perfect_mask = cv2.GaussianBlur(perfect_mask, (3, 3), 0)
+
+            # --- Final Composite (TEXTURA SAQLASH) ---
+            # DIQQAT: Maskani rembg natijasiga emas, ORIGINAL rasmga qo'llaymiz!
+            src_np = np.array(img_pil)  # img_pil - bu original + exif_transpose qilingan rasm
+            
+            # Original rasmning alpha kanalini biz tayyorlagan "Mukammal Maska" bilan almashtiramiz
+            src_np[:, :, 3] = perfect_mask
+            
+            # Natijani saqlaymiz
+            final_buf = io.BytesIO()
+            Image.fromarray(src_np).save(final_buf, format='PNG')
+            output_image_bytes = final_buf.getvalue()
+            print(f"DEBUG: [AI Service] Source-based masking successful for {product.id}")
 
             # Save the new transparent file
             product.image.save(f"isolated_{product.id}.png", ContentFile(output_image_bytes), save=False)
             product.image_no_bg.save(f"trans_{product.id}.png", ContentFile(output_image_bytes), save=False)
             product.ai_status = 'completed'
             product.save()
-            print(f"DEBUG: [AI Service] Final rembg + Solidification result saved for {product.id}")
+            print(f"DEBUG: [AI Service] Final Texture-Preserved result saved for {product.id}")
 
         except Exception as e:
             print(f"ERROR: [AI Service] UNRECOVERABLE AI Failure for {product.id}: {e}")

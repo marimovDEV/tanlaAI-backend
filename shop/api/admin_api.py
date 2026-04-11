@@ -174,7 +174,7 @@ class AdminCategoryViewSet(viewsets.ModelViewSet):
 class AdminUserViewSet(viewsets.ModelViewSet):
     serializer_class = TelegramUserSerializer
     permission_classes = [IsAdminUser]
-    http_method_names = ['get', 'head', 'options']  # read-only + custom actions
+    http_method_names = ['get', 'post', 'head', 'options']  # allow GET and custom POST actions
 
     def get_queryset(self):
         qs = TelegramUser.objects.order_by('-created_at')

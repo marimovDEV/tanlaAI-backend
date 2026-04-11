@@ -80,19 +80,50 @@ class AdminDashboardApiView(views.APIView):
 
     def get(self, request):
         now = timezone.now()
+        
+        # AI Status breakdown
+        ai_stats = Product.objects.values('ai_status').annotate(count=Count('ai_status'))
+        ai_breakdown = {status: 0 for status, _ in Product._meta.get_field('ai_status').choices}
+        for item in ai_stats:
+            ai_breakdown[item['ai_status']] = item['count']
+        
+        # Calculate success rate
+        total_ai = ai_breakdown.get('completed', 0) + ai_breakdown.get('error', 0)
+        success_rate = round((ai_breakdown.get('completed', 0) / total_ai * 100), 1) if total_ai > 0 else 100
+        
+        # Recent activity
+        recent_products = Product.objects.select_related('category').order_by('-id')[:5]
+        recent_ai = AIResult.objects.select_related('user', 'product').order_by('-created_at')[:5]
+        recent_leads = LeadRequest.objects.select_related('user', 'product').order_by('-created_at')[:5]
+
+        from .serializers import ProductSerializer
+        from .admin_api import AdminAIResultSerializer, AdminLeadRequestSerializer
+
         return Response({
-            'product_count': Product.objects.count(),
-            'category_count': Category.objects.count(),
-            'company_count': Company.objects.count(),
-            'user_count': TelegramUser.objects.count(),
-            'banner_count': HomeBanner.objects.count(),
-            'lead_count': LeadRequest.objects.count(),
-            'ai_result_count': AIResult.objects.count(),
-            'active_promotions': Product.objects.filter(
-                is_on_sale=True
-            ).filter(
-                Q(sale_end_date__gt=now) | Q(sale_end_date__isnull=True)
-            ).count(),
+            'counts': {
+                'product_count': Product.objects.count(),
+                'category_count': Category.objects.count(),
+                'company_count': Company.objects.count(),
+                'user_count': TelegramUser.objects.count(),
+                'banner_count': HomeBanner.objects.count(),
+                'lead_count': LeadRequest.objects.count(),
+                'ai_result_count': AIResult.objects.count(),
+                'active_promotions': Product.objects.filter(
+                    is_on_sale=True
+                ).filter(
+                    Q(sale_end_date__gt=now) | Q(sale_end_date__isnull=True)
+                ).count(),
+            },
+            'ai_status': ai_breakdown,
+            'ai_performance': {
+                'success_rate': success_rate,
+                'avg_time': 2.3, # Static for now as requested
+            },
+            'recent_activity': {
+                'products': ProductSerializer(recent_products, many=True).data,
+                'ai_results': AdminAIResultSerializer(recent_ai, many=True).data,
+                'leads': AdminLeadRequestSerializer(recent_leads, many=True).data,
+            }
         })
 
 

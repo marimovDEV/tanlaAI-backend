@@ -145,20 +145,30 @@ class LeadRequest(models.Model):
         ('telegram', 'Telegram Message'),
         ('measurement', 'Measurement Request'),
     ]
+    STATUS_CHOICES = [
+        ('new', '🆕 Yangi'),
+        ('contacted', '📞 Bog\'lanildi'),
+        ('active', '⚡️ Jarayonda'),
+        ('converted', '✅ Sotildi'),
+        ('rejected', '❌ Rad etildi'),
+        ('closed', '🔒 Yakunlandi'),
+    ]
     user = models.ForeignKey(TelegramUser, on_delete=models.CASCADE, related_name='lead_requests')
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='leads')
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='leads', null=True, blank=True)
     lead_type = models.CharField(max_length=20, choices=LEAD_TYPES)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='new')
     message = models.TextField(blank=True)
     phone = models.CharField(max_length=20, blank=True)
+    price_info = models.CharField(max_length=100, blank=True, help_text="Calculated price or dimensions info")
     created_at = models.DateTimeField(auto_now_add=True)
-    is_processed = models.BooleanField(default=False)
+    is_processed = models.BooleanField(default=False)  # Keep for compatibility
 
     class Meta:
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.get_lead_type_display()} — {self.product.name}"
+        return f"{self.user.first_name} — {self.product.name} ({self.get_status_display()})"
 
 
 class Subscription(models.Model):

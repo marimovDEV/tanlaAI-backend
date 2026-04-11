@@ -301,23 +301,37 @@ class AdminBannerViewSet(viewsets.ModelViewSet):
 class AdminLeadViewSet(viewsets.ModelViewSet):
     serializer_class = AdminLeadRequestSerializer
     permission_classes = [IsAdminUser]
-    http_method_names = ['get', 'head', 'options', 'patch', 'delete']
+    http_method_names = ['get', 'head', 'options', 'patch', 'delete', 'post']
 
     def get_queryset(self):
         qs = LeadRequest.objects.select_related('user', 'product', 'company').order_by('-created_at')
         status = self.request.query_params.get('status')
-        if status == 'unprocessed':
-            qs = qs.filter(is_processed=False)
-        elif status == 'processed':
-            qs = qs.filter(is_processed=True)
+        if status and status != 'all':
+            qs = qs.filter(status=status)
         return qs
+
+    @action(detail=True, methods=['post'], url_path='set-status')
+    def set_status(self, request, pk=None):
+        lead = self.get_object()
+        new_status = request.data.get('status')
+        if new_status in dict(LeadRequest.STATUS_CHOICES):
+            lead.status = new_status
+            # Keep is_processed in sync for compatibility
+            lead.is_processed = (new_status in ['converted', 'closed', 'rejected'])
+            lead.save(update_fields=['status', 'is_processed'])
+            return Response(AdminLeadRequestSerializer(lead, context={'request': request}).data)
+        return Response({'error': 'Invalid status'}, status=400)
 
     @action(detail=True, methods=['post'], url_path='toggle-processed')
     def toggle_processed(self, request, pk=None):
         lead = self.get_object()
         lead.is_processed = not lead.is_processed
-        lead.save(update_fields=['is_processed'])
-        return Response(AdminLeadRequestSerializer(lead).data)
+        if lead.is_processed:
+            lead.status = 'closed'
+        else:
+            lead.status = 'new'
+        lead.save(update_fields=['is_processed', 'status'])
+        return Response(AdminLeadRequestSerializer(lead, context={'request': request}).data)
 
 
 # ── AI Results ──────────────────────────────────────────────

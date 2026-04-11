@@ -18,7 +18,7 @@ class CategorySerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request:
             return request.build_absolute_uri(obj.icon.url)
-        return f"https://tanla-ai-backend.onrender.com{obj.icon.url}"
+        return obj.icon.url
 
 class TelegramUserSerializer(serializers.ModelSerializer):
     has_company = serializers.SerializerMethodField()
@@ -45,7 +45,7 @@ class CompanySerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request:
             return request.build_absolute_uri(obj.logo.url)
-        return f"https://tanla-ai-backend.onrender.com{obj.logo.url}"
+        return obj.logo.url
 
 class ProductSerializer(serializers.ModelSerializer):
     category_name = serializers.ReadOnlyField(source='category.name')
@@ -69,8 +69,7 @@ class ProductSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request:
             return request.build_absolute_uri(field.url)
-        # Default fallback for TanlaAI production
-        return f"https://tanla-ai-backend.onrender.com{field.url}"
+        return field.url
 
     def get_image(self, obj): return self._get_abs_url(obj.image)
     def get_original_image(self, obj): return self._get_abs_url(obj.original_image)
@@ -100,7 +99,7 @@ class AIResultSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request:
             return request.build_absolute_uri(field.url)
-        return f"https://tanla-ai-backend.onrender.com{field.url}"
+        return field.url
 
     def get_image(self, obj): return self._get_abs_url(obj.image)
     def get_input_image(self, obj): return self._get_abs_url(obj.input_image)
@@ -118,7 +117,7 @@ class HomeBannerSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request:
             return request.build_absolute_uri(obj.image.url)
-        return f"https://tanla-ai-backend.onrender.com{obj.image.url}"
+        return obj.image.url
 
 class WishlistSerializer(serializers.ModelSerializer):
     product_details = ProductSerializer(source='product', read_only=True)
@@ -155,7 +154,7 @@ class AdminAIResultSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request:
             return request.build_absolute_uri(obj.image.url)
-        return f"https://tanla-ai-backend.onrender.com{obj.image.url}"
+        return obj.image.url
 
 class SubscriptionSerializer(serializers.ModelSerializer):
     class Meta:

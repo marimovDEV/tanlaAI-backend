@@ -144,6 +144,7 @@ class LeadRequest(models.Model):
         ('call', 'Call Request'),
         ('telegram', 'Telegram Message'),
         ('measurement', 'Measurement Request'),
+        ('visualize', 'AI Visualization'),
     ]
     STATUS_CHOICES = [
         ('new', '🆕 Yangi'),
@@ -156,6 +157,7 @@ class LeadRequest(models.Model):
     user = models.ForeignKey(TelegramUser, on_delete=models.CASCADE, related_name='lead_requests')
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='leads')
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='leads', null=True, blank=True)
+    ai_result = models.ForeignKey('AIResult', on_delete=models.SET_NULL, null=True, blank=True, related_name='linked_leads')
     lead_type = models.CharField(max_length=20, choices=LEAD_TYPES)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='new')
     message = models.TextField(blank=True)

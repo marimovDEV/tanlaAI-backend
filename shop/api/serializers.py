@@ -100,11 +100,27 @@ class LeadRequestSerializer(serializers.ModelSerializer):
     company_name = serializers.CharField(source='company.name', read_only=True)
     user_name = serializers.CharField(source='user.first_name', read_only=True)
     product_name = serializers.ReadOnlyField(source='product.name')
+    product_image = AbsoluteImageField(source='product.image', read_only=True)
+    ai_result_image = serializers.SerializerMethodField()
+    ai_result_details = AIResultSerializer(source='ai_result', read_only=True)
 
     class Meta:
         model = LeadRequest
         fields = '__all__'
-        read_only_fields = ['user', 'company', 'created_at', 'product_name']
+        read_only_fields = ['user', 'company', 'created_at', 'product_name', 'product_image']
+
+    def get_ai_result_image(self, obj):
+        if not obj.ai_result or not obj.ai_result.image:
+            return None
+        
+        url = obj.ai_result.image.url
+        if url and not url.startswith('/') and not url.startswith('http'):
+            url = f"/media/{url}"
+        
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(url)
+        return url
 
 # Admin aliases for backward compatibility
 AdminLeadRequestSerializer = LeadRequestSerializer

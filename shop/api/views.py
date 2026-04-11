@@ -42,12 +42,23 @@ def run_api_ai_background(product_id, room_path, result_path, tg_user_id):
         if tg_user_id:
             user = TelegramUser.objects.filter(id=tg_user_id).first()
             if user:
-                AIResult.objects.create(
+                ai_result = AIResult.objects.create(
                     user=user,
                     product=product,
                     image=os.path.join('ai_results', os.path.basename(result_path)),
                     input_image=os.path.join('ai_temp', os.path.basename(room_path)),
                     status='done',
+                )
+                
+                # Automatically create a "soft" lead for the visualization
+                LeadRequest.objects.create(
+                    user=user,
+                    product=product,
+                    company=product.company,
+                    ai_result=ai_result,
+                    lead_type='visualize',
+                    status='new',
+                    message="Mijoz mahsulotni SI orqali vizualizatsiya qildi.",
                 )
 
         product.ai_status = 'completed'

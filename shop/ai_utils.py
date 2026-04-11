@@ -291,18 +291,18 @@ def analyze_room_for_placement(room_img) -> dict:
 
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None):
     """
-    v25 — Full Scene Architect.
-    HOLISTIC ENVIRONMENT RECONSTRUCTION.
-    Regenerates the entire room matching the original layout but with a seamless door.
+    v26 — High-Force Reconstruction.
+    SURGICAL MASKING & MANDATORY REPLACEMENT.
+    Forces the AI to completely overwrite the existing door.
     """
     import time
     start_t = time.time()
     
     def LOG(step, msg):
         elapsed = time.time() - start_t
-        print(f"[v25 {elapsed:6.2f}s] STEP {step}: {msg}")
+        print(f"[v26 {elapsed:6.2f}s] STEP {step}: {msg}")
     
-    LOG(0, f"=== FULL SCENE RECONSTRUCTION (v25) ===")
+    LOG(0, f"=== HIGH-FORCE RECONSTRUCTION (v26) ===")
     
     try:
         from PIL import Image, ImageOps, ImageDraw, ImageFilter
@@ -316,46 +316,43 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         client = AIService.get_gemini_client()
         
         # ====== STEP 2: Resource Loading (Full Canvas 1024) ======
-        # We work on a 1024x1024 square canvas for Imagen 3 optimal performance
         room_img_raw = ImageOps.exif_transpose(Image.open(room_image_path)).convert("RGB")
-        # Resize to 1024 max dimension
+        # Standardize to 1024 for consistent AI geometry
         room_img = room_img_raw.resize((1024, 1024), Image.LANCZOS)
         rw, rh = room_img.size
         
         door_field = product.original_image or product.image
         door_asset = ImageOps.exif_transpose(Image.open(door_field.path)).convert("RGB")
-        # Use a high-quality resize for the reference subject
         door_asset.thumbnail((1024, 1024))
-        LOG(2, f"Loaded Full Scene Resources: {os.path.basename(door_field.path)}")
+        LOG(2, f"Loaded Resources: {os.path.basename(door_field.path)}")
         
-        # ====== STEP 3: Scene Analysis & Holistic Masking ======
-        LOG(3, "Generating Holistic Environment Mask...")
+        # ====== STEP 3: Precise Surgical Masking ======
+        LOG(3, "Creating Surgical High-Force Mask...")
         try:
             if not box_1000:
                 room_analysis = analyze_room_for_placement(room_img)
                 bx = room_analysis['door_box']
                 box_1000 = [int(bx['ymin']*1000), int(bx['xmin']*1000), int(bx['ymax']*1000), int(bx['xmax']*1000)]
             else:
-                room_analysis = {"lighting": "natural", "style": "Premium", "perspective_angle": "straight"}
-        except Exception as e:
-            LOG("!", f"Analysis failure: {e}")
-            room_analysis = {"lighting": "neutral", "style": "Standard", "perspective_angle": "straight"}
+                room_analysis = {"lighting": "natural", "style": "Premium"}
+        except Exception:
             box_1000 = box_1000 or [200, 350, 950, 650]
+            room_analysis = {"lighting": "natural", "style": "Premium"}
 
         product_desc = analyze_product_details(door_asset)
         
         ymin, xmin, ymax, xmax = box_1000
         left, top, right, bottom = int(xmin*rw/1000), int(ymin*rh/1000), int(xmax*rw/1000), int(ymax*rh/1000)
         
-        # Instead of a tight mask, we use a WIDE SOFT MASK for 'Full Room Reconstruction'
-        # This allows the AI to blend the entire wall and floor section holistically.
+        # SURGICAL MASK: Solid core to FORCE replacement
         mask_img = Image.new("L", (1024, 1024), 0)
         draw = ImageDraw.Draw(mask_img)
-        # Increase mask coverage to include surrounding wall/floor for better harmony
-        draw.rectangle([left-50, top-50, right+50, bottom+50], fill=255)
-        mask_img = mask_img.filter(ImageFilter.GaussianBlur(30)) # Very soft edges
+        # Add +20px padding to the rectangle to ensure old frame is completely inside
+        mask_padding = 20
+        draw.rectangle([left-mask_padding, top-mask_padding, right+mask_padding, bottom+mask_padding], fill=255)
+        # Narrow blur (10px) to prevent layout leakage while allowing edge blending
+        mask_img = mask_img.filter(ImageFilter.GaussianBlur(10))
         
-        # Convert to bytes
         room_buf = io.BytesIO()
         room_img.save(room_buf, format='PNG')
         
@@ -365,20 +362,19 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         door_buf = io.BytesIO()
         door_asset.save(door_buf, format='PNG')
         
-        # ====== STEP 4: Full Architectural Redraw Prompt ======
+        # ====== STEP 4: Aggressive Removal Prompt ======
         prompt = (
-            f"PROFESSIONAL ARCHITECTURAL INTERIOR REGENERATION.\n"
-            f"REFERENCE 1 is the base environment. REFERENCE 2 is the exact door subject.\n"
+            f"PROFESSIONAL ARCHITECTURAL RECONSTRUCTION.\n"
+            f"Reference 1: Original room with an OLD BROWN DOOR.\n"
+            f"Reference 2: NEW DOOR product subject.\n"
             f"TASK:\n"
-            f"Redraw the entire scene in Reference 1. Maintain the room's overall layout, window lighting, and style.\n"
-            f"Completely replace the existing door area with the new door subject from Reference 2.\n"
-            f"PRODUCT DETAILS: {product_desc}.\n"
-            f"CRITICAL: The new door must be perfectly recessed into the wall with realistic moldings. "
-            f"The floor contact must have realistic ambient occlusion shadows. "
-            f"The final image must be a flawless, high-end 8k architectural photograph."
+            f"YOU MUST COMPLETELY REMOVE the existing brown door from Reference 1.\n"
+            f"STRICTLY REPLACE IT with the new door design from Reference 2 ({product_desc}).\n"
+            f"DO NOT keep any parts of the original door or its frame. Recess the new door into the wall.\n"
+            f"Match lighting and perspective of Reference 1 exactly. Flawless 8k architectural quality."
         )
 
-        LOG(5, "Invoking Imagen 3 Pro Environment Reconstructor...")
+        LOG(5, "Invoking Imagen 3 Forced Replacement...")
         response = None
         try:
             response = client.models.edit_image(
@@ -411,13 +407,18 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             gen_img_bytes = response.generated_images[0].image.image_bytes
             final_img = Image.open(io.BytesIO(gen_img_bytes)).resize(room_img_raw.size)
             final_img.save(result_image_path, format='JPEG', quality=95)
-            LOG(7, f"SUCCESS: v25 Full Scene result saved: {result_image_path}")
+            LOG(7, f"SUCCESS: v26 result saved: {result_image_path}")
             return result_image_path
         else:
-            LOG(7, "AI Failed. Returning fallback placeholder.")
-            # Fallback to original image if needed
+            LOG(7, "AI Failed. Falling back to original room.")
             room_img_raw.save(result_image_path, format='JPEG', quality=90)
             return result_image_path
+
+    except Exception as e:
+        LOG("X", f"💥 FATAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        raise e
 
     except Exception as e:
         LOG("X", f"💥 FATAL ERROR: {e}")

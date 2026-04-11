@@ -30,6 +30,7 @@ class AdminCompanySerializer(drf_serializers.ModelSerializer):
     owner_name = drf_serializers.SerializerMethodField()
     owner_username = drf_serializers.SerializerMethodField()
     product_count = drf_serializers.IntegerField(read_only=True, default=0)
+    logo = drf_serializers.SerializerMethodField()
 
     class Meta:
         model = Company
@@ -46,6 +47,18 @@ class AdminCompanySerializer(drf_serializers.ModelSerializer):
         if obj.user and obj.user.username:
             return f'@{obj.user.username}'
         return ''
+
+    def get_logo(self, obj):
+        if not obj.logo:
+            return None
+        url = obj.logo.url
+        if url and not url.startswith('/') and not url.startswith('http'):
+            url = f"/media/{url}"
+        
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(url)
+        return url
 
 
 class IsAdminUser(permissions.BasePermission):

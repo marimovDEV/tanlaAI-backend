@@ -406,7 +406,18 @@ class CompanyViewSet(viewsets.ModelViewSet):
         tg_user = require_tg_user(self.request)
         if hasattr(tg_user, 'company'):
             raise ValidationError({'detail': 'You already have a company profile.'})
-        serializer.save(user=tg_user)
+            
+        # Create company
+        company = serializer.save(user=tg_user)
+        
+        # Upgrade user role to COMPANY automatically
+        if tg_user.role != 'COMPANY':
+            tg_user.role = 'COMPANY'
+            tg_user.save(update_fields=['role'])
+            
+        # Ensure a default subscription exists
+        from ..models import Subscription
+        Subscription.objects.get_or_create(company=company)
 
     def perform_update(self, serializer):
         ensure_company_owner(self.request, serializer.instance)

@@ -291,17 +291,17 @@ def analyze_room_for_placement(room_img) -> dict:
 
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None):
     """
-    v21 — Holistic AI Generation Pipeline.
-    NO MANUAL PASTING. Imagen 3 'reconstructs' the doorway area based on logic.
+    v22 — Seamless Room Generation Pipeline.
+    Strictly handles background removal and forces holistic scene reconstruction.
     """
     import time
     start_t = time.time()
     
     def LOG(step, msg):
         elapsed = time.time() - start_t
-        print(f"[v21 {elapsed:6.2f}s] STEP {step}: {msg}")
+        print(f"[v22 {elapsed:6.2f}s] STEP {step}: {msg}")
     
-    LOG(0, f"=== HOLISTIC AI GENERATION (v21) ===")
+    LOG(0, f"=== SEAMLESS ROOM RECONSTRUCTION (v22) ===")
     
     try:
         from PIL import Image, ImageOps, ImageDraw, ImageFilter
@@ -322,16 +322,17 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         room_img = ImageOps.exif_transpose(room_img_raw).convert("RGB")
         rw, rh = room_img.size
         
+        # PRIORitize transparent image, if missing use original
         door_field = product.image_no_bg or product.image
         if not door_field:
             raise ValueError(f"Mahsulotda rasm yo'q (ID: {product.id})")
             
         door_asset_raw = Image.open(door_field.path)
+        # If it's a transparent PNG, we convert it to RGB but handle the background carefully in prompt
         door_asset = ImageOps.exif_transpose(door_asset_raw).convert("RGB")
         
         # ====== STEP 3: Analysis Phase (GPT-4o) ======
         LOG(3, "Dual Analysis (Room & Product)...")
-        # analyze room (for placement)
         try:
             if not box_1000:
                 room_analysis = analyze_room_for_placement(room_img)
@@ -340,24 +341,24 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             else:
                 room_analysis = {"lighting": "cinematic soft", "style": "Premium Classic", "perspective_angle": "straight"}
         except Exception as e:
-            LOG("!", f"Room analysis failed, using fallback box: {e}")
+            LOG("!", f"Room analysis failed: {e}")
             room_analysis = {"lighting": "natural", "style": "Normal", "perspective_angle": "straight"}
             box_1000 = box_1000 or [200, 400, 850, 600]
 
-        # analyze product (for semantic guide)
         try:
             product_desc = analyze_product_details(door_asset)
         except Exception as e:
-            LOG("!", f"Product analysis failed, using generic: {e}")
-            product_desc = "A premium quality door matching the room's style."
+            LOG("!", f"Product analysis failed: {e}")
+            product_desc = "A premium luxury door with high-end finish."
         
         ymin, xmin, ymax, xmax = box_1000
         left, top, right, bottom = int(xmin*rw/1000), int(ymin*rh/1000), int(xmax*rw/1000), int(ymax*rh/1000)
         
         # ====== STEP 4: Holistic Inpainting ======
-        LOG(4, "Imagen 3 Holistic Reconstruction...")
+        LOG(4, "Imagen 3 Holistic Reconstruction v22...")
         
-        roi_padding = 0.5
+        # INCREASE ROI padding to 0.55 for better floor/wall integration
+        roi_padding = 0.55
         roi_left = max(0, left - int((right-left)*roi_padding))
         roi_top = max(0, top - int((bottom-top)*roi_padding))
         roi_right = min(rw, right + int((right-left)*roi_padding))
@@ -365,11 +366,13 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         
         roi_crop = room_img.crop((roi_left, roi_top, roi_right, roi_bottom))
         
-        mask_padding = 15
+        # Create a WIDER SOFT MASK for reconstruction (25px buffer)
+        mask_padding = 25
         mask_img = Image.new("L", (rw, rh), 0)
         draw = ImageDraw.Draw(mask_img)
         draw.rectangle([left - mask_padding, top - mask_padding, right + mask_padding, bottom + mask_padding], fill=255)
-        mask_img = mask_img.filter(ImageFilter.GaussianBlur(15))
+        # Higher blur for smoother edge blending
+        mask_img = mask_img.filter(ImageFilter.GaussianBlur(20))
         mask_crop = mask_img.crop((roi_left, roi_top, roi_right, roi_bottom))
         
         room_buf = io.BytesIO()
@@ -381,14 +384,19 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         door_buf = io.BytesIO()
         door_asset.save(door_buf, format='PNG')
         
+        # RECONSTRUCTION PROMPT (v22)
+        # Focus on REPLACING the area, not just putting something on top.
         prompt = (
-            f"PROFESSIONAL INTERIOR RECONSTRUCTION. "
-            f"Replace the area inside the mask in Reference 1 with a new door that matches the style, proportions, and details of the door in Reference 2.\n"
-            f"PRODUCT DETAILS: {product_desc}\n"
-            f"1. ARCHITECTURAL PHOTOGRAPHY: Perfectly aligned, high-end interior photography style.\n"
-            f"2. CLEANUP: Remove any visible cables, wires, or imperfections near the doorway.\n"
-            f"3. INTEGRATION: Seamlessly blend the new door with Reference 1's {room_analysis.get('style', 'Premium')} walls, floor, and lighting.\n"
-            f"4. Realistic soft shadows must be generated on the carpet/floor matching the room's ambience."
+            f"PROFESSIONAL INTERIOR RE-DESIGN. "
+            f"Reference 1 is the room, Reference 2 is the target door object. "
+            f"YOUR TASK: Entirely reconstruct the wall area inside the mask using the door design from Reference 2.\n"
+            f"PRODUCT: {product_desc}\n"
+            f"CRITICAL RULES:\n"
+            f"1. HOLISTIC GENERATION: Do not simply paste Reference 2. Re-create the door from scratch into the scene.\n"
+            f"2. NO BACKGROUND: Ignore any white background or box around the door in Reference 2. Only use the door object itself.\n"
+            f"3. ARCHITECTURAL QUALITY: Perfectly align the door frame with the {room_analysis.get('style', 'Premium')} wall and carpet floor.\n"
+            f"4. LIGHTING: Ensure the lighting in the reconstructed area matches the room's {room_analysis.get('lighting', 'cinematic')} ambience perfectly.\n"
+            f"5. CLEANUP: Ensure all edges, floor contact points, and shadows are realistic and seamless."
         )
 
         response = None
@@ -412,7 +420,7 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                 ),
             )
         except Exception as ai_err:
-            LOG("!", f"Imagen API call failed: {ai_err}")
+            LOG("!", f"Imagen call failed: {ai_err}")
             response = None
 
         if response and response.generated_images:
@@ -422,17 +430,14 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             final_img = room_img.copy()
             final_img.paste(gen_roi, (roi_left, roi_top))
             final_img.save(result_image_path, format='JPEG', quality=95)
-            LOG(7, f"SUCCESS: Final holistic result saved: {result_image_path}")
+            LOG(7, f"SUCCESS: v22 holistic result saved: {result_image_path}")
             return result_image_path
         else:
-            LOG(7, "Imagen failed or empty results. Falling back to clean composite.")
-            # Safety fallback stickers
+            LOG(7, "AI failed. Falling back to clean composite.")
             door_w, door_h = door_asset.size
             resized_h = bottom - top
             resized_w = int(resized_h * door_w / door_h)
             door_resized = door_asset.resize((resized_w, resized_h), Image.LANCZOS)
-            
-            # Simple paste with black border for better 'depth' illusion in fallback
             final_fallback = room_img.copy()
             final_fallback.paste(door_resized, (left + (right-left-resized_w)//2, top))
             final_fallback.save(result_image_path, format='JPEG', quality=90)
@@ -442,5 +447,4 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         LOG("X", f"💥 FATAL ERROR: {e}")
         import traceback
         traceback.print_exc()
-        # Ensure we always return something or re-raise if it's really bad
         raise e

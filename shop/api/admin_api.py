@@ -105,9 +105,9 @@ class AdminDashboardApiView(views.APIView):
                 'avg_time': 2.3, 
             },
             'recent_activity': {
-                'products': ProductSerializer(recent_products, many=True).data,
-                'ai_results': AdminAIResultSerializer(recent_ai, many=True).data,
-                'leads': AdminLeadRequestSerializer(recent_leads, many=True).data,
+                'products': ProductSerializer(recent_products, many=True, context={'request': request}).data,
+                'ai_results': AdminAIResultSerializer(recent_ai, many=True, context={'request': request}).data,
+                'leads': AdminLeadRequestSerializer(recent_leads, many=True, context={'request': request}).data,
             }
         })
 

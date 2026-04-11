@@ -291,18 +291,18 @@ def analyze_room_for_placement(room_img) -> dict:
 
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None):
     """
-    v23 — The Holo-Architect Pipeline.
-    FULL AI SCENE RECONSTRUCTION. No manual pasting.
-    Treats the door as a stylistic subject and the room as architectural context.
+    v24 — Pure Subject Generation.
+    REMOVED: Manual PIL pasting, resizing, and composite hacks.
+    IMPLEMENTED: SubjectReferenceImage for semantic product understanding.
     """
     import time
     start_t = time.time()
     
     def LOG(step, msg):
         elapsed = time.time() - start_t
-        print(f"[v23 {elapsed:6.2f}s] STEP {step}: {msg}")
+        print(f"[v24 {elapsed:6.2f}s] STEP {step}: {msg}")
     
-    LOG(0, f"=== HOLO-ARCHITECT RECONSTRUCTION (v23) ===")
+    LOG(0, f"=== PURE SUBJECT GENERATION (v24) ===")
     
     try:
         from PIL import Image, ImageOps, ImageDraw, ImageFilter
@@ -315,48 +315,41 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         from shop.services import AIService
         client = AIService.get_gemini_client()
         
-        # ====== STEP 2: Resource Loading ======
-        room_img_raw = Image.open(room_image_path)
-        room_img = ImageOps.exif_transpose(room_img_raw).convert("RGB")
+        # ====== STEP 2: Resource Loading (Original Images) ======
+        room_img = ImageOps.exif_transpose(Image.open(room_image_path)).convert("RGB")
         rw, rh = room_img.size
         
-        # Use transparent image if available (FORCES No-Background reference)
-        door_field = product.image_no_bg if product.image_no_bg else product.image
+        # We use the original photograph of the door. 
+        # Subject Customization ignores the background!
+        door_field = product.original_image or product.image
+        door_asset = ImageOps.exif_transpose(Image.open(door_field.path)).convert("RGB")
+        LOG(2, f"Loaded original door reference: {os.path.basename(door_field.path)}")
         
-        # Logging to verify on server
-        LOG(2, f"Loading Product Asset: {os.path.basename(door_field.path)} (NoBG: {bool(product.image_no_bg)})")
-        
-        door_asset_raw = Image.open(door_field.path)
-        
-        # If the asset has alpha (transparent), we want to keep its info 
-        # but Imagen 3 edit_image typically works best with a clean subject on a neutral background
-        # So we'll ensure it is RGB for the raw bytes but the subject is what matters.
-        door_asset = ImageOps.exif_transpose(door_asset_raw).convert("RGB")
-        
-        # ====== STEP 3: Scene Intelligence (GPT-4o) ======
-        LOG(3, "Scene Intelligence Phase...")
+        # ====== STEP 3: Scene Analysis (GPT-4o) ======
+        LOG(3, "GPT-4o Vision: Scene Intelligence...")
         try:
             if not box_1000:
                 room_analysis = analyze_room_for_placement(room_img)
                 bx = room_analysis['door_box']
-                # Increase vertical reach of bounding box to ensure floor contact is fully inside the mask
-                box_1000 = [int(bx['ymin']*1000), int(bx['xmin']*1000), min(1000, int(bx['ymax']*1000)+30), int(bx['xmax']*1000)]
+                # Standard normalized box
+                box_1000 = [int(bx['ymin']*1000), int(bx['xmin']*1000), int(bx['ymax']*1000), int(bx['xmax']*1000)]
             else:
-                room_analysis = {"lighting": "cinematic soft", "style": "Premium", "perspective_angle": "straight"}
+                room_analysis = {"lighting": "natural interior", "style": "Premium", "perspective_angle": "straight"}
         except Exception as e:
-            LOG("!", f"Intelligence failure: {e}")
-            room_analysis = {"lighting": "natural", "style": "Classic", "perspective_angle": "straight"}
-            box_1000 = box_1000 or [200, 350, 900, 650]
+            LOG("!", f"Analysis failed, using fallback: {e}")
+            room_analysis = {"lighting": "neutral", "style": "Standard", "perspective_angle": "straight"}
+            box_1000 = box_1000 or [200, 400, 850, 600]
 
+        # Semantic guide for the door design
         product_desc = analyze_product_details(door_asset)
         
         ymin, xmin, ymax, xmax = box_1000
         left, top, right, bottom = int(xmin*rw/1000), int(ymin*rh/1000), int(xmax*rw/1000), int(ymax*rh/1000)
         
-        # ====== STEP 4: Architectural ROI & Masking ======
-        LOG(4, "Preparing Architectural ROI...")
+        # ====== STEP 4: Masking (The 'Hole' for the AI) ======
+        LOG(4, "Creating Surgical Room Mask...")
         
-        # Broader ROI padding (60%) to let AI understand the wall textures and perspective better
+        # We need a large ROI for the AI to understand room context (60% padding)
         roi_padding = 0.6
         roi_left = max(0, left - int((right-left)*roi_padding))
         roi_top = max(0, top - int((bottom-top)*roi_padding))
@@ -365,17 +358,16 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         
         roi_crop = room_img.crop((roi_left, roi_top, roi_right, roi_bottom))
         
-        # SURGICAL RECONSTRUCTION MASK
-        # We mask slightly LARGER than the door to allow AI to redraw the frame and floor shadows
-        mask_padding = 20
+        # The mask defines exactly WHERE the new door is generated
+        mask_padding = 10
         mask_img = Image.new("L", (rw, rh), 0)
         draw = ImageDraw.Draw(mask_img)
-        draw.rectangle([left - mask_padding, top - mask_padding, right + mask_padding, bottom + mask_padding], fill=255)
-        # Use a high-quality blur for seamless blending
-        mask_img = mask_img.filter(ImageFilter.GaussianBlur(12))
+        draw.rectangle([left-mask_padding, top-mask_padding, right+mask_padding, bottom+mask_padding], fill=255)
+        # Smooth blending edges
+        mask_img = mask_img.filter(ImageFilter.GaussianBlur(15))
         mask_crop = mask_img.crop((roi_left, roi_top, roi_right, roi_bottom))
         
-        # Buffers for Imagen
+        # Convert to bytes for Vertex AI
         room_buf = io.BytesIO()
         roi_crop.save(room_buf, format='PNG')
         
@@ -385,24 +377,19 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         door_buf = io.BytesIO()
         door_asset.save(door_buf, format='PNG')
         
-        # ====== STEP 5: Full Architectural Redraw Prompt ======
-        # This prompt forces total replacement and integration
+        # ====== STEP 5: Pure Subject Generation Prompt ======
         prompt = (
-            f"FULL ARCHITECTURAL DOOR REPLACEMENT. "
-            f"Reference 1 is a room scene. Reference 2 contains the target door product design.\n"
-            f"INSTRUCTIONS:\n"
-            f"1. REDRAW: Completely replace the area covered by the mask in Reference 1 with a new door.\n"
-            f"2. SUBJECT: The new door MUST strictly replicate the design, materials, panelling, and handle color of the door in Reference 2. "
-            f"Ignore any white background or box in Reference 2; extract only the door object.\n"
-            f"3. GEOMETRY: Recess the door into the wall with proper door frames, moldings, and architectural depth. "
-            f"Align it perfectly with the {room_analysis.get('perspective_angle', 'straight')} perspective of the room.\n"
-            f"4. INTEGRATION: Blend the new door with the {room_analysis.get('style', 'Premium')} walls and the floor texture. "
-            f"Generate realistic contact shadows where the door frame meets the floor.\n"
-            f"5. LIGHTING: Follow the {room_analysis.get('lighting', 'cinematic')} lighting from the room to create realistic specular highlights on the door's finish.\n"
-            f"The final result must look like a professional, high-end interior architectural photograph."
+            f"PROFESSIONAL INTERIOR RE-INSTALLATION using Subject Customization.\n"
+            f"Reference 1: The room to be updated.\n"
+            f"Reference 2: The specific door product (subject).\n"
+            f"TASK:\n"
+            f"Replace the area inside the mask in Reference 1 with the exact door subject from Reference 2.\n"
+            f"Focus on replicates the materials ({product_desc}), handles, and texture of Reference 2.\n"
+            f"Ensure the new door is architecturally integrated into the wall with proper depth and shadows.\n"
+            f"Ignore all background, shadows, and surroundings in Reference 2. Only generate the door itself."
         )
 
-        LOG(5, "Invoking Imagen 3 Pro Reconstruction...")
+        LOG(5, "Invoking Imagen 3 Pure Subject Generation...")
         response = None
         try:
             response = client.models.edit_image(
@@ -410,7 +397,11 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                 prompt=prompt,
                 reference_images=[
                     types.RawReferenceImage(reference_id=1, reference_image=types.Image(image_bytes=room_buf.getvalue())),
-                    types.RawReferenceImage(reference_id=2, reference_image=types.Image(image_bytes=door_buf.getvalue())),
+                    types.SubjectReferenceImage(
+                        reference_id=2, 
+                        reference_image=types.Image(image_bytes=door_buf.getvalue()),
+                        config=types.SubjectReferenceConfig(subject_type='SUBJECT_REFERENCE_TYPE_PRODUCT')
+                    ),
                     types.MaskReferenceImage(
                         reference_id=3, 
                         reference_image=types.Image(image_bytes=mask_buf.getvalue()),
@@ -424,29 +415,23 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                 ),
             )
         except Exception as ai_err:
-            LOG("!", f"Imagen API call failed: {ai_err}")
+            LOG("!", f"Imagen call failed: {ai_err}")
             response = None
 
         if response and response.generated_images:
             gen_img_bytes = response.generated_images[0].image.image_bytes
             gen_roi = Image.open(io.BytesIO(gen_img_bytes)).resize(roi_crop.size)
             
-            # FINAL RESULT: Directly paste the AI-generated ROI into the room
+            # NO MANUAL PASTING of the door. 
+            # We paste the ENTIRE AI-generated ROI back into the room.
             final_img = room_img.copy()
             final_img.paste(gen_roi, (roi_left, roi_top))
             final_img.save(result_image_path, format='JPEG', quality=95)
-            LOG(7, f"SUCCESS: v23 Holo-Architect result saved: {result_image_path}")
+            LOG(7, f"SUCCESS: v24 result saved: {result_image_path}")
             return result_image_path
         else:
-            LOG(7, "AI Reconstruction failed. Reverting to safe composite fallback.")
-            # Standard sticker-paste fallback for zero downtime
-            door_w, door_h = door_asset.size
-            resized_h = bottom - top
-            resized_w = int(resized_h * door_w / door_h)
-            door_resized = door_asset.resize((resized_w, resized_h), Image.LANCZOS)
-            final_fallback = room_img.copy()
-            final_fallback.paste(door_resized, (left + (right-left-resized_w)//2, top))
-            final_fallback.save(result_image_path, format='JPEG', quality=95)
+            LOG(7, "AI Failed. Returning original room for stability.")
+            room_img.save(result_image_path, format='JPEG', quality=90)
             return result_image_path
 
     except Exception as e:

@@ -893,14 +893,55 @@ class AIService:
             
             # Using a session for better performance if needed, or simple remove
             session = new_session("isnet-general-use")
-            output_image_bytes = remove(input_bytes_cleaned, session=session)
+            output_raw_bytes = remove(input_bytes_cleaned, session=session)
             
+            # 4. Post-processing: Alpha Mask Solidification (Hole Filling)
+            # rembg ba'zan eshik ichidagi oq/bej qismlarni ham o'chirib yuboradi (holes).
+            # Biz eshikni yagona butun silhouette deb hisoblaymiz.
+            import numpy as np
+            import cv2
+            from PIL import Image
+            
+            # rembg natijasini PIL Image qilib yuklaymiz
+            res_img = Image.open(io.BytesIO(output_raw_bytes)).convert("RGBA")
+            res_np = np.array(res_img)
+            
+            # Alpha kanalini olamiz
+            alpha = res_np[:, :, 3]
+            
+            # Konturlarni qidiramiz
+            # cv2.RETR_EXTERNAL faqat tashqi konturni oladi, ichki teshiklarni filtrlaydi
+            contours, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if contours:
+                # Eng katta konturni topamiz (eshikning o'zi)
+                largest_cnt = max(contours, key=cv2.contourArea)
+                
+                # Yangi qattiq maska yaratamiz
+                solid_mask = np.zeros_like(alpha)
+                cv2.drawContours(solid_mask, [largest_cnt], -1, 255, thickness=cv2.FILLED)
+                
+                # Morphological closing - kontur qirralarini yanada tekislash uchun (optional but good)
+                kernel = np.ones((5,5), np.uint8)
+                solid_mask = cv2.morphologyEx(solid_mask, cv2.MORPH_CLOSE, kernel)
+                
+                # Yangi maskani rasmga qo'llaymiz
+                res_np[:, :, 3] = solid_mask
+                
+                # Natijani yana bytes ga o'tkazamiz
+                final_buf = io.BytesIO()
+                Image.fromarray(res_np).save(final_buf, format='PNG')
+                output_image_bytes = final_buf.getvalue()
+                print(f"DEBUG: [AI Service] Alpha mask solidified (holes filled) for {product.id}")
+            else:
+                output_image_bytes = output_raw_bytes
+
             # Save the new transparent file
             product.image.save(f"isolated_{product.id}.png", ContentFile(output_image_bytes), save=False)
             product.image_no_bg.save(f"trans_{product.id}.png", ContentFile(output_image_bytes), save=False)
             product.ai_status = 'completed'
             product.save()
-            print(f"DEBUG: [AI Service] Final rembg result saved for {product.id}")
+            print(f"DEBUG: [AI Service] Final rembg + Solidification result saved for {product.id}")
 
         except Exception as e:
             print(f"ERROR: [AI Service] UNRECOVERABLE AI Failure for {product.id}: {e}")

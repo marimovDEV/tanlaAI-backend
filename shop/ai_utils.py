@@ -349,9 +349,16 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                     if not openai_key: raise ValueError("OpenAI Key missing")
 
                     prompt = (
-                        "You are a computer vision system.\n"
-                        "Analyze this room image and find the best place where a door can be installed.\n"
-                        "Return ONLY JSON: {\"x\": number, \"y\": number, \"width\": number, \"height\": number}"
+                        "You are an expert computer vision system.\n"
+                        "Your task is to find the EXACT spatial coordinates of a doorway or an empty wall opening where a door should be installed.\n\n"
+                        "STRICT RULES:\n"
+                        "1. The doorway must be a vertical rectangle on a wall.\n"
+                        "2. It must touch or be very close to the floor line.\n"
+                        "3. Do NOT identify windows, mirrors, or paintings as doorways.\n"
+                        "4. Do NOT place the doorway on furniture or in the middle of a room without a wall.\n"
+                        "5. If there is already a doorway visible, provide its exact bounding box.\n\n"
+                        "Return ONLY a JSON object with values normalized from 0.0 to 1.0:\n"
+                        '{"x": [left_coord], "y": [top_coord], "width": [width], "height": [height]}'
                     )
                     
                     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {openai_key}"}

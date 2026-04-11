@@ -203,10 +203,16 @@ class ProductViewSet(viewsets.ModelViewSet):
         if is_featured:
             queryset = queryset.filter(is_featured=True)
         if is_on_sale:
-            queryset = queryset.filter(is_on_sale=True).filter(
-                models.Q(sale_end_date__gt=now) |
-                models.Q(sale_end_date__isnull=True)
-            )
+            # Handle string boolean values from query params
+            is_on_sale_bool = str(is_on_sale).lower() in ('true', '1', 'yes')
+            if is_on_sale_bool:
+                queryset = queryset.filter(is_on_sale=True).filter(
+                    models.Q(sale_end_date__gt=now) |
+                    models.Q(sale_end_date__isnull=True)
+                )
+            else:
+                queryset = queryset.filter(is_on_sale=False)
+        
         if search:
             queryset = queryset.filter(
                 models.Q(name__icontains=search) |

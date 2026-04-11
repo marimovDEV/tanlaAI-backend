@@ -130,13 +130,13 @@ class HomeBannerSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
     def get_image(self, obj):
+        # Using a reliable helper for absolute URLs
+        request = self.context.get('request')
         if not obj.image:
             return None
         url = obj.image.url
         if url and not url.startswith('/') and not url.startswith('http'):
             url = f"/media/{url}"
-            
-        request = self.context.get('request')
         if request:
             return request.build_absolute_uri(url)
         return url

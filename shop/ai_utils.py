@@ -320,11 +320,17 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         room_img = ImageOps.exif_transpose(room_img_raw).convert("RGB")
         rw, rh = room_img.size
         
-        # Use transparent image if available, otherwise original
-        door_field = product.image_no_bg or product.image
+        # Use transparent image if available (FORCES No-Background reference)
+        door_field = product.image_no_bg if product.image_no_bg else product.image
+        
+        # Logging to verify on server
+        LOG(2, f"Loading Product Asset: {os.path.basename(door_field.path)} (NoBG: {bool(product.image_no_bg)})")
+        
         door_asset_raw = Image.open(door_field.path)
-        # Keep it as is (if PNG with alpha, PIL can handle; if JPEG, it's RGB)
-        # However, Imagen 3 edit_image prefers solid subjects
+        
+        # If the asset has alpha (transparent), we want to keep its info 
+        # but Imagen 3 edit_image typically works best with a clean subject on a neutral background
+        # So we'll ensure it is RGB for the raw bytes but the subject is what matters.
         door_asset = ImageOps.exif_transpose(door_asset_raw).convert("RGB")
         
         # ====== STEP 3: Scene Intelligence (GPT-4o) ======

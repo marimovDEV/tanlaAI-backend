@@ -226,8 +226,8 @@ def analyze_product_details(product_img) -> str:
 
 def analyze_room_for_placement(room_img) -> dict:
     """
-    Uses GPT-4o Vision to find the best wall spot for a door installation.
-    Returns exact coordinates and scene context.
+    v30 — Enhanced Room Analysis.
+    Extracts 'Design DNA' for holistic room recreation.
     """
     import io
     import base64
@@ -235,9 +235,8 @@ def analyze_room_for_placement(room_img) -> dict:
     import json
     from django.conf import settings
 
-    print("DEBUG: [GPT-4o Vision] Analyzing room for optimal door placement...")
+    print("DEBUG: [GPT-4o Vision] Analyzing room for Generative DNA...")
     
-    # Resize for faster/cheaper analysis if needed
     r_bytes = io.BytesIO()
     room_img.save(r_bytes, format='JPEG', quality=85)
     base64_image = base64.b64encode(r_bytes.getvalue()).decode('utf-8')
@@ -247,20 +246,16 @@ def analyze_room_for_placement(room_img) -> dict:
         raise ValueError("OpenAI API Key missing")
 
     prompt = (
-        "Analyze this room for a premium door installation.\n"
-        "1. Identify the single best vertical wall area for a new door (normalized JSON).\n"
-        "2. Detect the floor line (y-coordinate).\n"
-        "3. Identify any clutter, wires, or cables near the doorway to be removed.\n"
-        "4. Determine the room's interior style (e.g., 'Classic Uzbek', 'Modern Minimalist').\n"
-        "5. Suggest a matching lighting profile ('cinematic soft', 'bright day', 'warm interior').\n\n"
-        "Return accurate JSON:\n"
+        "Analyze this room for a professional architectural reconstruction.\n"
+        "1. Identify the 'Design DNA': Describe the style, dominant colors, wall texture, floor material, and window placement in 1 sentence.\n"
+        "2. Identify the door area (bbox [ymin, xmin, ymax, xmax]).\n"
+        "3. Identify the lighting mood (e.g., 'bright afternoon sunlight via a large window').\n\n"
+        "Return JSON:\n"
         "{\n"
-        "  \"door_box\": {\"ymin\": 0.2, \"xmin\": 0.4, \"ymax\": 0.8, \"xmax\": 0.55},\n"
-        "  \"floor_y\": 0.8,\n"
-        "  \"clutter_removal\": true,\n"
-        "  \"style\": \"Premium Classic\",\n"
-        "  \"lighting\": \"warm cinematic\",\n"
-        "  \"perspective_angle\": \"straight/left/right\"\n"
+        "  \"design_dna\": \"Modern minimalist bedroom with smooth white walls and light oak flooring.\",\n"
+        "  \"door_box\": {\"ymin\": 0.2, \"xmin\": 0.4, \"ymax\": 0.8, \"xmax\": 0.6},\n"
+        "  \"lighting\": \"natural day lighting\",\n"
+        "  \"style\": \"Modern\"\n"
         "}"
     )
     
@@ -278,36 +273,34 @@ def analyze_room_for_placement(room_img) -> dict:
         response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=25)
         response.raise_for_status()
         result = json.loads(response.json()['choices'][0]['message']['content'])
-        print(f"DEBUG: [GPT-4o Vision] Analysis complete: {result}")
         return result
     except Exception as e:
-        print(f"ERROR: [GPT-4o Vision] Analysis failed: {e}")
+        print(f"ERROR: [GPT-4o] Analysis failed: {e}")
         return {
+            "design_dna": "A clean interior room with neutral walls.",
             "door_box": {"ymin": 0.2, "xmin": 0.4, "ymax": 0.85, "xmax": 0.6},
-            "floor_y": 0.85,
-            "lighting": "natural",
-            "perspective_angle": "straight"
+            "lighting": "neutral",
+            "style": "Modern"
         }
 
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None):
     """
-    v28 — Subject Dominance.
-    MODE: EDIT_MODE_INPAINT_INSERTION.
-    Forces the AI to 'fill' the hole with the subject, preventing corridor hallucinations.
+    v30 — The Generative AI Designer.
+    REMOVED: Image Editing / Inpainting / Masking.
+    IMPLEMENTED: Holistic Generation (Ref Style + Ref Subject).
     """
     import time
     start_t = time.time()
     
     def LOG(step, msg):
         elapsed = time.time() - start_t
-        print(f"[v28 {elapsed:6.2f}s] STEP {step}: {msg}")
+        print(f"[v30 {elapsed:6.2f}s] STEP {step}: {msg}")
     
-    LOG(0, f"=== SUBJECT DOMINANCE (v28) ===")
+    LOG(0, f"=== GENERATIVE ARCHITECT RECONSTRUCTION (v30) ===")
     
     try:
-        from PIL import Image, ImageOps, ImageDraw, ImageFilter
+        from PIL import Image, ImageOps
         from google.genai import types
-        import numpy as np
         import io
         import os
         
@@ -318,82 +311,68 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         # ====== STEP 2: Resource Loading (1024 Canvas) ======
         room_img_raw = ImageOps.exif_transpose(Image.open(room_image_path)).convert("RGB")
         room_img = room_img_raw.resize((1024, 1024), Image.LANCZOS)
-        rw, rh = room_img.size
         
         door_field = product.original_image or product.image
         door_asset = ImageOps.exif_transpose(Image.open(door_field.path)).convert("RGB")
+        # Subject references work best with high-res thumbnails
         door_asset.thumbnail((1024, 1024))
-        LOG(2, f"Loaded Optimized Resources: {os.path.basename(door_field.path)}")
+        LOG(2, f"Loaded Scene Resources: {os.path.basename(door_field.path)}")
         
-        # ====== STEP 3: Surgical Target Analysis ======
-        try:
-            if not box_1000:
-                room_analysis = analyze_room_for_placement(room_img)
-                bx = room_analysis['door_box']
-                box_1000 = [int(bx['ymin']*1000), int(bx['xmin']*1000), int(bx['ymax']*1000), int(bx['xmax']*1000)]
-            else:
-                room_analysis = {"lighting": "natural", "style": "Premium"}
-        except Exception:
-            box_1000 = [200, 400, 850, 600]
-            room_analysis = {"lighting": "neutral", "style": "Premium"}
-
+        # ====== STEP 3: Holistic Scene Analysis ======
+        LOG(3, "GPT-4o Vision: Extracting Design DNA...")
+        room_analysis = analyze_room_for_placement(room_img)
         product_desc = analyze_product_details(door_asset)
         
-        ymin, xmin, ymax, xmax = box_1000
-        left, top, right, bottom = int(xmin*rw/1000), int(ymin*rh/1000), int(xmax*rw/1000), int(ymax*rh/1000)
-        
-        # ====== STEP 4: Insertion Masking ======
-        # High-strength mask (5px blur only) to block original content
-        mask_img = Image.new("L", (1024, 1024), 0)
-        draw = ImageDraw.Draw(mask_img)
-        # Surgical rectangle covering the doorway
-        draw.rectangle([left-15, top-15, right+15, bottom+15], fill=255)
-        mask_img = mask_img.filter(ImageFilter.GaussianBlur(5))
-        
+        # ====== STEP 4: Reference Preparation ======
         room_buf = io.BytesIO()
         room_img.save(room_buf, format='PNG')
-        
-        mask_buf = io.BytesIO()
-        mask_img.save(mask_buf, format='PNG')
         
         door_buf = io.BytesIO()
         door_asset.save(door_buf, format='PNG')
         
-        # ====== STEP 5: Strict Insertion Prompt ======
+        # ====== STEP 5: Holistic Generative Prompt ======
+        # By referencing IDs [1] and [2], we anchor the style and subject.
         prompt = (
-            f"HIGH-END ARCHITECTURAL INSERTION TASK.\n"
-            f"Reference 1 is the room environment. Reference 2 contains the NEW DOOR SUBJECT.\n"
-            f"INSTRUCTIONS:\n"
-            f"1. MANIFEST: Generate the exact door design from Reference 2 into the mask in Reference 1.\n"
-            f"2. CLOSED DOOR: The door MUST BE CLOSED. Do not generate a hallway, corridor, or depth into the room.\n"
-            f"3. SUBJECT MATCHING: Strictly use the color, pinstripe patterns, and handle style of Reference 2 ({product_desc}).\n"
-            f"4. INTEGRATION: Seamlessly blend the new door frames with Reference 1's walls. No gaps.\n"
-            f"Final result must be a solid, well-installed door. No dark holes."
+            f"HIGH-END ARCHITECTURAL INTERIOR RECONSTRUCTION.\n"
+            f"STYLE SOURCE [1]: {room_analysis.get('design_dna', 'A premium room')}.\n"
+            f"SUBJECT SOURCE [2]: {product_desc}.\n"
+            f"TASK:\n"
+            f"Generate a professional, photorealistic rendering of the room in Style [1].\n"
+            f"Precisely maintain the layout, wall structure, and furniture placement of Style [1].\n"
+            f"Install the door from Subject [2] into the doorway. Ensure it is closed and perfectly integrated.\n"
+            f"Match the {room_analysis.get('lighting', 'natural day')} lighting from Style [1].\n"
+            f"Final output: A flawless 3D architectural visualization (8k quality)."
         )
 
-        LOG(5, "Invoking Imagen 3 Inpaint Insertion...")
+        LOG(5, "Invoking Imagen 3 Generative Reconstructor...")
         response = None
         try:
-            response = client.models.edit_image(
+            # We use generate_images for a holistic NEW image based on references
+            response = client.models.generate_images(
                 model='imagen-3.0-capability-001',
                 prompt=prompt,
-                reference_images=[
-                    types.RawReferenceImage(reference_id=1, reference_image=types.Image(image_bytes=room_buf.getvalue())),
-                    types.SubjectReferenceImage(
-                        reference_id=2, 
-                        reference_image=types.Image(image_bytes=door_buf.getvalue()),
-                        config=types.SubjectReferenceConfig(subject_type='SUBJECT_REFERENCE_TYPE_PRODUCT')
-                    ),
-                    types.MaskReferenceImage(
-                        reference_id=3, 
-                        reference_image=types.Image(image_bytes=mask_buf.getvalue()),
-                        config=types.MaskReferenceConfig(mask_mode='MASK_MODE_USER_PROVIDED')
-                    ),
-                ],
-                config=types.EditImageConfig(
-                    edit_mode='EDIT_MODE_INPAINT_INSERTION',
+                config=types.GenerateImagesConfig(
                     number_of_images=1,
                     output_mime_type='image/png',
+                    # STYLE REFERENCE 1 (Room)
+                    style_reference_config=types.StyleReferenceConfig(
+                        style_reference_images=[
+                            types.StyleReferenceImage(
+                                reference_id=1,
+                                image=types.Image(image_bytes=room_buf.getvalue()),
+                            )
+                        ]
+                    ),
+                    # SUBJECT REFERENCE 2 (Door)
+                    subject_reference_config=types.SubjectReferenceConfig(
+                        subject_reference_images=[
+                            types.SubjectReferenceImage(
+                                reference_id=2,
+                                image=types.Image(image_bytes=door_buf.getvalue()),
+                                subject_type='SUBJECT_REFERENCE_TYPE_PRODUCT'
+                            )
+                        ]
+                    )
                 ),
             )
         except Exception as ai_err:
@@ -402,14 +381,22 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
 
         if response and response.generated_images:
             gen_img_bytes = response.generated_images[0].image.image_bytes
+            # The result is already a complete, holistic scene. 
+            # We resize it back to the original aspect ratio for the user dashboard.
             final_img = Image.open(io.BytesIO(gen_img_bytes)).resize(room_img_raw.size)
             final_img.save(result_image_path, format='JPEG', quality=95)
-            LOG(7, f"SUCCESS: v28 result saved: {result_image_path}")
+            LOG(7, f"SUCCESS: v30 Generative Architect result saved: {result_image_path}")
             return result_image_path
         else:
-            LOG(7, "AI Failed. Falling back.")
+            LOG(7, "AI Failed. Returning fallback.")
             room_img_raw.save(result_image_path, format='JPEG', quality=90)
             return result_image_path
+
+    except Exception as e:
+        LOG("X", f"💥 FATAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        raise e
 
     except Exception as e:
         LOG("X", f"💥 FATAL ERROR: {e}")

@@ -190,8 +190,60 @@ class Subscription(models.Model):
         return f"{self.company.name} — {self.get_plan_display()}"
 
 
-class SystemSetting(models.Model):
-    telegram_bot_token = models.CharField(max_length=255, blank=True, default="")
+class SystemSettings(models.Model):
+    # --- General Settings ---
+    platform_name = models.CharField(max_length=100, default="TanlaAI")
+    default_language = models.CharField(max_length=10, default="uz")
+    timezone = models.CharField(max_length=50, default="Asia/Tashkent")
+    currency = models.CharField(max_length=20, default="UZS")
+
+    # --- AI Settings ---
+    ai_provider = models.CharField(
+        max_length=50, 
+        choices=[('gemini', 'Gemini'), ('openai', 'OpenAI'), ('hybrid', 'Hybrid')],
+        default='gemini'
+    )
+    max_results_per_user = models.IntegerField(default=20)
+    image_quality = models.CharField(
+        max_length=20, 
+        choices=[('low', 'Low'), ('medium', 'Medium'), ('high', 'High')],
+        default='high'
+    )
+    enable_bg_removal = models.BooleanField(default=True)
+    
+    # --- Image Processing ---
+    bg_removal_mode = models.CharField(
+        max_length=50, 
+        choices=[('ai', 'AI-based'), ('color', 'Color-based'), ('hybrid', 'Hybrid')],
+        default='ai'
+    )
+    max_image_size = models.IntegerField(default=2048, help_text="Pixels")
+    auto_resize = models.BooleanField(default=True)
+    keep_aspect_ratio = models.BooleanField(default=True)
+
+    # --- Visualization Settings ---
+    default_door_height_ratio = models.FloatField(default=0.65, help_text="0.0 to 1.0")
+    placement_mode = models.CharField(
+        max_length=50,
+        choices=[('center', 'Center'), ('auto', 'Auto-detect'), ('manual', 'Manual')],
+        default='auto'
+    )
+    allow_window_placement = models.BooleanField(default=False)
+    snap_to_wall = models.BooleanField(default=True)
+
+    # --- CRM Settings ---
+    auto_create_lead = models.BooleanField(default=True)
+    notify_admin = models.BooleanField(default=True)
+    default_lead_status = models.CharField(max_length=50, default="new")
+
+    # --- Admin Settings ---
+    items_per_page = models.IntegerField(default=20)
+    enable_infinite_scroll = models.BooleanField(default=True)
+    show_debug_logs = models.BooleanField(default=False)
+
+    # --- DevOps & Updates ---
+    enable_deploy_actions = models.BooleanField(default=True)
+    
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -199,8 +251,9 @@ class SystemSetting(models.Model):
         verbose_name_plural = "System Settings"
 
     def __str__(self):
-        return "System settings"
+        return f"{self.platform_name} Settings"
 
     @classmethod
     def get_solo(cls):
-        return cls.objects.first() or cls.objects.create()
+        obj, created = cls.objects.get_or_create(id=1)
+        return obj

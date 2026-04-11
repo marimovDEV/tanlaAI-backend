@@ -18,7 +18,7 @@ from django.contrib.auth import authenticate, login, logout
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from ..models import (
     AIResult, Category, Company, HomeBanner, LeadRequest,
-    Product, Subscription, TelegramUser, Wishlist, SystemSetting,
+    Product, Subscription, TelegramUser, Wishlist, SystemSettings,
 )
 from .serializers import (
     AIResultSerializer, CategorySerializer, CompanySerializer,
@@ -50,16 +50,18 @@ def run_api_ai_background(product_id, room_path, result_path, tg_user_id):
                     status='done',
                 )
                 
-                # Automatically create a "soft" lead for the visualization
-                LeadRequest.objects.create(
-                    user=user,
-                    product=product,
-                    company=product.company,
-                    ai_result=ai_result,
-                    lead_type='visualize',
-                    status='new',
-                    message="Mijoz mahsulotni SI orqali vizualizatsiya qildi.",
-                )
+                # Automatically create a "soft" lead if enabled in system settings
+                from ..models import SystemSettings
+                if SystemSettings.get_solo().auto_create_lead:
+                    LeadRequest.objects.create(
+                        user=user,
+                        product=product,
+                        company=product.company,
+                        ai_result=ai_result,
+                        lead_type='visualize',
+                        status='new',
+                        message="Mijoz mahsulotni SI orqali vizualizatsiya qildi.",
+                    )
 
         product.ai_status = 'completed'
         product.save(update_fields=['ai_status'])
@@ -577,19 +579,35 @@ class AdminSystemSettingsApiView(views.APIView):
 
     def get(self, request):
         self._check_admin(request)
-        setting = SystemSetting.get_solo()
-        deploy_enabled = str(getattr(settings, 'ALLOW_ADMIN_DEPLOY_ACTIONS', False)).lower() in ('1', 'true', 'yes', 'on')
-        return Response({
-            'telegram_bot_token': setting.telegram_bot_token,
-            'deploy_enabled': deploy_enabled,
-        })
+        setting = SystemSettings.get_solo()
+        
+        # Collect all fields dynamically
+        data = {}
+        for field in setting._meta.fields:
+            if field.name not in ['id', 'updated_at']:
+                data[field.name] = getattr(setting, field.name)
+        
+        # Add deploy status from env
+        data['deploy_enabled'] = str(getattr(settings, 'ALLOW_ADMIN_DEPLOY_ACTIONS', False)).lower() in ('1', 'true', 'yes', 'on')
+        return Response(data)
 
     def post(self, request):
         self._check_admin(request)
-        setting = SystemSetting.get_solo()
-        setting.telegram_bot_token = (request.data.get('telegram_bot_token') or '').strip()
-        setting.save(update_fields=['telegram_bot_token', 'updated_at'])
-        return Response({'status': 'ok'})
+        setting = SystemSettings.get_solo()
+        
+        # Update allowed fields
+        allowed_fields = [f.name for f in setting._meta.fields if f.name not in ['id', 'updated_at']]
+        updated_fields = []
+        
+        for key, value in request.data.items():
+            if key in allowed_fields:
+                setattr(setting, key, value)
+                updated_fields.append(key)
+        
+        if updated_fields:
+            setting.save(update_fields=updated_fields + ['updated_at'])
+            
+        return Response({'status': 'ok', 'updated': updated_fields})
 
 
 class AdminRunActionApiView(views.APIView):

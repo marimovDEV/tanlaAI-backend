@@ -2,7 +2,7 @@ import json
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
-from shop.models import TelegramUser, SystemSetting
+from shop.models import TelegramUser, SystemSettings
 from shop.utils import verify_telegram_webapp_data
 
 
@@ -17,8 +17,7 @@ def auth_login(request):
             data = json.loads(request.body)
             init_data = data.get('initData')
 
-            db_token = SystemSetting.get_solo().telegram_bot_token
-            active_bot_token = db_token or settings.TELEGRAM_BOT_TOKEN
+            active_bot_token = settings.TELEGRAM_BOT_TOKEN
             user_data = verify_telegram_webapp_data(init_data, active_bot_token)
             if user_data:
                 telegram_id = user_data.get('id')

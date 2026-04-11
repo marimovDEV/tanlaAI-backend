@@ -932,7 +932,7 @@ class AIService:
         2. Gemini (Pro Fallback)
         3. rembg (Local Fallback)
         """
-        from .models import Product
+        from .models import Product, SystemSettings
         from django.core.files.base import ContentFile
         import os
         import io
@@ -941,7 +941,15 @@ class AIService:
 
         try:
             product = Product.objects.get(id=product.id)
-            print(f"DEBUG: [AI Service] HD Processing for Product {product.id}...")
+            settings_obj = SystemSettings.get_solo()
+            
+            if not settings_obj.enable_bg_removal:
+                print(f"DEBUG: [AI Service] BG removal disabled by system settings.")
+                product.ai_status = 'completed'
+                product.save(update_fields=['ai_status'])
+                return
+
+            print(f"DEBUG: [AI Service] HD Processing for Product {product.id} (Mode: {settings_obj.bg_removal_mode})...")
             product.ai_status = 'processing'
             product.save(update_fields=['ai_status'])
 

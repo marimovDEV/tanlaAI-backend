@@ -500,7 +500,30 @@ class AIResultViewSet(viewsets.ReadOnlyModelViewSet):
         tg_user = get_tg_user(self.request)
         if tg_user is None:
             return AIResult.objects.none()
-        return AIResult.objects.filter(user_id=tg_user.id).select_related('product', 'product__category', 'product__company')
+        return AIResult.objects.filter(user_id=tg_user.id).select_related('product', 'product__category', 'product__company').order_by('-created_at')
+
+    @action(detail=True, methods=['post'], url_path='convert-to-lead')
+    def convert_to_lead(self, request, pk=None):
+        ai_result = self.get_object()
+        tg_user = require_tg_user(request)
+        
+        # Check if already has a lead to avoid duplicates
+        existing = LeadRequest.objects.filter(user=tg_user, ai_result=ai_result).exists()
+        if existing:
+            return Response({'status': 'exists', 'message': 'Lead already created for this result'})
+        
+        # Create Lead
+        from ..models import LeadRequest
+        LeadRequest.objects.create(
+            user=tg_user,
+            product=ai_result.product,
+            company=ai_result.product.company,
+            ai_result=ai_result,
+            lead_type='visualize',
+            status='new',
+            message="Mijoz tarix boyicha ushbu vizualizatsiyaga qiziqish bildirdi.",
+        )
+        return Response({'status': 'ok'})
 
 
 class AdminLoginApiView(views.APIView):

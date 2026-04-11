@@ -18,6 +18,7 @@ class TelegramUser(models.Model):
     ROLE_CHOICES = [
         ('USER', 'User'),
         ('COMPANY', 'Company'),
+        ('ADMIN', 'Admin'),
     ]
     telegram_id = models.BigIntegerField(unique=True)
     first_name = models.CharField(max_length=255, null=True, blank=True)

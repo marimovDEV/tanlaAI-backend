@@ -15,10 +15,14 @@ class CategorySerializer(serializers.ModelSerializer):
     def get_icon(self, obj):
         if not obj.icon:
             return None
+        url = obj.icon.url
+        if url and not url.startswith('/') and not url.startswith('http'):
+            url = f"/media/{url}"
+        
         request = self.context.get('request')
         if request:
-            return request.build_absolute_uri(obj.icon.url)
-        return obj.icon.url
+            return request.build_absolute_uri(url)
+        return url
 
 class TelegramUserSerializer(serializers.ModelSerializer):
     has_company = serializers.SerializerMethodField()
@@ -42,10 +46,14 @@ class CompanySerializer(serializers.ModelSerializer):
     def get_logo(self, obj):
         if not obj.logo:
             return None
+        url = obj.logo.url
+        if url and not url.startswith('/') and not url.startswith('http'):
+            url = f"/media/{url}"
+            
         request = self.context.get('request')
         if request:
-            return request.build_absolute_uri(obj.logo.url)
-        return obj.logo.url
+            return request.build_absolute_uri(url)
+        return url
 
 class ProductSerializer(serializers.ModelSerializer):
     category_name = serializers.ReadOnlyField(source='category.name')
@@ -66,10 +74,14 @@ class ProductSerializer(serializers.ModelSerializer):
     def _get_abs_url(self, field):
         if not field:
             return None
+        url = field.url
+        if url and not url.startswith('/') and not url.startswith('http'):
+            url = f"/media/{url}"
+            
         request = self.context.get('request')
         if request:
-            return request.build_absolute_uri(field.url)
-        return field.url
+            return request.build_absolute_uri(url)
+        return url
 
     def get_image(self, obj): return self._get_abs_url(obj.image)
     def get_original_image(self, obj): return self._get_abs_url(obj.original_image)
@@ -96,10 +108,14 @@ class AIResultSerializer(serializers.ModelSerializer):
     def _get_abs_url(self, field):
         if not field:
             return None
+        url = field.url
+        if url and not url.startswith('/') and not url.startswith('http'):
+            url = f"/media/{url}"
+            
         request = self.context.get('request')
         if request:
-            return request.build_absolute_uri(field.url)
-        return field.url
+            return request.build_absolute_uri(url)
+        return url
 
     def get_image(self, obj): return self._get_abs_url(obj.image)
     def get_input_image(self, obj): return self._get_abs_url(obj.input_image)
@@ -114,10 +130,14 @@ class HomeBannerSerializer(serializers.ModelSerializer):
     def get_image(self, obj):
         if not obj.image:
             return None
+        url = obj.image.url
+        if url and not url.startswith('/') and not url.startswith('http'):
+            url = f"/media/{url}"
+            
         request = self.context.get('request')
         if request:
-            return request.build_absolute_uri(obj.image.url)
-        return obj.image.url
+            return request.build_absolute_uri(url)
+        return url
 
 class WishlistSerializer(serializers.ModelSerializer):
     product_details = ProductSerializer(source='product', read_only=True)
@@ -151,10 +171,14 @@ class AdminAIResultSerializer(serializers.ModelSerializer):
     def get_image(self, obj):
         if not obj.image:
             return None
+        url = obj.image.url
+        if url and not url.startswith('/') and not url.startswith('http'):
+            url = f"/media/{url}"
+            
         request = self.context.get('request')
         if request:
-            return request.build_absolute_uri(obj.image.url)
-        return obj.image.url
+            return request.build_absolute_uri(url)
+        return url
 
 class SubscriptionSerializer(serializers.ModelSerializer):
     class Meta:

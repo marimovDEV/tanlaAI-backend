@@ -15,14 +15,14 @@ class CategorySerializer(serializers.ModelSerializer):
     def get_icon(self, obj):
         if not obj.icon:
             return None
-        url = obj.icon.url
-        if url and not url.startswith('/') and not url.startswith('http'):
-            url = f"/media/{url}"
+        name = str(obj.icon.name)
+        # Ensure name is relative or absolute correctly
+        path = name if name.startswith('/') or name.startswith('http') else f"/media/{name}"
         
         request = self.context.get('request')
         if request:
-            return request.build_absolute_uri(url)
-        return url
+            return request.build_absolute_uri(path)
+        return path
 
 class TelegramUserSerializer(serializers.ModelSerializer):
     has_company = serializers.SerializerMethodField()
@@ -46,9 +46,11 @@ class CompanySerializer(serializers.ModelSerializer):
     def get_logo(self, obj):
         if not obj.logo:
             return None
-        url = obj.logo.url
-        if url and not url.startswith('/') and not url.startswith('http'):
-            url = f"/media/{url}"
+        name = str(obj.logo.name)
+        if not name.startswith('http'):
+            url = f"/media/{name}"
+        else:
+            url = name
             
         request = self.context.get('request')
         if request:

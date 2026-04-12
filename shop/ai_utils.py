@@ -760,9 +760,13 @@ def _try_dalle_edit(room_img_pil, door_img_pil, room_analysis, api_key, log):
 
 def gemini_reconstruct(room_img_pil, door_img_pil, room_analysis, log_fn=None):
     """
-    Gemini Imagen 3 — AI fully regenerates the room with the new door installed.
-    The room should look like the SAME room but with the new door.
-    Multiple attempts with different strategies.
+    Gemini Imagen 3 — Replace the door in the ACTUAL room photo.
+    
+    Strategy: INPAINTING FIRST (preserves room identity 100%).
+    The original room photo is kept intact — only the door area is replaced.
+    This ensures carpet, curtains, TV, walls, etc. remain exactly the same.
+    
+    Fallback: Full reconstruction with style reference (room may look different).
     """
     log = log_fn or (lambda step, msg: None)
 
@@ -781,62 +785,21 @@ def gemini_reconstruct(room_img_pil, door_img_pil, room_analysis, log_fn=None):
         light_dir = lighting.get("direction", "ambient")
         light_warmth = lighting.get("warmth", "neutral")
 
+        # Prepare room image bytes
         r_buf = io.BytesIO()
         room_img_pil.save(r_buf, format='PNG')
+        
+        # Prepare door image bytes (RGB for better Gemini compatibility)
         d_buf = io.BytesIO()
-        # Send door as RGB for better Gemini compatibility
         door_img_pil.convert('RGB').save(d_buf, format='PNG')
 
-        # ━━━ ATTEMPT 1: Full reconstruction with style + subject references ━━━
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # ATTEMPT 1: INPAINTING (PRIMARY — preserves room identity 100%)
+        # Uses edit_image with mask to replace ONLY the door area.
+        # Everything else in the room stays EXACTLY the same.
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         try:
-            log("G1", "Attempt 1: Full reconstruction (style+subject)...")
-            prompt_1 = (
-                f"Photorealistic interior photo of THIS EXACT ROOM from reference [0]. "
-                f"The room has: {design_dna}. "
-                f"REPLACE the existing door with the door product shown in reference [1]. "
-                f"The new door ({prod_desc}) must be CLOSED and properly installed in the door frame. "
-                f"KEEP EVERYTHING ELSE IDENTICAL: same walls, same floor, same carpet, same curtains, "
-                f"same furniture, same TV, same lighting ({light_warmth} {light_dir} light). "
-                f"The room layout, colors, and objects must match the original photo exactly. "
-                f"Only the door changes. Professional architectural photography, 8K quality."
-            )
-            res1 = client.models.generate_images(
-                model='imagen-3.0-capability-001',
-                prompt=prompt_1,
-                config=types.GenerateImagesConfig(
-                    number_of_images=1,
-                    output_mime_type='image/png',
-                    style_reference_config=types.StyleReferenceConfig(
-                        style_reference_images=[
-                            types.StyleReferenceImage(
-                                reference_id=0,
-                                image=types.Image(image_bytes=r_buf.getvalue()),
-                            )
-                        ]
-                    ),
-                    subject_reference_config=types.SubjectReferenceConfig(
-                        subject_reference_images=[
-                            types.SubjectReferenceImage(
-                                reference_id=1,
-                                image=types.Image(image_bytes=d_buf.getvalue()),
-                                subject_type='SUBJECT_REFERENCE_TYPE_PRODUCT',
-                            )
-                        ]
-                    ),
-                ),
-            )
-            if res1 and res1.generated_images:
-                result = Image.open(
-                    io.BytesIO(res1.generated_images[0].image.image_bytes)
-                ).convert("RGB")
-                log("G1", "Attempt 1 SUCCESS — full reconstruction")
-                return result
-        except Exception as e1:
-            log("G1", f"Attempt 1 failed: {e1}")
-
-        # ━━━ ATTEMPT 2: Inpainting — replace only the door area ━━━
-        try:
-            log("G2", "Attempt 2: Inpainting door area...")
+            log("G1", "🎯 ATTEMPT 1: Inpainting (room identity preserved)...")
             bx = room_analysis['door_box']
             rw, rh = room_img_pil.size
             l = int(bx['xmin'] * rw)
@@ -844,27 +807,29 @@ def gemini_reconstruct(room_img_pil, door_img_pil, room_analysis, log_fn=None):
             r = int(bx['xmax'] * rw)
             b = int(bx['ymax'] * rh)
 
-            # Create mask with padding
-            pad_x = max(15, int((r - l) * 0.08))
-            pad_y = max(15, int((b - t) * 0.05))
+            # Create mask covering the door area with generous padding
+            pad_x = max(20, int((r - l) * 0.12))
+            pad_y = max(15, int((b - t) * 0.06))
             mask = Image.new("L", (rw, rh), 0)
             ImageDraw.Draw(mask).rectangle(
                 [l - pad_x, t - pad_y, r + pad_x, b + pad_y], fill=255
             )
             m_buf = io.BytesIO()
-            mask.filter(ImageFilter.GaussianBlur(8)).save(m_buf, format='PNG')
+            mask.filter(ImageFilter.GaussianBlur(10)).save(m_buf, format='PNG')
 
-            prompt_2 = (
-                f"Install the door product [1] into the masked area of this room [0]. "
-                f"The door ({prod_desc}) must be CLOSED, properly fitted in the door frame. "
-                f"Match the room's {light_warmth} {light_dir} lighting and perspective. "
-                f"Keep the surrounding wall texture and floor consistent. "
-                f"The result must look like a real installed door, not digitally added. "
-                f"Professional interior photography quality."
+            prompt_inpaint = (
+                f"Replace the door in the masked area with this door product [1]. "
+                f"The new door ({prod_desc}) must be CLOSED and properly installed "
+                f"in the existing door frame. Match the wall texture where the door "
+                f"meets the wall. The door must fit the perspective and scale of "
+                f"the room. Lighting: {light_warmth} {light_dir}. "
+                f"Keep everything outside the mask EXACTLY unchanged. "
+                f"The result must look like a real photograph of this room "
+                f"with the new door professionally installed."
             )
-            res2 = client.models.edit_image(
+            res1 = client.models.edit_image(
                 model='imagen-3.0-capability-001',
-                prompt=prompt_2,
+                prompt=prompt_inpaint,
                 reference_images=[
                     types.RawReferenceImage(
                         reference_id=0,
@@ -888,25 +853,98 @@ def gemini_reconstruct(room_img_pil, door_img_pil, room_analysis, log_fn=None):
                     output_mime_type='image/png',
                 ),
             )
-            if res2 and res2.generated_images:
+            if res1 and res1.generated_images:
                 result = Image.open(
-                    io.BytesIO(res2.generated_images[0].image.image_bytes)
+                    io.BytesIO(res1.generated_images[0].image.image_bytes)
                 ).convert("RGB")
-                log("G2", "Attempt 2 SUCCESS — inpainting")
+                log("G1", "✅ INPAINTING SUCCESS — room identity preserved!")
                 return result
+        except Exception as e1:
+            log("G1", f"Attempt 1 (inpainting) failed: {e1}")
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # ATTEMPT 2: INPAINTING with different edit mode / simpler prompt
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        try:
+            log("G2", "ATTEMPT 2: Inpainting (alt mode)...")
+            # Reset buffers
+            r_buf.seek(0)
+            d_buf.seek(0)
+            m_buf.seek(0)
+
+            prompt_alt = (
+                f"Install this {prod_desc} door [1] into the room [0] in the masked area. "
+                f"Closed door, properly fitted, matching room perspective and lighting. "
+                f"Photorealistic result."
+            )
+
+            # Try INPAINT_EDIT mode as alternative
+            for edit_mode in ['EDIT_MODE_INPAINT_INSERTION', 'INPAINT_EDIT']:
+                try:
+                    res2 = client.models.edit_image(
+                        model='imagen-3.0-capability-001',
+                        prompt=prompt_alt,
+                        reference_images=[
+                            types.RawReferenceImage(
+                                reference_id=0,
+                                reference_image=types.Image(image_bytes=r_buf.getvalue()),
+                            ),
+                            types.SubjectReferenceImage(
+                                reference_id=1,
+                                image=types.Image(image_bytes=d_buf.getvalue()),
+                                config=types.SubjectReferenceConfig(
+                                    subject_type='SUBJECT_REFERENCE_TYPE_PRODUCT'
+                                ),
+                            ),
+                            types.MaskReferenceImage(
+                                reference_id=2,
+                                reference_image=types.Image(image_bytes=m_buf.getvalue()),
+                            ),
+                        ],
+                        config=types.EditImageConfig(
+                            edit_mode=edit_mode,
+                            number_of_images=1,
+                            output_mime_type='image/png',
+                        ),
+                    )
+                    if res2 and res2.generated_images:
+                        result = Image.open(
+                            io.BytesIO(res2.generated_images[0].image.image_bytes)
+                        ).convert("RGB")
+                        log("G2", f"✅ Inpainting ({edit_mode}) SUCCESS!")
+                        return result
+                except Exception as e_mode:
+                    log("G2", f"Mode {edit_mode} failed: {e_mode}")
+                    r_buf.seek(0)
+                    d_buf.seek(0)
+                    m_buf.seek(0)
+                    continue
+
         except Exception as e2:
             log("G2", f"Attempt 2 failed: {e2}")
 
-        # ━━━ ATTEMPT 3: Simplified prompt ━━━
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # ATTEMPT 3: Full reconstruction (LAST RESORT — room may differ)
+        # Uses generate_images with style_reference — the room will be 
+        # re-generated, so carpet/curtains/etc may look different.
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         try:
-            log("G3", "Attempt 3: Simplified reconstruction...")
-            prompt_3 = (
-                f"A realistic photo of this same room [0] with door [1] installed. "
-                f"Same layout, same style. Closed door. High quality."
+            log("G3", "ATTEMPT 3: Full reconstruction (fallback)...")
+            r_buf.seek(0)
+            d_buf.seek(0)
+
+            prompt_reconstruct = (
+                f"Photorealistic interior photo of THIS EXACT ROOM from reference [0]. "
+                f"The room has: {design_dna}. "
+                f"REPLACE the existing door with the door product [1] ({prod_desc}). "
+                f"The new door must be CLOSED and properly installed. "
+                f"KEEP EVERYTHING ELSE IDENTICAL: same walls, same floor, same carpet, "
+                f"same curtains, same furniture, same lighting ({light_warmth} {light_dir}). "
+                f"Only the door changes. Professional architectural photography, 8K."
             )
             res3 = client.models.generate_images(
                 model='imagen-3.0-capability-001',
-                prompt=prompt_3,
+                prompt=prompt_reconstruct,
                 config=types.GenerateImagesConfig(
                     number_of_images=1,
                     output_mime_type='image/png',
@@ -933,7 +971,7 @@ def gemini_reconstruct(room_img_pil, door_img_pil, room_analysis, log_fn=None):
                 result = Image.open(
                     io.BytesIO(res3.generated_images[0].image.image_bytes)
                 ).convert("RGB")
-                log("G3", "Attempt 3 SUCCESS — simplified")
+                log("G3", "Attempt 3 SUCCESS — full reconstruction (room may differ)")
                 return result
         except Exception as e3:
             log("G3", f"Attempt 3 failed: {e3}")

@@ -763,7 +763,7 @@ def apply_soft_shadow(room_bgr, alpha_mask, left, top, strength=0.18):
     return np.clip(shaded, 0, 255).astype(np.uint8)
 
 
-def overlay_door_into_room(room_bgr, door_rgba, pixel_box, add_shadow=True):
+def overlay_door_into_room(room_bgr, door_rgba, pixel_box, add_shadow=True, wall_angle=0):
     import cv2
     import numpy as np
 
@@ -786,6 +786,50 @@ def overlay_door_into_room(room_bgr, door_rgba, pixel_box, add_shadow=True):
     resized_height = max(1, int(round(door_height * scale)))
 
     resized_door = cv2.resize(door_rgba, (resized_width, resized_height), interpolation=cv2.INTER_LANCZOS4)
+    
+    # --- 3D PERSPECTIVE WARP (Trapezoid Transform) ---
+    if abs(wall_angle) > 2:
+        # A positive angle means wall twists to the right (left side stays tall, right side shrinks)
+        # We will shrink the 'distant' side by a factor proportional to the angle
+        # Max angle is usually +/- 30 degrees. 30 degrees = ~15% shrinkage on the distant side.
+        shrink_ratio = min(0.3, abs(wall_angle) / 100.0)
+        shrink_px = int(resized_height * shrink_ratio)
+        
+        src_pts = np.float32([
+            [0, 0],
+            [resized_width, 0],
+            [resized_width, resized_height],
+            [0, resized_height]
+        ])
+        
+        if wall_angle > 0:
+            # Right side is further away (smaller)
+            dst_pts = np.float32([
+                [0, 0],
+                [resized_width, shrink_px],
+                [resized_width, resized_height - shrink_px],
+                [0, resized_height]
+            ])
+        else:
+            # Left side is further away (smaller)
+            dst_pts = np.float32([
+                [0, shrink_px],
+                [resized_width, 0],
+                [resized_width, resized_height],
+                [0, resized_height - shrink_px]
+            ])
+            
+        M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+        resized_door = cv2.warpPerspective(
+            resized_door, 
+            M, 
+            (resized_width, resized_height),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0, 0)
+        )
+    # -------------------------------------------------
+
     place_left = left + max(0, (target_width - resized_width) // 2)
     place_top = bottom - resized_height
     place_left, place_top, place_right, place_bottom = sanitize_pixel_box(

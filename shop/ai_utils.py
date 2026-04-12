@@ -1469,7 +1469,8 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             roi_pixel_box = (xmin - c_left, ymin - c_top, xmax - c_left, ymax - c_top)
             
             # Simple overlay, perfectly fills the box without touching background
-            final_roi_bgr = overlay_door_into_room(roi_bgr, door_bgra_cv, roi_pixel_box, add_shadow=True)
+            wall_angle = room_analysis.get("wall_angle", 0)
+            final_roi_bgr = overlay_door_into_room(roi_bgr, door_bgra_cv, roi_pixel_box, add_shadow=True, wall_angle=wall_angle)
             edited_roi_pil = Image.fromarray(cv2.cvtColor(final_roi_bgr, cv2.COLOR_BGR2RGB))
             metadata["generation_meta"] = {
                 "engine": "opencv",

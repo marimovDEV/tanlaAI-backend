@@ -973,8 +973,17 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         room_pil = room_raw.copy()
         room_pil.thumbnail((1536, 1536), Image.LANCZOS)  # higher res for better quality
 
-        door_path = (product.original_image or product.image).path
-        door_pil = ImageOps.exif_transpose(Image.open(door_path)).convert("RGBA")
+        # Load door with proper background removal using the robust loader
+        # Priority: image_no_bg (transparent) → image → original_image + rembg
+        from shop.services import load_best_door_rgba
+        door_bgra_cv = load_best_door_rgba(product)  # returns cv2 BGRA numpy
+        log("0", f"Door loaded with alpha. Shape: {door_bgra_cv.shape}, "
+                  f"Alpha range: {door_bgra_cv[:,:,3].min()}-{door_bgra_cv[:,:,3].max()}")
+
+        # Convert cv2 BGRA → PIL RGBA for premium/gemini pipelines
+        door_rgb_np = cv2.cvtColor(door_bgra_cv[:, :, :3], cv2.COLOR_BGR2RGB)
+        door_rgba_np = np.dstack([door_rgb_np, door_bgra_cv[:, :, 3]])
+        door_pil = Image.fromarray(door_rgba_np, 'RGBA')
         door_pil.thumbnail((1024, 1024), Image.LANCZOS)
 
         log("0", f"Resources loaded. Room: {room_pil.size}, Door: {door_pil.size}")
@@ -1002,20 +1011,20 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         try:
             log("3", "Trying Fast Pipeline (OpenCV)...")
 
-            # Convert to OpenCV format
+            # Convert room to OpenCV format
             room_bgr = cv2.cvtColor(np.array(room_pil), cv2.COLOR_RGB2BGR)
 
-            # Load door BGRA (with alpha from background removal)
-            door_np = np.array(door_pil)
-            if door_np.shape[2] == 4:
-                door_bgra = cv2.cvtColor(door_np[:, :, :3], cv2.COLOR_RGB2BGR)
-                door_bgra = np.dstack([door_bgra, door_np[:, :, 3]])
+            # Resize door_bgra_cv to reasonable size for processing
+            dh, dw = door_bgra_cv.shape[:2]
+            if max(dh, dw) > 1024:
+                scale = 1024.0 / max(dh, dw)
+                new_w = max(1, int(dw * scale))
+                new_h = max(1, int(dh * scale))
+                door_bgra_resized = cv2.resize(door_bgra_cv, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
             else:
-                door_bgr = cv2.cvtColor(door_np, cv2.COLOR_RGB2BGR)
-                alpha = np.full(door_bgr.shape[:2], 255, dtype=np.uint8)
-                door_bgra = np.dstack([door_bgr, alpha])
+                door_bgra_resized = door_bgra_cv.copy()
 
-            fast_result = fast_opencv_pipeline(room_bgr, door_bgra, room_analysis, log_fn=log)
+            fast_result = fast_opencv_pipeline(room_bgr, door_bgra_resized, room_analysis, log_fn=log)
 
             if fast_result is not None:
                 # Resize to original room size

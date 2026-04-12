@@ -1335,13 +1335,19 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         door_rgba_np = np.dstack([door_rgb_np, door_bgra_cv[:, :, 3]])
         door_pil = Image.fromarray(door_rgba_np, 'RGBA')
 
-        # 1. Precise OpenCV Box Detection (fixes tiny door issue!)
-        expected_aspect = get_expected_door_aspect_ratio(product, door_rgba=door_bgra_cv)
-        detected_box, detection_method = detect_door_opening_box(room_bgr, expected_aspect)
-        log("1", f"Door opening detected via [{detection_method}]: {detected_box}")
-
-        log("1a", "Running GPT room analysis for lighting/style...")
+        # 1. Precise GPT-4 Vision Box Detection (Bulletproof)
+        log("1a", "Running GPT room analysis for lighting/style and precise bounding box...")
         raw_room_analysis = analyze_room_advanced(room_raw, log_fn=log)
+        
+        expected_aspect = get_expected_door_aspect_ratio(product, door_rgba=door_bgra_cv)
+        door_ref = raw_room_analysis.get("door_box", {"ymin": 0.2, "xmin": 0.35, "ymax": 0.85, "xmax": 0.65})
+        raw_gpt_box = (door_ref["xmin"] * rw, door_ref["ymin"] * rh, door_ref["xmax"] * rw, door_ref["ymax"] * rh)
+        
+        from shop.services import normalize_door_opening_box
+        detected_box = normalize_door_opening_box(raw_gpt_box, rw, rh, expected_aspect)
+        detection_method = "gpt-4o-vision"
+        
+        log("1", f"Door opening detected via [{detection_method}]: {detected_box}")
         room_analysis = merge_room_analysis_with_detection(raw_room_analysis, detected_box, (rw, rh), detection_method)
         
         xmin, ymin, xmax, ymax = detected_box

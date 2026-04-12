@@ -1392,15 +1392,107 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         
         edited_roi_pil = None
         
-        # 4. (Disabled Nano Banana) We now use Imagen 3 or OpenCV directly.
-        # try:
-        #     edited_roi_pil, generation_meta = nano_banana_edit(...)
-        # except Exception as nb_error:
-        #     log("NB", f"Nano Banana stage crashed: {nb_error}")
-        
-        # 5. Try Imagen inpaint as fallback
+        # 4. v47 - PRE-PROCESS DOOR FOR AI (Perspective Alignment + Border Cleaning)
+        log("4", "v47: Cleaning borders and pre-warping door for better AI reference...")
+        try:
+            from shop.services import perspective_warp_door_to_corners
+            
+            # Map normalized corners to absolute pixels for warping
+            target_corners = {
+                k: (v[0] * rw, v[1] * rh) for k, v in room_analysis['door_corners'].items()
+            }
+            # We warp into a black canvas the size of the room
+            warped_door_cv = perspective_warp_door_to_corners(door_bgra_cv, target_corners, rw, rh)
+            
+            # Crop the warped door to just its bounds for use as a subject reference
+            w_alpha = warped_door_cv[:, :, 3]
+            w_coords = cv2.findNonZero(w_alpha)
+            if w_coords is not None:
+                wx, wy, ww, wh = cv2.boundingRect(w_coords)
+                warped_door_crop = warped_door_cv[wy:wy+wh, wx:wx+ww]
+                door_pil_for_ai = Image.fromarray(cv2.cvtColor(warped_door_crop, cv2.COLOR_BGRA2RGBA), "RGBA")
+                log("4", f"Pre-warp successful: {ww}x{wh}")
+            else:
+                door_pil_for_ai = door_pil
+        except Exception as warp_err:
+            log("4", f"Pre-warp failed: {warp_err}")
+            door_pil_for_ai = door_pil
+
+        # 5. v47 - FULL SCENE RECONSTRUCTION (Primary Mode)
+        # We now re-render the WHOLE room to ensure perfect blending/lighting.
         if edited_roi_pil is None:
             try:
+                client = AIService.get_gemini_client(prefer_vertex=True)
+                
+                # Full room style reference
+                room_buf = io.BytesIO()
+                room_raw.save(room_buf, format='PNG')
+                
+                # Pre-warped subject reference
+                door_buf = io.BytesIO()
+                door_pil_for_ai.convert("RGB").save(door_buf, format='PNG')
+
+                prompt_text = override_prompt if override_prompt else (
+                    f"A photorealistic architectural photography of a {room_analysis.get('design_dna', 'room')}. "
+                    "The scene must be identical to reference [0] in layout, floor, walls, and furniture. "
+                    f"Install the door from product [1] into the main opening. "
+                    f"Match room perspective and {room_analysis['lighting'].get('warmth', 'neutral')} "
+                    f"{room_analysis['lighting'].get('direction', 'ambient')} lighting perfectly. "
+                    "The door must look physically built-in. High-end interior render, 8K, realistic textures."
+                )
+
+                log("5", "🎯 v47 Attempt: Full Scene Reconstruction...")
+                resp = client.models.generate_images(
+                    model='imagen-3.0-capability-001',
+                    prompt=prompt_text,
+                    config=types.GenerateImagesConfig(
+                        number_of_images=1,
+                        output_mime_type='image/png',
+                        style_reference_config=types.StyleReferenceConfig(
+                            style_reference_images=[
+                                types.StyleReferenceImage(
+                                    reference_id=0,
+                                    image=types.Image(image_bytes=room_buf.getvalue()),
+                                )
+                            ]
+                        ),
+                        subject_reference_config=types.SubjectReferenceConfig(
+                            subject_reference_images=[
+                                types.SubjectReferenceImage(
+                                    reference_id=1,
+                                    image=types.Image(image_bytes=door_buf.getvalue()),
+                                    subject_type='SUBJECT_REFERENCE_TYPE_PRODUCT',
+                                )
+                            ]
+                        ),
+                    )
+                )
+
+                if resp.generated_images:
+                    img_bytes = resp.generated_images[0].image.image_bytes
+                    final_full_pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                    final_full_pil.save(result_image_path, format='JPEG', quality=95)
+                    log("✓", "v47 Full Scene Reconstruction SUCCESS")
+                    
+                    metadata["generation_prompt"] = prompt_text
+                    metadata["generation_meta"] = {
+                        "engine": "imagen-gen",
+                        "model": "imagen-3.0-capability-001",
+                        "mode": "reconstruction",
+                    }
+                    metadata["pipeline"]["image_edit_engine"] = "imagen-gen"
+                    
+                    save_visualization_metadata(result_image_path, metadata)
+                    log("✓", f"PIPELINE COMPLETE in {time.time() - start_t:.1f}s")
+                    return result_image_path
+
+            except Exception as gen_err:
+                log("5", f"v47 Full Scene failed: {gen_err}")
+
+        # 6. Fallback to Selective Inpaint (Old v46 mode)
+        if edited_roi_pil is None:
+            try:
+                log("6", "Fallback: Selective Inpainting...")
                 client = AIService.get_gemini_client(prefer_vertex=True)
                 roi_buf = io.BytesIO()
                 roi_img.save(roi_buf, format='PNG')

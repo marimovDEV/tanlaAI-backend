@@ -299,6 +299,40 @@ def border_transparency_ratio(alpha_mask):
     return float(np.count_nonzero(border_pixels <= 10)) / float(border_pixels.size)
 
 
+def trim_white_border_from_rgba(door_rgba, threshold=248):
+    """
+    Surgically removes white borders from a door asset.
+    Analyzes RGB channels: if a pixel is nearly pure white AND near the edges, 
+    we treat it as background padding and crop it out.
+    """
+    import cv2
+    import numpy as np
+
+    if door_rgba is None or door_rgba.shape[2] < 4:
+        return door_rgba
+
+    # 1. Create a mask of "non-white" pixels
+    # We look for pixels where NOT all channels are > threshold
+    b, g, r, a = cv2.split(door_rgba)
+    is_white = (b >= threshold) & (g >= threshold) & (r >= threshold)
+    
+    # We only care about white pixels that have some alpha (the "border")
+    non_background_mask = (a > 20) & (~is_white)
+    
+    # 2. Find the bounding box of the actual "colored" content
+    coords = cv2.findNonZero(non_background_mask.astype(np.uint8))
+    if coords is not None:
+        x, y, w, h = cv2.boundingRect(coords)
+        # Add a tiny 1-2px safety margin if possible
+        x_start = max(0, x - 1)
+        y_start = max(0, y - 1)
+        x_end = min(door_rgba.shape[1], x + w + 1)
+        y_end = min(door_rgba.shape[0], y + h + 1)
+        return door_rgba[y_start:y_end, x_start:x_end]
+    
+    return door_rgba
+
+
 def normalize_door_rgba_asset(door_rgba):
     import cv2
     import numpy as np
@@ -322,9 +356,12 @@ def normalize_door_rgba_asset(door_rgba):
     normalized = door_rgba.copy()
     normalized[:, :, 3] = alpha_mask
     
-    # Auto-crop the transparent padding out!
-    # Otherwise OpenCV compositor scales the transparent bounds instead of the visible door.
-    coords = cv2.findNonZero(alpha_mask)
+    # 1. Surgical white-border trimming (v47 enhancement)
+    normalized = trim_white_border_from_rgba(normalized)
+    
+    # 2. Final auto-crop the remaining transparent padding
+    final_alpha = normalized[:, :, 3]
+    coords = cv2.findNonZero(final_alpha)
     if coords is not None:
         x, y, w, h = cv2.boundingRect(coords)
         normalized = normalized[y:y+h, x:x+w]
@@ -761,6 +798,49 @@ def apply_soft_shadow(room_bgr, alpha_mask, left, top, strength=0.18):
     shaded = room_bgr.astype(np.float32)
     shaded *= (1.0 - (shadow_canvas[..., None] * strength))
     return np.clip(shaded, 0, 255).astype(np.uint8)
+
+
+def perspective_warp_door_to_corners(door_rgba, corners_px, target_w, target_h):
+    """
+    Warps a door image to fit specific corners in the target image.
+    corners_px: dict with 'top_left', 'top_right', 'bottom_right', 'bottom_left' as (x, y)
+    """
+    import cv2
+    import numpy as np
+
+    dh, dw = door_rgba.shape[:2]
+    
+    # Source corners (the flat door)
+    src_pts = np.float32([
+        [0, 0],
+        [dw, 0],
+        [dw, dh],
+        [0, dh]
+    ])
+    
+    # Destination corners (from GPT analysis)
+    dst_pts = np.float32([
+        corners_px['top_left'],
+        corners_px['top_right'],
+        corners_px['bottom_right'],
+        corners_px['bottom_left']
+    ])
+    
+    # Calculate Homography
+    M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+    
+    # Warp
+    # We warp to the target image dimensions to keep absolute positioning easier
+    warped = cv2.warpPerspective(
+        door_rgba, 
+        M, 
+        (target_w, target_h),
+        flags=cv2.INTER_LANCZOS4,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0, 0, 0, 0)
+    )
+    
+    return warped
 
 
 def overlay_door_into_room(room_bgr, door_rgba, pixel_box, add_shadow=True, wall_angle=0):

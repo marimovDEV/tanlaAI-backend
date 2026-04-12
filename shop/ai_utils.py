@@ -1043,118 +1043,76 @@ def fast_opencv_pipeline(room_bgr, door_bgra, room_analysis, log_fn=None):
 
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None):
     """
-    v41 - Production-Grade Door Visualization Pipeline
+    v42 - Hybrid Inpainting & Compositing Pipeline (The Winning Approach)
 
-    Pipeline order (AI reconstruction first, OpenCV last):
-    1. Room analysis (GPT-4o Vision)
-    2. Gemini: Imagen 3 full room reconstruction (PRIMARY)
-    3. Premium: GPT-4o Image Edit
-    4. Fast: OpenCV Perspective + Lighting + Composite (last resort)
-    5. Final fallback: return original room
-
-    Args:
-        product: Django Product model instance
-        room_image_path: path to uploaded room image
-        result_image_path: path to save result
-        box_1000: optional pre-detected box (ymin, xmin, ymax, xmax in 1000-scale)
-
-    Returns:
-        result_image_path
+    Pipeline order:
+    1. Detect door opening using structural algorithms (YOLO / OpenCV).
+    2. Remove existing door completely using Gemini AI (EDIT_MODE_INPAINT_REMOVAL)
+       to create a perfect empty wall, keeping room identity exactly intact.
+    3. Proportionally resize and composite the new door using OpenCV with soft shadows,
+       maintaining the door's original aspect ratio to avoid ugly perspective distortion.
     """
     start_t = time.time()
     log = lambda step, msg: _log(start_t, step, msg)
 
     room_raw = None
     try:
-        # ── LOAD RESOURCES ──────────────────────────────────────────────
+        from shop.services import (
+            detect_door_opening_box,
+            pixels_to_box_1000,
+            remove_door_from_room_with_ai,
+            remove_door_from_room_locally,
+            overlay_door_into_room,
+            get_expected_door_aspect_ratio,
+            AIService
+        )
+        import cv2
+
+        log("0", "Loading resources...")
+        # 1. Load the room image using OpenCV
+        room_bgr = cv2.imread(room_image_path, cv2.IMREAD_COLOR)
+        if room_bgr is None:
+            raise ValueError("Room image could not be loaded")
+            
+        # We also need PIL just for fallback saving if needed
         room_raw = ImageOps.exif_transpose(Image.open(room_image_path)).convert("RGB")
-        room_pil = room_raw.copy()
-        room_pil.thumbnail((1536, 1536), Image.LANCZOS)  # higher res for better quality
 
-        # Load door with proper background removal using the robust loader
-        # Priority: image_no_bg (transparent) → image → original_image + rembg
+        # 2. Load the best robust door image
         from shop.services import load_best_door_rgba
-        door_bgra_cv = load_best_door_rgba(product)  # returns cv2 BGRA numpy
-        log("0", f"Door loaded with alpha. Shape: {door_bgra_cv.shape}, "
-                  f"Alpha range: {door_bgra_cv[:,:,3].min()}-{door_bgra_cv[:,:,3].max()}")
+        door_rgba = load_best_door_rgba(product)
+        if door_rgba is None:
+            raise ValueError("Door asset could not be prepared")
 
-        # Convert cv2 BGRA → PIL RGBA for premium/gemini pipelines
-        door_rgb_np = cv2.cvtColor(door_bgra_cv[:, :, :3], cv2.COLOR_BGR2RGB)
-        door_rgba_np = np.dstack([door_rgb_np, door_bgra_cv[:, :, 3]])
-        door_pil = Image.fromarray(door_rgba_np, 'RGBA')
-        door_pil.thumbnail((1024, 1024), Image.LANCZOS)
+        log("1", f"Loaded Room: {room_bgr.shape}, Door: {door_rgba.shape}")
 
-        log("0", f"Resources loaded. Room: {room_pil.size}, Door: {door_pil.size}")
+        # 3. Detect the exact door opening box
+        expected_aspect = get_expected_door_aspect_ratio(product, door_rgba=door_rgba)
+        detected_box, detection_method = detect_door_opening_box(room_bgr, expected_aspect)
+        log("2", f"Door opening detected via [{detection_method}]: {detected_box}")
 
-        # ── STEP 1: ROOM ANALYSIS ───────────────────────────────────────
-        room_analysis = analyze_room_advanced(room_pil, log_fn=log)
-        log("1", f"Analysis: door_found={room_analysis['door_found']}, "
-                  f"angle={room_analysis['wall_angle']}, "
-                  f"light={room_analysis['lighting']['direction']}")
-
-        # ── STEP 2: GEMINI PIPELINE (PRIMARY — best for room reconstruction) ──
-        # AI fully regenerates the room with the new door installed.
-        # Room identity is preserved through style reference.
+        # 4. Remove the old door from the wall using Gemini AI
         try:
-            log("2", "🎯 PRIMARY: Gemini Imagen 3 Room Reconstruction...")
-            gemini_result = gemini_reconstruct(room_pil, door_pil, room_analysis, log_fn=log)
-            if gemini_result is not None:
-                gemini_result = gemini_result.resize(room_raw.size, Image.LANCZOS)
-                gemini_result.save(result_image_path, format='JPEG', quality=95)
-                log("✓", f"GEMINI PIPELINE SUCCESS in {time.time() - start_t:.1f}s")
-                return result_image_path
-        except Exception as e:
-            log("2", f"Gemini pipeline failed: {e}")
+            log("3", "Removing old door with Gemini AI...")
+            client = AIService.get_gemini_client()
+            cleaned_room = remove_door_from_room_with_ai(room_bgr, detected_box, client)
+            log("3", "✅ AI Door Removal SUCCESS")
+        except Exception as ai_err:
+            log("3", f"⚠️ AI Removal Failed: {ai_err}. Falling back to OpenCV Telea Inpaint...")
+            cleaned_room = remove_door_from_room_locally(room_bgr, detected_box)
 
-        # ── STEP 3: PREMIUM PIPELINE (GPT-4o Image Edit) ───────────────
-        try:
-            log("3", "Trying Premium Pipeline (GPT-4o)...")
-            premium_result = premium_gpt4o_edit(room_pil, door_pil, room_analysis, log_fn=log)
-            if premium_result is not None:
-                premium_result = premium_result.resize(room_raw.size, Image.LANCZOS)
-                premium_result.save(result_image_path, format='JPEG', quality=95)
-                log("✓", f"PREMIUM PIPELINE SUCCESS in {time.time() - start_t:.1f}s")
-                return result_image_path
-        except Exception as e:
-            log("3", f"Premium pipeline failed: {e}")
+        # 5. Proportionally composite the new door on top
+        log("4", "Overlaying new product with soft shadows...")
+        final_room = overlay_door_into_room(cleaned_room, door_rgba, detected_box, add_shadow=True)
 
-        # ── STEP 4: FAST PIPELINE (OpenCV — last resort) ────────────────
-        try:
-            log("4", "Last resort: Fast OpenCV Pipeline...")
+        # Save result
+        if not cv2.imwrite(result_image_path, final_room):
+            raise ValueError("Failed to save final visualization")
 
-            # Convert room to OpenCV format
-            room_bgr = cv2.cvtColor(np.array(room_pil), cv2.COLOR_RGB2BGR)
-
-            # Resize door for processing
-            dh, dw = door_bgra_cv.shape[:2]
-            if max(dh, dw) > 1024:
-                scale = 1024.0 / max(dh, dw)
-                new_w = max(1, int(dw * scale))
-                new_h = max(1, int(dh * scale))
-                door_bgra_resized = cv2.resize(door_bgra_cv, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
-            else:
-                door_bgra_resized = door_bgra_cv.copy()
-
-            fast_result = fast_opencv_pipeline(room_bgr, door_bgra_resized, room_analysis, log_fn=log)
-
-            if fast_result is not None:
-                fast_pil = Image.fromarray(cv2.cvtColor(fast_result, cv2.COLOR_BGR2RGB))
-                fast_pil = fast_pil.resize(room_raw.size, Image.LANCZOS)
-                fast_pil.save(result_image_path, format='JPEG', quality=95)
-                log("✓", f"OPENCV PIPELINE SUCCESS in {time.time() - start_t:.1f}s")
-                return result_image_path
-
-        except Exception as e:
-            log("4", f"OpenCV pipeline failed: {e}")
-            traceback.print_exc()
-
-        # ── STEP 5: FINAL FALLBACK ──────────────────────────────────────
-        log("5", "All pipelines failed. Saving original room image.")
-        room_raw.save(result_image_path, format='JPEG', quality=90)
+        log("✓", f"PIPELINE COMPLETE in {time.time() - start_t:.1f}s")
         return result_image_path
 
     except Exception as e_fatal:
-        log("X", f"Fatal error: {e_fatal}")
+        log("X", f"Fatal error in hybrid pipeline: {e_fatal}")
         traceback.print_exc()
         try:
             if room_raw:

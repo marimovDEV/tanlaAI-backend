@@ -223,6 +223,63 @@ def _sanitize_room_analysis(result, default):
     return sanitized
 
 
+def _normalized_box_from_pixels(pixel_box, width, height):
+    left, top, right, bottom = pixel_box
+    return {
+        "xmin": max(0.0, min(1.0, left / float(max(1, width)))),
+        "ymin": max(0.0, min(1.0, top / float(max(1, height)))),
+        "xmax": max(0.0, min(1.0, right / float(max(1, width)))),
+        "ymax": max(0.0, min(1.0, bottom / float(max(1, height)))),
+    }
+
+
+def _corners_from_pixel_box(pixel_box, width, height):
+    left, top, right, bottom = pixel_box
+    return {
+        "top_left": [
+            max(0.0, min(1.0, left / float(max(1, width)))),
+            max(0.0, min(1.0, top / float(max(1, height)))),
+        ],
+        "top_right": [
+            max(0.0, min(1.0, right / float(max(1, width)))),
+            max(0.0, min(1.0, top / float(max(1, height)))),
+        ],
+        "bottom_right": [
+            max(0.0, min(1.0, right / float(max(1, width)))),
+            max(0.0, min(1.0, bottom / float(max(1, height)))),
+        ],
+        "bottom_left": [
+            max(0.0, min(1.0, left / float(max(1, width)))),
+            max(0.0, min(1.0, bottom / float(max(1, height)))),
+        ],
+    }
+
+
+def merge_room_analysis_with_detection(room_analysis, detected_box, room_size, detection_method):
+    """Preserve GPT lighting/style analysis while anchoring geometry to deterministic detection."""
+    merged = _sanitize_room_analysis(room_analysis or {}, {
+        "door_found": True,
+        "door_corners": {
+            "top_left": [0.38, 0.15],
+            "top_right": [0.62, 0.15],
+            "bottom_right": [0.62, 0.85],
+            "bottom_left": [0.38, 0.85],
+        },
+        "door_box": {"ymin": 0.15, "xmin": 0.38, "ymax": 0.85, "xmax": 0.62},
+        "wall_angle": 0,
+        "lighting": {"direction": "ambient", "warmth": "neutral", "intensity": 0.6},
+        "design_dna": "Modern interior room",
+    })
+
+    width, height = room_size
+    merged["door_found"] = True
+    merged["door_box"] = _normalized_box_from_pixels(detected_box, width, height)
+    merged["door_corners"] = _corners_from_pixel_box(detected_box, width, height)
+    merged["geometry_source"] = f"gpt+{detection_method}"
+    merged["detection_method"] = detection_method
+    return merged
+
+
 def analyze_product_details(product_img_pil):
     """Describe the door product briefly using GPT-4o."""
     api_key = getattr(settings, 'OPENAI_API_KEY', None)
@@ -259,6 +316,194 @@ def analyze_product_details(product_img_pil):
         return resp.json()['choices'][0]['message']['content'].strip()
     except Exception:
         return "a modern architectural door"
+
+
+def summarize_room_analysis(room_analysis, detected_box, detection_method, room_size, roi_box=None):
+    width, height = room_size
+    normalized_box = _normalized_box_from_pixels(detected_box, width, height)
+    lighting = room_analysis.get("lighting", {})
+    summary = {
+        "door_found": bool(room_analysis.get("door_found", True)),
+        "geometry_source": room_analysis.get("geometry_source", detection_method),
+        "detection_method": detection_method,
+        "wall_angle": round(float(room_analysis.get("wall_angle", 0.0)), 2),
+        "design_dna": room_analysis.get("design_dna", "Modern interior room"),
+        "door_box": normalized_box,
+        "lighting": {
+            "direction": lighting.get("direction", "ambient"),
+            "warmth": lighting.get("warmth", "neutral"),
+            "intensity": round(float(lighting.get("intensity", 0.6)), 2),
+        },
+        "preserve_elements": [
+            "carpet",
+            "walls",
+            "curtains",
+            "furniture",
+            "TV",
+            "floor perspective",
+        ],
+    }
+
+    if roi_box is not None:
+        left, top, right, bottom = roi_box
+        summary["roi_box"] = {
+            "left": int(left),
+            "top": int(top),
+            "right": int(right),
+            "bottom": int(bottom),
+        }
+
+    return summary
+
+
+def build_nano_banana_prompt(room_analysis, product_desc):
+    lighting = room_analysis.get("lighting", {})
+    light_dir = lighting.get("direction", "ambient")
+    light_warmth = lighting.get("warmth", "neutral")
+    light_intensity = float(lighting.get("intensity", 0.6))
+    wall_angle = float(room_analysis.get("wall_angle", 0.0))
+    design_dna = room_analysis.get("design_dna", "modern Uzbek living room")
+
+    return (
+        "Image 1 is the real room crop. Image 2 is the replacement door product. "
+        "Image 3 is a black-and-white mask. Edit ONLY the white masked region from Image 3.\n\n"
+        "TASK:\n"
+        f"Replace the existing door in Image 1 with the door from Image 2 ({product_desc}).\n\n"
+        "NON-NEGOTIABLE RULES:\n"
+        "- Keep the exact room geometry, camera position, carpet, curtains, TV, walls, and furniture unchanged.\n"
+        "- The new door must look physically installed in the existing opening, not pasted on top.\n"
+        f"- Match the room perspective and wall angle ({wall_angle:.1f} degrees).\n"
+        f"- Match the existing lighting: direction {light_dir}, tone {light_warmth}, intensity {light_intensity:.2f}.\n"
+        "- Add realistic contact shadow on the floor, frame edges, and wall junction.\n"
+        "- Preserve wall texture, molding, skirting, and floor lines around the door.\n"
+        "- Keep the door closed and proportionally correct for the opening.\n"
+        f"- Preserve the design identity of the space: {design_dna}.\n"
+        "- Return a photorealistic result that looks like a real phone photo."
+    )
+
+
+def _extract_image_and_text_from_gemini_response(response):
+    parts = getattr(response, "parts", None)
+    if parts is None:
+        candidates = getattr(response, "candidates", None) or []
+        if candidates:
+            parts = getattr(candidates[0].content, "parts", None)
+    parts = parts or []
+
+    texts = []
+    image = None
+
+    for part in parts:
+        text = getattr(part, "text", None)
+        if text:
+            texts.append(text.strip())
+            continue
+
+        inline = getattr(part, "inline_data", None)
+        if inline is None:
+            continue
+
+        try:
+            image = part.as_image()
+        except Exception:
+            data = getattr(inline, "data", None)
+            if isinstance(data, str):
+                data = base64.b64decode(data)
+            if data:
+                image = Image.open(io.BytesIO(data)).convert("RGB")
+
+        if image is not None:
+            break
+
+    return image, "\n".join(chunk for chunk in texts if chunk).strip()
+
+
+def nano_banana_edit(room_img_pil, door_img_pil, mask_pil, room_analysis, log_fn=None):
+    """Use Gemini's native image model for multi-image editing."""
+    log = log_fn or (lambda step, msg: None)
+
+    try:
+        from google.genai import types
+        from shop.services import AIService
+
+        client = AIService.get_gemini_client(prefer_vertex=True)
+        if not client:
+            log("NB", "No Gemini client available for Nano Banana")
+            return None, None
+
+        primary_model = getattr(settings, "GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image-preview")
+        fallback_model = getattr(settings, "GEMINI_IMAGE_FALLBACK_MODEL", "gemini-2.5-flash-image")
+        is_vertex_client = bool(getattr(client, "vertexai", False))
+        model_candidates = [fallback_model, primary_model] if is_vertex_client else [primary_model, fallback_model]
+        product_desc = analyze_product_details(door_img_pil)
+        prompt = build_nano_banana_prompt(room_analysis, product_desc)
+
+        contents = [
+            room_img_pil.convert("RGB"),
+            door_img_pil.convert("RGB"),
+            mask_pil.convert("RGB"),
+            prompt,
+        ]
+        config = types.GenerateContentConfig(
+            response_modalities=["TEXT", "IMAGE"],
+            candidate_count=1,
+        )
+
+        for model_name in model_candidates:
+            if not model_name:
+                continue
+            try:
+                log("NB", f"Trying Nano Banana model {model_name}...")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config,
+                )
+                image, response_text = _extract_image_and_text_from_gemini_response(response)
+                if image is not None:
+                    log("NB", f"Nano Banana success via {model_name}")
+                    return image.convert("RGB"), {
+                        "engine": "nano-banana",
+                        "model": model_name,
+                        "prompt": prompt,
+                        "response_text": response_text,
+                        "product_description": product_desc,
+                    }
+            except Exception as model_error:
+                log("NB", f"{model_name} failed: {model_error}")
+
+        return None, {
+            "engine": "nano-banana",
+            "model": primary_model,
+            "prompt": prompt,
+            "response_text": "",
+            "product_description": product_desc,
+        }
+
+    except Exception as exc:
+        log("NB", f"Nano Banana pipeline error: {exc}")
+        return None, None
+
+
+def save_visualization_metadata(result_image_path, metadata):
+    if not metadata:
+        return
+
+    metadata_path = os.path.splitext(result_image_path)[0] + ".json"
+    with open(metadata_path, "w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, ensure_ascii=False, indent=2)
+
+
+def load_visualization_metadata(result_image_path):
+    metadata_path = os.path.splitext(result_image_path)[0] + ".json"
+    if not os.path.exists(metadata_path):
+        return None
+
+    try:
+        with open(metadata_path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return None
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1064,12 +1309,13 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
     start_t = time.time()
     log = lambda step, msg: _log(start_t, step, msg)
     room_raw = None
+    metadata = {}
 
     try:
         from shop.services import (
             AIService, load_best_door_rgba, 
             detect_door_opening_box, get_expected_door_aspect_ratio,
-            overlay_door_into_room, pixels_to_box_1000
+            overlay_door_into_room
         )
         from google.genai import types
         import cv2
@@ -1092,6 +1338,10 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         expected_aspect = get_expected_door_aspect_ratio(product, door_rgba=door_bgra_cv)
         detected_box, detection_method = detect_door_opening_box(room_bgr, expected_aspect)
         log("1", f"Door opening detected via [{detection_method}]: {detected_box}")
+
+        log("1a", "Running GPT room analysis for lighting/style...")
+        raw_room_analysis = analyze_room_advanced(room_raw, log_fn=log)
+        room_analysis = merge_room_analysis_with_detection(raw_room_analysis, detected_box, (rw, rh), detection_method)
         
         xmin, ymin, xmax, ymax = detected_box
         
@@ -1113,57 +1363,109 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         ImageDraw.Draw(mask_pil).rectangle(roi_box, fill=255)
         # Soften border
         mask_pil = mask_pil.filter(ImageFilter.GaussianBlur(3))
+
+        analysis_summary = summarize_room_analysis(
+            room_analysis,
+            detected_box,
+            detection_method,
+            (rw, rh),
+            roi_box=(c_left, c_top, c_right, c_bottom),
+        )
+        metadata = {
+            "pipeline": {
+                "version": "v46",
+                "room_analysis_engine": "gpt-4o",
+                "image_edit_engine": "nano-banana",
+                "fallbacks": ["imagen-3.0-capability-001", "opencv"],
+            },
+            "analysis": analysis_summary,
+            "generation_prompt": "",
+            "generation_meta": {},
+        }
         
         edited_roi_pil = None
-        
-        # 4. Try Gemini Inpaint
+
+        # 4. Try Nano Banana first
         try:
-            client = AIService.get_gemini_client()
-            roi_buf = io.BytesIO()
-            roi_img.save(roi_buf, format='PNG')
-            mask_buf = io.BytesIO()
-            mask_pil.save(mask_buf, format='PNG')
-            door_buf = io.BytesIO()
-            door_pil.save(door_buf, format='PNG')
-
-            room_ref = types.RawReferenceImage(reference_id=0, reference_image=types.Image(image_bytes=roi_buf.getvalue()))
-            door_ref = types.RawReferenceImage(reference_id=1, reference_image=types.Image(image_bytes=door_buf.getvalue()))
-
-            prompt_text = (
-                "Only edit the bright masked area. Replace the existing door with the provided door reference [1]. "
-                "Do not modify the surrounding floor, walls, carpet, or furniture. "
-                "Match light direction, adding realistic shadow to the floor."
+            edited_roi_pil, generation_meta = nano_banana_edit(
+                roi_img,
+                door_pil,
+                mask_pil,
+                room_analysis,
+                log_fn=log,
             )
+            if generation_meta:
+                metadata["generation_prompt"] = generation_meta.get("prompt", "")
+                metadata["generation_meta"] = generation_meta
+            if edited_roi_pil is not None and edited_roi_pil.size != (roi_w, roi_h):
+                edited_roi_pil = edited_roi_pil.resize((roi_w, roi_h), Image.LANCZOS)
+        except Exception as nb_error:
+            log("NB", f"Nano Banana stage crashed: {nb_error}")
+        
+        # 5. Try Imagen inpaint as fallback
+        if edited_roi_pil is None:
+            try:
+                client = AIService.get_gemini_client(prefer_vertex=True)
+                roi_buf = io.BytesIO()
+                roi_img.save(roi_buf, format='PNG')
+                mask_buf = io.BytesIO()
+                mask_pil.save(mask_buf, format='PNG')
+                door_buf = io.BytesIO()
+                door_pil.save(door_buf, format='PNG')
 
-            # Safest SDK modes for Imagen 3 editing
-            for mode in ("INPAINT_INSERTION", "EDIT_MODE_INPAINT_INSERTION", "INPAINT"):
-                try:
-                    resp = client.models.edit_image(
-                        model='imagen-3.0-capability-001',
-                        prompt=prompt_text,
-                        reference_images=[room_ref, door_ref],
-                        config=types.EditImageConfig(
-                            edit_mode=mode,
-                            number_of_images=1,
-                            output_mime_type='image/png',
-                            mask=types.Image(image_bytes=mask_buf.getvalue())
+                room_ref = types.RawReferenceImage(reference_id=0, reference_image=types.Image(image_bytes=roi_buf.getvalue()))
+                door_ref = types.SubjectReferenceImage(
+                    reference_id=1,
+                    reference_image=types.Image(image_bytes=door_buf.getvalue()),
+                    config=types.SubjectReferenceConfig(subject_type='SUBJECT_TYPE_PRODUCT'),
+                )
+                mask_ref = types.MaskReferenceImage(
+                    reference_id=2,
+                    reference_image=types.Image(image_bytes=mask_buf.getvalue()),
+                )
+
+                prompt_text = (
+                    "Only edit the bright masked area. Replace the existing door with the provided door reference [1]. "
+                    "Keep the surrounding carpet, walls, curtains, TV, and furniture unchanged. "
+                    f"Match room perspective and {room_analysis['lighting'].get('warmth', 'neutral')} "
+                    f"{room_analysis['lighting'].get('direction', 'ambient')} lighting."
+                )
+
+                # Safest SDK modes for Imagen 3 editing
+                for mode in ("EDIT_MODE_INPAINT_INSERTION",):
+                    try:
+                        resp = client.models.edit_image(
+                            model='imagen-3.0-capability-001',
+                            prompt=prompt_text,
+                            reference_images=[room_ref, door_ref, mask_ref],
+                            config=types.EditImageConfig(
+                                edit_mode=mode,
+                                number_of_images=1,
+                                output_mime_type='image/png',
+                            )
                         )
-                    )
-                    
-                    if resp.generated_images:
-                        img_bytes = resp.generated_images[0].image.image_bytes
-                        edited_roi_pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-                        if edited_roi_pil.size != (roi_w, roi_h):
-                            edited_roi_pil = edited_roi_pil.resize((roi_w, roi_h), Image.LANCZOS)
-                        log("2", f"✅ Gemini Inpaint Success (mode: {mode})")
-                        break
-                except Exception as inner_e:
-                    log("2", f"Gemini mode {mode} skipped: {inner_e}")
+                        
+                        if resp.generated_images:
+                            img_bytes = resp.generated_images[0].image.image_bytes
+                            edited_roi_pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                            if edited_roi_pil.size != (roi_w, roi_h):
+                                edited_roi_pil = edited_roi_pil.resize((roi_w, roi_h), Image.LANCZOS)
+                            log("2", f"✅ Gemini Inpaint Success (mode: {mode})")
+                            metadata["generation_prompt"] = prompt_text
+                            metadata["generation_meta"] = {
+                                "engine": "imagen-edit",
+                                "model": "imagen-3.0-capability-001",
+                                "mode": mode,
+                            }
+                            metadata["pipeline"]["image_edit_engine"] = "imagen-edit"
+                            break
+                    except Exception as inner_e:
+                        log("2", f"Gemini mode {mode} skipped: {inner_e}")
 
-        except Exception as ai_e:
-            log("2", f"Gemini setup failed: {ai_e}")
+            except Exception as ai_e:
+                log("2", f"Gemini setup failed: {ai_e}")
 
-        # 5. Safe OpenCV Fallback (FLAWLESS PLACEMENT)
+        # 6. Safe OpenCV Fallback (FLAWLESS PLACEMENT)
         if edited_roi_pil is None:
             log("3", "⚠️ Gemini skipped/failed. Using flawless OpenCV ROI Composite...")
             roi_bgr = cv2.cvtColor(np.array(roi_img), cv2.COLOR_RGB2BGR)
@@ -1173,13 +1475,20 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             # Simple overlay, perfectly fills the box without touching background
             final_roi_bgr = overlay_door_into_room(roi_bgr, door_bgra_cv, roi_pixel_box, add_shadow=True)
             edited_roi_pil = Image.fromarray(cv2.cvtColor(final_roi_bgr, cv2.COLOR_BGR2RGB))
+            metadata["generation_meta"] = {
+                "engine": "opencv",
+                "model": "local-composite",
+                "mode": "overlay",
+            }
+            metadata["pipeline"]["image_edit_engine"] = "opencv"
 
-        # 6. Paste back cleanly!
+        # 7. Paste back cleanly!
         log("4", "Pasting edited door back into original room image...")
         final_img = room_raw.copy()
         final_img.paste(edited_roi_pil, (c_left, c_top))
         
         final_img.save(result_image_path, format='JPEG', quality=95)
+        save_visualization_metadata(result_image_path, metadata)
         log("✓", f"PIPELINE COMPLETE in {time.time() - start_t:.1f}s")
         return result_image_path
 
@@ -1191,6 +1500,8 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                 room_raw.save(result_image_path, format='JPEG', quality=90)
             else:
                 Image.new('RGB', (800, 600), color=(240, 240, 240)).save(result_image_path)
+            if metadata:
+                save_visualization_metadata(result_image_path, metadata)
         except Exception:
             pass
         return result_image_path

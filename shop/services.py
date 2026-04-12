@@ -806,34 +806,36 @@ class AIService:
     """Service layer for all AI operations — background removal and room visualization."""
     
     @staticmethod
-    def get_gemini_client():
+    def get_gemini_client(prefer_vertex=False):
         """
         Initialize Gemini client.
-        API Key FIRST (ishlab turgan usul), Service Account fallback.
+        By default uses API key first, but image-generation flows can prefer Vertex AI.
         """
         import json
         from google import genai
 
-        # 1. API Key FIRST (user confirmed this was working)
-        api_key = getattr(settings, 'GEMINI_API_KEY', None)
-        if isinstance(api_key, str):
-            api_key = api_key.strip()
-        
-        if api_key:
+        def _build_api_client():
+            api_key = getattr(settings, 'GEMINI_API_KEY', None)
+            if isinstance(api_key, str):
+                api_key = api_key.strip()
+            if not api_key:
+                return None
             print("DEBUG: [AI Service] Initializing client with API KEY...")
             return genai.Client(api_key=api_key)
 
-        # 2. Fallback: Service Account (Vertex AI)
-        key_path = getattr(settings, 'GOOGLE_APPLICATION_CREDENTIALS', None)
-        if key_path and os.path.exists(key_path):
+        def _build_vertex_client():
+            key_path = getattr(settings, 'GOOGLE_APPLICATION_CREDENTIALS', None)
+            if not (key_path and os.path.exists(key_path)):
+                return None
             try:
                 from google.oauth2 import service_account
                 print("DEBUG: [AI Service] Trying Service Account fallback...")
-                project = getattr(settings, 'VERTEX_AI_PROJECT', '')
-                location = getattr(settings, 'VERTEX_AI_LOCATION', 'us-central1')
                 
                 with open(key_path, 'r', encoding='utf-8') as f:
                     info = json.load(f)
+
+                project = info.get('project_id') or getattr(settings, 'VERTEX_AI_PROJECT', '')
+                location = getattr(settings, 'VERTEX_AI_LOCATION', 'us-central1')
 
                 # PEM normalization (fix corrupted \n in private_key)
                 import re
@@ -858,6 +860,14 @@ class AIService:
                 )
             except Exception as e:
                 print(f"WARNING: [AI Service] Service Account failed: {e}")
+                return None
+
+        client_builders = [_build_vertex_client, _build_api_client] if prefer_vertex else [_build_api_client, _build_vertex_client]
+
+        for builder in client_builders:
+            client = builder()
+            if client is not None:
+                return client
         
         raise ValueError("GEMINI_API_KEY yoki google-cloud-key.json topilmadi.")
 

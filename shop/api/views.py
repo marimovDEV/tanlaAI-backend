@@ -73,6 +73,28 @@ def run_api_ai_background(product_id, room_path, result_path, tg_user_id):
         logger.error(f"DEBUG: API AI generation error for product {product_id}: {error}")
 
 
+def build_ai_result_payload(request, ai_result):
+    from ..ai_utils import load_visualization_metadata
+
+    payload = {
+        'status': 'done',
+        'image_url': request.build_absolute_uri(ai_result.image.url),
+    }
+
+    try:
+        metadata = load_visualization_metadata(ai_result.image.path)
+    except Exception:
+        metadata = None
+
+    if metadata:
+        payload['analysis'] = metadata.get('analysis')
+        payload['generation_prompt'] = metadata.get('generation_prompt')
+        payload['generation_meta'] = metadata.get('generation_meta')
+        payload['pipeline'] = metadata.get('pipeline')
+
+    return payload
+
+
 def get_tg_user(request):
     tg_user_id = request.session.get('tg_user_id')
     
@@ -383,9 +405,7 @@ class ProductViewSet(viewsets.ModelViewSet):
         if product.ai_status == 'completed':
             latest_result = AIResult.objects.filter(product=product).order_by('-created_at').first()
             if latest_result:
-                # Build absolute URI for the image
-                full_url = request.build_absolute_uri(latest_result.image.url)
-                return Response({'status': 'done', 'image_url': full_url})
+                return Response(build_ai_result_payload(request, latest_result))
 
         if product.ai_status == 'error':
             return Response({'status': 'error', 'message': 'AI generation failed.'})

@@ -230,6 +230,8 @@ AI_AUTO_PROCESS_CATEGORIES = ["Eshiklar", "eshiklar", "Eshik", "eshik", "Doors",
 GOOGLE_APPLICATION_CREDENTIALS = os.path.join(BASE_DIR, env('GOOGLE_APPLICATION_CREDENTIALS', default='google-cloud-key.json'))
 VERTEX_AI_PROJECT = env('VERTEX_AI_PROJECT', default='project-b79a8b66-7b7a-4251-b56')
 VERTEX_AI_LOCATION = env('VERTEX_AI_LOCATION', default='us-central1')
+GEMINI_IMAGE_MODEL = env('GEMINI_IMAGE_MODEL', default='gemini-3.1-flash-image-preview')
+GEMINI_IMAGE_FALLBACK_MODEL = env('GEMINI_IMAGE_FALLBACK_MODEL', default='gemini-2.5-flash-image')
 
 # Admin deploy actions
 ALLOW_ADMIN_DEPLOY_ACTIONS = env.bool('ALLOW_ADMIN_DEPLOY_ACTIONS', default=False)

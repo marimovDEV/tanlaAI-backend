@@ -17,6 +17,7 @@ from .admin_api import (
     AdminBannerViewSet,
     AdminLeadViewSet,
     AdminAIResultViewSet,
+    AdminAITestViewSet,
 )
 
 # Public API router
@@ -39,6 +40,7 @@ admin_router.register(r'promotions', AdminPromotionViewSet, basename='admin-prom
 admin_router.register(r'banners', AdminBannerViewSet, basename='admin-banners')
 admin_router.register(r'leads', AdminLeadViewSet, basename='admin-leads')
 admin_router.register(r'ai-results', AdminAIResultViewSet, basename='admin-ai-results')
+admin_router.register(r'ai-tests', AdminAITestViewSet, basename='admin-ai-tests')
 
 urlpatterns = [
     path('auth/telegram/', TelegramAuthView.as_view(), name='api_tg_auth'),

@@ -1298,7 +1298,7 @@ def fast_opencv_pipeline(room_bgr, door_bgra, room_analysis, log_fn=None):
 # MAIN ORCHESTRATOR
 # ═══════════════════════════════════════════════════════════════════════
 
-def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None):
+def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None, override_prompt=None):
     """
     v45 - The Ultimate bulletproof ROI Pipeline using OpenCV strict bounds
     1. Uses `detect_door_opening_box` to find the mathematically perfect bounding box.
@@ -1420,7 +1420,7 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                     reference_image=types.Image(image_bytes=mask_buf.getvalue()),
                 )
 
-                prompt_text = (
+                prompt_text = override_prompt if override_prompt else (
                     "Only edit the bright masked area. Replace the existing door with the provided door reference [1]. "
                     "Keep the surrounding carpet, walls, curtains, TV, and furniture unchanged. "
                     f"Match room perspective and {room_analysis['lighting'].get('warmth', 'neutral')} "

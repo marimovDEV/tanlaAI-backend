@@ -12,13 +12,13 @@ from django.shortcuts import get_object_or_404
 
 from ..models import (
     Product, Category, TelegramUser, Company,
-    HomeBanner, LeadRequest, AIResult, Subscription,
+    HomeBanner, LeadRequest, AIResult, Subscription, AITest
 )
 from rest_framework import serializers as drf_serializers
 from .serializers import (
     ProductSerializer, CategorySerializer, TelegramUserSerializer,
     HomeBannerSerializer, CompanySerializer, LeadRequestSerializer,
-    AdminLeadRequestSerializer, AdminAIResultSerializer
+    AdminLeadRequestSerializer, AdminAIResultSerializer, AITestSerializer
 )
 
 
@@ -341,3 +341,59 @@ class AdminAIResultViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         return AIResult.objects.select_related('user', 'product').order_by('-created_at')
+# ── AI Tests (Admin Lab) ────────────────────────────────────
+class AdminAITestViewSet(viewsets.ModelViewSet):
+    queryset = AITest.objects.all()
+    serializer_class = AITestSerializer
+    permission_classes = [IsAdminUser]
+
+    @action(detail=True, methods=['post'])
+    def run_test(self, request, pk=None):
+        import os
+        import uuid
+        from django.conf import settings
+        from ..ai_utils import visualize_door_in_room
+
+        test_obj = self.get_object()
+        product = test_obj.door
+        
+        # Determine paths
+        request_id = f"test_{test_obj.id}_{uuid.uuid4().hex[:8]}"
+        result_dir = os.path.join(settings.MEDIA_ROOT, 'ai_tests', 'results')
+        os.makedirs(result_dir, exist_ok=True)
+        result_path = os.path.join(result_dir, f"{request_id}.png")
+        
+        # We need the physical path of the room image
+        room_path = test_obj.room_image.path
+        
+        try:
+            # Run the same pipeline used by users
+            # Pass custom prompt if provided in the model
+            visualize_door_in_room(
+                product, 
+                room_path, 
+                result_path,
+                override_prompt=test_obj.prompt
+            )
+            
+            # Save the result image relative path
+            image_rel_path = f"ai_tests/results/{os.path.basename(result_path)}"
+            test_obj.result_image = image_rel_path
+            
+            # Load metadata if exists
+            from ..ai_utils import load_visualization_metadata
+            try:
+                metadata = load_visualization_metadata(result_path)
+                test_obj.metadata = metadata
+            except:
+                pass
+                
+            test_obj.save()
+            return Response(AITestSerializer(test_obj, context={'request': request}).data)
+            
+        except Exception as e:
+            import traceback
+            return Response({
+                'error': str(e),
+                'traceback': traceback.format_exc()
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

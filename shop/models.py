@@ -257,3 +257,19 @@ class SystemSettings(models.Model):
     def get_solo(cls):
         obj, created = cls.objects.get_or_create(id=1)
         return obj
+
+class AITest(models.Model):
+    door = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='ai_tests')
+    room_image = models.ImageField(upload_to='ai_tests/rooms/')
+    prompt = models.TextField(blank=True, null=True)
+    result_image = models.ImageField(upload_to='ai_tests/results/', blank=True, null=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = "AI Test"
+        verbose_name_plural = "AI Tests"
+
+    def __str__(self):
+        return f"Test #{self.id}: {self.door.name}"

@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from ..models import (
     Category, TelegramUser, Company, Product, 
-    AIResult, HomeBanner, Wishlist, LeadRequest, Subscription
+    AIResult, HomeBanner, Wishlist, LeadRequest, Subscription, AITest
 )
 
 class AbsoluteImageField(serializers.ImageField):
@@ -139,3 +139,11 @@ class SubscriptionSerializer(serializers.ModelSerializer):
         model = Subscription
         fields = '__all__'
 
+class AITestSerializer(serializers.ModelSerializer):
+    door_details = ProductSerializer(source='door', read_only=True)
+    room_image = AbsoluteImageField(required=True)
+    result_image = AbsoluteImageField(read_only=True)
+
+    class Meta:
+        model = AITest
+        fields = '__all__'

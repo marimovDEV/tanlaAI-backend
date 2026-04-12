@@ -321,6 +321,14 @@ def normalize_door_rgba_asset(door_rgba):
 
     normalized = door_rgba.copy()
     normalized[:, :, 3] = alpha_mask
+    
+    # Auto-crop the transparent padding out!
+    # Otherwise OpenCV compositor scales the transparent bounds instead of the visible door.
+    coords = cv2.findNonZero(alpha_mask)
+    if coords is not None:
+        x, y, w, h = cv2.boundingRect(coords)
+        normalized = normalized[y:y+h, x:x+w]
+        
     return normalized
 
 

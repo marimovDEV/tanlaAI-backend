@@ -1321,9 +1321,10 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         import cv2
 
         log("0", "Loading resources...")
-        room_bgr = cv2.imread(room_image_path, cv2.IMREAD_COLOR)
         room_raw = ImageOps.exif_transpose(Image.open(room_image_path)).convert("RGB")
+        room_raw.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
         rw, rh = room_raw.size
+        room_bgr = cv2.cvtColor(np.array(room_raw), cv2.COLOR_RGB2BGR)
 
         # Load product door
         door_bgra_cv = load_best_door_rgba(product)

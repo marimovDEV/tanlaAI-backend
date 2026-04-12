@@ -760,8 +760,9 @@ def _try_dalle_edit(room_img_pil, door_img_pil, room_analysis, api_key, log):
 
 def gemini_reconstruct(room_img_pil, door_img_pil, room_analysis, log_fn=None):
     """
-    Gemini Imagen 3 reconstruction/inpainting as fallback.
-    This is the existing pipeline, cleaned up.
+    Gemini Imagen 3 — AI fully regenerates the room with the new door installed.
+    The room should look like the SAME room but with the new door.
+    Multiple attempts with different strategies.
     """
     log = log_fn or (lambda step, msg: None)
 
@@ -771,28 +772,37 @@ def gemini_reconstruct(room_img_pil, door_img_pil, room_analysis, log_fn=None):
 
         client = AIService.get_gemini_client()
         if not client:
+            log("G", "No Gemini client available")
             return None
 
-        design_dna = room_analysis.get("design_dna", "modern interior")
+        design_dna = room_analysis.get("design_dna", "modern interior room")
         prod_desc = analyze_product_details(door_img_pil)
+        lighting = room_analysis.get("lighting", {})
+        light_dir = lighting.get("direction", "ambient")
+        light_warmth = lighting.get("warmth", "neutral")
 
         r_buf = io.BytesIO()
         room_img_pil.save(r_buf, format='PNG')
         d_buf = io.BytesIO()
-        door_img_pil.save(d_buf, format='PNG')
+        # Send door as RGB for better Gemini compatibility
+        door_img_pil.convert('RGB').save(d_buf, format='PNG')
 
-        # STAGE A: Full Reconstruction 
+        # ━━━ ATTEMPT 1: Full reconstruction with style + subject references ━━━
         try:
-            log("G1", "Gemini reconstruction...")
-            p1 = (
-                f"ARCHITECTURAL RECONSTRUCTION. "
-                f"STYLE [0]: {design_dna}. "
-                f"SUBJECT [1]: {prod_desc}. "
-                f"Closed door. Photorealistic. 8k."
+            log("G1", "Attempt 1: Full reconstruction (style+subject)...")
+            prompt_1 = (
+                f"Photorealistic interior photo of THIS EXACT ROOM from reference [0]. "
+                f"The room has: {design_dna}. "
+                f"REPLACE the existing door with the door product shown in reference [1]. "
+                f"The new door ({prod_desc}) must be CLOSED and properly installed in the door frame. "
+                f"KEEP EVERYTHING ELSE IDENTICAL: same walls, same floor, same carpet, same curtains, "
+                f"same furniture, same TV, same lighting ({light_warmth} {light_dir} light). "
+                f"The room layout, colors, and objects must match the original photo exactly. "
+                f"Only the door changes. Professional architectural photography, 8K quality."
             )
             res1 = client.models.generate_images(
                 model='imagen-3.0-capability-001',
-                prompt=p1,
+                prompt=prompt_1,
                 config=types.GenerateImagesConfig(
                     number_of_images=1,
                     output_mime_type='image/png',
@@ -819,14 +829,14 @@ def gemini_reconstruct(room_img_pil, door_img_pil, room_analysis, log_fn=None):
                 result = Image.open(
                     io.BytesIO(res1.generated_images[0].image.image_bytes)
                 ).convert("RGB")
-                log("G1", "Gemini reconstruction SUCCESS")
+                log("G1", "Attempt 1 SUCCESS — full reconstruction")
                 return result
         except Exception as e1:
-            log("G1", f"Gemini reconstruction failed: {e1}")
+            log("G1", f"Attempt 1 failed: {e1}")
 
-        # STAGE B: Inpainting
+        # ━━━ ATTEMPT 2: Inpainting — replace only the door area ━━━
         try:
-            log("G2", "Gemini inpainting...")
+            log("G2", "Attempt 2: Inpainting door area...")
             bx = room_analysis['door_box']
             rw, rh = room_img_pil.size
             l = int(bx['xmin'] * rw)
@@ -834,18 +844,27 @@ def gemini_reconstruct(room_img_pil, door_img_pil, room_analysis, log_fn=None):
             r = int(bx['xmax'] * rw)
             b = int(bx['ymax'] * rh)
 
+            # Create mask with padding
+            pad_x = max(15, int((r - l) * 0.08))
+            pad_y = max(15, int((b - t) * 0.05))
             mask = Image.new("L", (rw, rh), 0)
-            ImageDraw.Draw(mask).rectangle([l - 20, t - 20, r + 20, b + 20], fill=255)
+            ImageDraw.Draw(mask).rectangle(
+                [l - pad_x, t - pad_y, r + pad_x, b + pad_y], fill=255
+            )
             m_buf = io.BytesIO()
-            mask.filter(ImageFilter.GaussianBlur(5)).save(m_buf, format='PNG')
+            mask.filter(ImageFilter.GaussianBlur(8)).save(m_buf, format='PNG')
 
-            p2 = (
-                f"INSERTION: Install [1] into [0]. "
-                f"DESIGN: {prod_desc}. Closed door. 8k."
+            prompt_2 = (
+                f"Install the door product [1] into the masked area of this room [0]. "
+                f"The door ({prod_desc}) must be CLOSED, properly fitted in the door frame. "
+                f"Match the room's {light_warmth} {light_dir} lighting and perspective. "
+                f"Keep the surrounding wall texture and floor consistent. "
+                f"The result must look like a real installed door, not digitally added. "
+                f"Professional interior photography quality."
             )
             res2 = client.models.edit_image(
                 model='imagen-3.0-capability-001',
-                prompt=p2,
+                prompt=prompt_2,
                 reference_images=[
                     types.RawReferenceImage(
                         reference_id=0,
@@ -873,10 +892,51 @@ def gemini_reconstruct(room_img_pil, door_img_pil, room_analysis, log_fn=None):
                 result = Image.open(
                     io.BytesIO(res2.generated_images[0].image.image_bytes)
                 ).convert("RGB")
-                log("G2", "Gemini inpainting SUCCESS")
+                log("G2", "Attempt 2 SUCCESS — inpainting")
                 return result
         except Exception as e2:
-            log("G2", f"Gemini inpainting failed: {e2}")
+            log("G2", f"Attempt 2 failed: {e2}")
+
+        # ━━━ ATTEMPT 3: Simplified prompt ━━━
+        try:
+            log("G3", "Attempt 3: Simplified reconstruction...")
+            prompt_3 = (
+                f"A realistic photo of this same room [0] with door [1] installed. "
+                f"Same layout, same style. Closed door. High quality."
+            )
+            res3 = client.models.generate_images(
+                model='imagen-3.0-capability-001',
+                prompt=prompt_3,
+                config=types.GenerateImagesConfig(
+                    number_of_images=1,
+                    output_mime_type='image/png',
+                    style_reference_config=types.StyleReferenceConfig(
+                        style_reference_images=[
+                            types.StyleReferenceImage(
+                                reference_id=0,
+                                image=types.Image(image_bytes=r_buf.getvalue()),
+                            )
+                        ]
+                    ),
+                    subject_reference_config=types.SubjectReferenceConfig(
+                        subject_reference_images=[
+                            types.SubjectReferenceImage(
+                                reference_id=1,
+                                image=types.Image(image_bytes=d_buf.getvalue()),
+                                subject_type='SUBJECT_REFERENCE_TYPE_PRODUCT',
+                            )
+                        ]
+                    ),
+                ),
+            )
+            if res3 and res3.generated_images:
+                result = Image.open(
+                    io.BytesIO(res3.generated_images[0].image.image_bytes)
+                ).convert("RGB")
+                log("G3", "Attempt 3 SUCCESS — simplified")
+                return result
+        except Exception as e3:
+            log("G3", f"Attempt 3 failed: {e3}")
 
         return None
 
@@ -945,13 +1005,13 @@ def fast_opencv_pipeline(room_bgr, door_bgra, room_analysis, log_fn=None):
 
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None):
     """
-    v40 - Production-Grade Door Visualization Pipeline
+    v41 - Production-Grade Door Visualization Pipeline
 
-    Pipeline order:
+    Pipeline order (AI reconstruction first, OpenCV last):
     1. Room analysis (GPT-4o Vision)
-    2. Premium: GPT-4o Image Edit (if available)
-    3. Fast: OpenCV Perspective + Lighting + Composite
-    4. Gemini: Imagen 3 reconstruction (fallback)
+    2. Gemini: Imagen 3 full room reconstruction (PRIMARY)
+    3. Premium: GPT-4o Image Edit
+    4. Fast: OpenCV Perspective + Lighting + Composite (last resort)
     5. Final fallback: return original room
 
     Args:
@@ -994,27 +1054,40 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                   f"angle={room_analysis['wall_angle']}, "
                   f"light={room_analysis['lighting']['direction']}")
 
-        # ── STEP 2: PREMIUM PIPELINE (GPT-4o Image Edit) ───────────────
+        # ── STEP 2: GEMINI PIPELINE (PRIMARY — best for room reconstruction) ──
+        # AI fully regenerates the room with the new door installed.
+        # Room identity is preserved through style reference.
         try:
-            log("2", "Trying Premium Pipeline (GPT-4o)...")
+            log("2", "🎯 PRIMARY: Gemini Imagen 3 Room Reconstruction...")
+            gemini_result = gemini_reconstruct(room_pil, door_pil, room_analysis, log_fn=log)
+            if gemini_result is not None:
+                gemini_result = gemini_result.resize(room_raw.size, Image.LANCZOS)
+                gemini_result.save(result_image_path, format='JPEG', quality=95)
+                log("✓", f"GEMINI PIPELINE SUCCESS in {time.time() - start_t:.1f}s")
+                return result_image_path
+        except Exception as e:
+            log("2", f"Gemini pipeline failed: {e}")
+
+        # ── STEP 3: PREMIUM PIPELINE (GPT-4o Image Edit) ───────────────
+        try:
+            log("3", "Trying Premium Pipeline (GPT-4o)...")
             premium_result = premium_gpt4o_edit(room_pil, door_pil, room_analysis, log_fn=log)
             if premium_result is not None:
-                # Resize to original room size
                 premium_result = premium_result.resize(room_raw.size, Image.LANCZOS)
                 premium_result.save(result_image_path, format='JPEG', quality=95)
                 log("✓", f"PREMIUM PIPELINE SUCCESS in {time.time() - start_t:.1f}s")
                 return result_image_path
         except Exception as e:
-            log("2", f"Premium pipeline failed: {e}")
+            log("3", f"Premium pipeline failed: {e}")
 
-        # ── STEP 3: FAST PIPELINE (OpenCV) ──────────────────────────────
+        # ── STEP 4: FAST PIPELINE (OpenCV — last resort) ────────────────
         try:
-            log("3", "Trying Fast Pipeline (OpenCV)...")
+            log("4", "Last resort: Fast OpenCV Pipeline...")
 
             # Convert room to OpenCV format
             room_bgr = cv2.cvtColor(np.array(room_pil), cv2.COLOR_RGB2BGR)
 
-            # Resize door_bgra_cv to reasonable size for processing
+            # Resize door for processing
             dh, dw = door_bgra_cv.shape[:2]
             if max(dh, dw) > 1024:
                 scale = 1024.0 / max(dh, dw)
@@ -1027,28 +1100,15 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             fast_result = fast_opencv_pipeline(room_bgr, door_bgra_resized, room_analysis, log_fn=log)
 
             if fast_result is not None:
-                # Resize to original room size
                 fast_pil = Image.fromarray(cv2.cvtColor(fast_result, cv2.COLOR_BGR2RGB))
                 fast_pil = fast_pil.resize(room_raw.size, Image.LANCZOS)
                 fast_pil.save(result_image_path, format='JPEG', quality=95)
-                log("✓", f"FAST PIPELINE SUCCESS in {time.time() - start_t:.1f}s")
+                log("✓", f"OPENCV PIPELINE SUCCESS in {time.time() - start_t:.1f}s")
                 return result_image_path
 
         except Exception as e:
-            log("3", f"Fast pipeline failed: {e}")
+            log("4", f"OpenCV pipeline failed: {e}")
             traceback.print_exc()
-
-        # ── STEP 4: GEMINI PIPELINE (Fallback) ──────────────────────────
-        try:
-            log("4", "Trying Gemini Pipeline (Imagen 3)...")
-            gemini_result = gemini_reconstruct(room_pil, door_pil, room_analysis, log_fn=log)
-            if gemini_result is not None:
-                gemini_result = gemini_result.resize(room_raw.size, Image.LANCZOS)
-                gemini_result.save(result_image_path, format='JPEG', quality=95)
-                log("✓", f"GEMINI PIPELINE SUCCESS in {time.time() - start_t:.1f}s")
-                return result_image_path
-        except Exception as e:
-            log("4", f"Gemini pipeline failed: {e}")
 
         # ── STEP 5: FINAL FALLBACK ──────────────────────────────────────
         log("5", "All pipelines failed. Saving original room image.")

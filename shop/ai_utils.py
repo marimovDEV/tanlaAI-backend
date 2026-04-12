@@ -1380,7 +1380,7 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         )
         metadata = {
             "pipeline": {
-                "version": "v46",
+                "version": "v47.1",
                 "room_analysis_engine": "gpt-4o",
                 "image_edit_engine": "nano-banana",
                 "fallbacks": ["imagen-3.0-capability-001", "opencv"],
@@ -1553,23 +1553,40 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
             except Exception as ai_e:
                 log("2", f"Gemini setup failed: {ai_e}")
 
-        # 6. Safe OpenCV Fallback (FLAWLESS PLACEMENT)
+        # 7. Safe OpenCV Fallback (FLAWLESS PLACEMENT)
         if edited_roi_pil is None:
-            log("3", "⚠️ Gemini skipped/failed. Using flawless OpenCV ROI Composite...")
-            roi_bgr = cv2.cvtColor(np.array(roi_img), cv2.COLOR_RGB2BGR)
-            # The target box inside the ROI
-            roi_pixel_box = (xmin - c_left, ymin - c_top, xmax - c_left, ymax - c_top)
-            
-            # Simple overlay, perfectly fills the box without touching background
-            wall_angle = room_analysis.get("wall_angle", 0)
-            final_roi_bgr = overlay_door_into_room(roi_bgr, door_bgra_cv, roi_pixel_box, add_shadow=True, wall_angle=wall_angle)
-            edited_roi_pil = Image.fromarray(cv2.cvtColor(final_roi_bgr, cv2.COLOR_BGR2RGB))
-            metadata["generation_meta"] = {
-                "engine": "opencv",
-                "model": "local-composite",
-                "mode": "overlay",
-            }
-            metadata["pipeline"]["image_edit_engine"] = "opencv"
+            log("3", "⚠️ Gemini failed. Using v47 Homography OpenCV Composite...")
+            try:
+                from shop.services import perspective_warp_door_to_corners
+                
+                roi_bgr = cv2.cvtColor(np.array(roi_img), cv2.COLOR_RGB2BGR)
+                roi_pixel_corners = {
+                    k: (v[0] * rw - c_left, v[1] * rh - c_top) 
+                    for k, v in room_analysis['door_corners'].items()
+                }
+                
+                # Warp the door directly into the ROI canvas
+                warped_bgra = perspective_warp_door_to_corners(door_bgra_cv, roi_pixel_corners, roi_w, roi_h)
+                
+                # Composite
+                alpha = warped_bgra[:, :, 3].astype(np.float32) / 255.0
+                door_rgb = warped_bgra[:, :, :3].astype(np.float32)
+                region = roi_bgr.astype(np.float32)
+                blended = (alpha[..., None] * door_rgb) + ((1.0 - alpha[..., None]) * region)
+                final_roi_bgr = np.clip(blended, 0, 255).astype(np.uint8)
+                
+                edited_roi_pil = Image.fromarray(cv2.cvtColor(final_roi_bgr, cv2.COLOR_BGR2RGB))
+                metadata["generation_meta"] = {
+                    "engine": "opencv-v47",
+                    "model": "homography-composite",
+                    "mode": "warp-overlay",
+                }
+                metadata["pipeline"]["image_edit_engine"] = "opencv-v47"
+            except Exception as cv_err:
+                log("3", f"Homography fallback failed: {cv_err}")
+                # Ultimate simple fallback
+                final_roi_bgr = cv2.cvtColor(np.array(roi_img), cv2.COLOR_RGB2BGR)
+                edited_roi_pil = Image.fromarray(cv2.cvtColor(final_roi_bgr, cv2.COLOR_BGR2RGB))
 
         # 7. Paste back cleanly!
         log("4", "Pasting edited door back into original room image...")

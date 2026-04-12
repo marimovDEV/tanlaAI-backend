@@ -66,8 +66,8 @@ Return a JSON object with EXACTLY this structure:
 RULES:
 - All coordinates are NORMALIZED (0.0 to 1.0), where (0,0) is top-left corner of image.
 - "door_corners" are the 4 corner points of the door INCLUDING its frame, following the wall's perspective.
-  If the wall is at an angle, the corners should reflect that perspective (e.g. one side narrower than the other).
-- "door_box" is a simple bounding box around the door area.
+  BE VERY PRECISE about the bottom corners — ensure they reach the ABSOLUTE floor level.
+- "door_box" is a simple bounding box around the door area. Ensure the bottom (ymax) touches the floor.
 - "wall_angle" is the estimated angle of the wall plane relative to camera:
   0 = wall faces camera directly
   negative = wall angles to the left

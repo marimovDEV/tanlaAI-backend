@@ -565,7 +565,12 @@ def normalize_door_opening_box(pixel_box, image_width, image_height, expected_as
     desired_width = min(desired_width, int(round(image_width * 0.72)))
 
     center_x = (left + right) / 2.0
-    bottom = min(image_height, bottom + max(2, int(round(desired_height * 0.03))))
+    
+    # v47.2 enhancement: Be more aggressive about grounding the door
+    # If the bottom is already low in the image, push it a bit further to ensure it hits floor
+    if bottom > image_height * 0.8:
+        bottom = min(image_height, bottom + int(image_height * 0.02))
+        
     top = max(0, int(round(bottom - desired_height)))
     left = int(round(center_x - (desired_width / 2.0)))
     right = int(round(center_x + (desired_width / 2.0)))

@@ -1384,23 +1384,12 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         }
         
         edited_roi_pil = None
-
-        # 4. Try Nano Banana first
-        try:
-            edited_roi_pil, generation_meta = nano_banana_edit(
-                roi_img,
-                door_pil,
-                mask_pil,
-                room_analysis,
-                log_fn=log,
-            )
-            if generation_meta:
-                metadata["generation_prompt"] = generation_meta.get("prompt", "")
-                metadata["generation_meta"] = generation_meta
-            if edited_roi_pil is not None and edited_roi_pil.size != (roi_w, roi_h):
-                edited_roi_pil = edited_roi_pil.resize((roi_w, roi_h), Image.LANCZOS)
-        except Exception as nb_error:
-            log("NB", f"Nano Banana stage crashed: {nb_error}")
+        
+        # 4. (Disabled Nano Banana) We now use Imagen 3 or OpenCV directly.
+        # try:
+        #     edited_roi_pil, generation_meta = nano_banana_edit(...)
+        # except Exception as nb_error:
+        #     log("NB", f"Nano Banana stage crashed: {nb_error}")
         
         # 5. Try Imagen inpaint as fallback
         if edited_roi_pil is None:

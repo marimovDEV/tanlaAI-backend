@@ -1433,12 +1433,12 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                 door_pil_for_ai.convert("RGB").save(door_buf, format='PNG')
 
                 prompt_text = override_prompt if override_prompt else (
-                    f"A photorealistic architectural photography of a {room_analysis.get('design_dna', 'room')}. "
-                    "The scene must be identical to reference [0] in layout, floor, walls, and furniture. "
-                    f"Install the door from product [1] into the main opening. "
-                    f"Match room perspective and {room_analysis['lighting'].get('warmth', 'neutral')} "
-                    f"{room_analysis['lighting'].get('direction', 'ambient')} lighting perfectly. "
-                    "The door must look physically built-in. High-end interior render, 8K, realistic textures."
+                    "TASK: Install the EXACT door from IMAGE [1] into the house entrance shown in IMAGE [0].\n"
+                    "REQUIREMENTS:\n"
+                    "1. Keep the room in IMAGE [0] EXACTLY the same (walls, floor, furniture, lighting).\n"
+                    "2. Use the EXACT design, color, and geometric pattern of the door from IMAGE [1].\n"
+                    "3. The door MUST be grounded perfectly on the floor.\n"
+                    "4. Maintain professional architectural photography quality, 8K, realistic textures."
                 )
 
                 log("5", "🎯 v47 Attempt: Full Scene Reconstruction...")
@@ -1513,10 +1513,8 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
                 )
 
                 prompt_text = override_prompt if override_prompt else (
-                    "Only edit the bright masked area. Replace the existing door with the provided door reference [1]. "
-                    "Keep the surrounding carpet, walls, curtains, TV, and furniture unchanged. "
-                    f"Match room perspective and {room_analysis['lighting'].get('warmth', 'neutral')} "
-                    f"{room_analysis['lighting'].get('direction', 'ambient')} lighting."
+                    "TASK: Inpaint the EXACT door from IMAGE [1] into the masked area of IMAGE [0].\n"
+                    "Maintain the EXACT design, color, and pattern of the door. Ground it on the floor."
                 )
 
                 # Safest SDK modes for Imagen 3 editing

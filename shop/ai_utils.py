@@ -1045,28 +1045,32 @@ def fast_opencv_pipeline(room_bgr, door_bgra, room_analysis, log_fn=None):
 # MAIN ORCHESTRATOR
 # ═══════════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════════
+# MAIN ORCHESTRATOR
+# ═══════════════════════════════════════════════════════════════════════
+
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None):
     """
-    v43 - ROI-based Local Inpainting
-    1. GPT-4o Vision for perfect door polygon detection.
-    2. Crop a local ROI (Region of Interest) around the door.
-    3. Generate a precise polygon mask (white for door, black elsewhere).
-    4. Imagen 3 Inpaint ONLY the ROI (guarantees rest of room is untouched).
-    5. Paste the edited ROI back into the pristine original image.
+    v44 - Flawless ROI Pipeline with Safe OpenCV Fallback
+    1. GPT-4o Vision -> precise corners
+    2. ROI Crop -> isolate door frame
+    3. Gemini Inpaint to insert door cleanly.
+    4. If Gemini fails (SDK error/timeout), use proportional OpenCV composite
+       on the ROI without doing the ugly cv2.inpaint X-blur.
     """
     start_t = time.time()
     log = lambda step, msg: _log(start_t, step, msg)
     room_raw = None
 
     try:
-        from shop.services import AIService, load_best_door_rgba
+        from shop.services import AIService, load_best_door_rgba, overlay_door_into_room
         from google.genai import types
+        import cv2
 
         log("0", "Loading resources...")
         room_raw = ImageOps.exif_transpose(Image.open(room_image_path)).convert("RGB")
         rw, rh = room_raw.size
 
-        # Load product door
         door_bgra_cv = load_best_door_rgba(product)
         if door_bgra_cv is None:
             raise ValueError("Door asset missing")
@@ -1076,12 +1080,11 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         door_pil = Image.fromarray(door_rgba_np, 'RGBA')
 
         # 1. GPT-4o Analysis
-        # We resize for analysis to speed it up
         analysis_pil = room_raw.copy()
         analysis_pil.thumbnail((1024, 1024), Image.LANCZOS)
         analysis = analyze_room_advanced(analysis_pil, log_fn=log)
         
-        # 2. Setup precise polygon from corners
+        # 2. Setup precise polygon
         corners = analysis.get("door_corners", {
             "top_left": [0.4, 0.2], "top_right": [0.6, 0.2],
             "bottom_right": [0.6, 0.8], "bottom_left": [0.4, 0.8]
@@ -1098,7 +1101,7 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         xmin, xmax = min(xs), max(xs)
         ymin, ymax = min(ys), max(ys)
         
-        # 3. Crop ROI with generous padding (for context)
+        # 3. ROI Crop
         pad_x = (xmax - xmin) * 0.25
         pad_y = (ymax - ymin) * 0.15
         
@@ -1110,74 +1113,85 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         roi_img = room_raw.crop((c_left, c_top, c_right, c_bottom))
         roi_w, roi_h = roi_img.size
         
-        # 4. Draw exact polygon mask
+        # 4. Exact mask
         mask_pil = Image.new("L", (roi_w, roi_h), 0)
         roi_pts = [(p[0] - c_left, p[1] - c_top) for p in pts]
         ImageDraw.Draw(mask_pil).polygon(roi_pts, fill=255)
-        
-        # Dilate mask slightly so Gemini can fix the door frame edge
         mask_pil = mask_pil.filter(ImageFilter.MaxFilter(7)).filter(ImageFilter.GaussianBlur(3))
         
-        # Output bounds to log
-        log("1", f"Prepared ROI ({roi_w}x{roi_h}) on area {c_left},{c_top}")
-
-        # 5. Gemini Inpaint
-        log("2", "Sending ROI to Imagen 3 Inpaint...")
-        client = AIService.get_gemini_client()
-        
-        roi_buf = io.BytesIO()
-        roi_img.save(roi_buf, format='PNG')
-        mask_buf = io.BytesIO()
-        mask_pil.save(mask_buf, format='PNG')
-        door_buf = io.BytesIO()
-        door_pil.save(door_buf, format='PNG')
-
-        room_ref = types.RawReferenceImage(reference_id=0, reference_image=types.Image(image_bytes=roi_buf.getvalue()))
-        door_ref = types.SubjectReferenceImage(
-            reference_id=1, 
-            image=types.Image(image_bytes=door_buf.getvalue()),
-            subject_type='SUBJECT_REFERENCE_TYPE_PRODUCT'
-        )
-
-        prompt = (
-            "Only edit the bright masked area. Replace the existing door with this product. "
-            "Do not modify the surrounding floor, walls, carpet, or furniture. "
-            "Match light direction and perspective, adding soft realistic shadow."
-        )
-
-        last_error = None
         edited_roi_pil = None
         
-        # Try different modes, "INPAINT_INSERTION" or simply "INPAINT"
-        for mode in ("EDIT_MODE_INPAINT_INSERTION", "INPAINT", "EDIT_MODE_INPAINT_EDIT"):
+        # 5. Try Gemini Inpaint
+        try:
+            client = AIService.get_gemini_client()
+            roi_buf = io.BytesIO()
+            roi_img.save(roi_buf, format='PNG')
+            mask_buf = io.BytesIO()
+            mask_pil.save(mask_buf, format='PNG')
+            door_buf = io.BytesIO()
+            door_pil.save(door_buf, format='PNG')
+
+            room_ref = types.RawReferenceImage(reference_id=0, reference_image=types.Image(image_bytes=roi_buf.getvalue()))
+            
+            # Using RawReferenceImage fallback if SubjectReferenceImage SDK object is missing
             try:
-                resp = client.models.edit_image(
-                    model='imagen-3.0-capability-001',
-                    prompt=prompt,
-                    reference_images=[room_ref, door_ref],
-                    config=types.EditImageConfig(
-                        edit_mode=mode,
-                        number_of_images=1,
-                        output_mime_type='image/png',
-                        mask=types.Image(image_bytes=mask_buf.getvalue())
-                    )
+                door_ref = types.SubjectReferenceImage(
+                    reference_id=1, 
+                    image=types.Image(image_bytes=door_buf.getvalue()),
+                    subject_type='SUBJECT_REFERENCE_TYPE_PRODUCT'
                 )
-                
-                if resp.generated_images:
-                    img_bytes = resp.generated_images[0].image.image_bytes
-                    edited_roi_pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-                    # Ensure size matches
-                    if edited_roi_pil.size != (roi_w, roi_h):
-                        edited_roi_pil = edited_roi_pil.resize((roi_w, roi_h), Image.LANCZOS)
-                    log("3", f"✅ Gemini Inpaint Success (mode: {mode})")
-                    break
-            except Exception as e:
-                last_error = e
+            except AttributeError:
+                door_ref = types.RawReferenceImage(reference_id=1, reference_image=types.Image(image_bytes=door_buf.getvalue()))
 
+            prompt_text = (
+                "Only edit the bright masked area. Replace the existing door inside the mask with the provided door reference. "
+                "Do not modify the surrounding floor, walls, carpet, or furniture. "
+                "Match light direction and perspective, adding soft realistic shadow."
+            )
+
+            # Try user's explicitly requested "INPAINT" mode first
+            for mode in ("INPAINT", "EDIT_MODE_INPAINT_INSERTION"):
+                try:
+                    resp = client.models.edit_image(
+                        model='imagen-3.0-capability-001',
+                        prompt=prompt_text,
+                        reference_images=[room_ref, door_ref],
+                        config=types.EditImageConfig(
+                            edit_mode=mode,
+                            number_of_images=1,
+                            output_mime_type='image/png',
+                            mask=types.Image(image_bytes=mask_buf.getvalue())
+                        )
+                    )
+                    
+                    if resp.generated_images:
+                        img_bytes = resp.generated_images[0].image.image_bytes
+                        edited_roi_pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                        if edited_roi_pil.size != (roi_w, roi_h):
+                            edited_roi_pil = edited_roi_pil.resize((roi_w, roi_h), Image.LANCZOS)
+                        log("3", f"✅ Gemini Inpaint Success (mode: {mode})")
+                        break
+                except Exception as inner_e:
+                    log("3", f"Gemini mode {mode} skipped: {inner_e}")
+
+        except Exception as ai_e:
+            log("3", f"Gemini setup failed: {ai_e}")
+
+        # 6. Fallback to Safe OpenCV if Gemini failed completely
         if edited_roi_pil is None:
-            raise last_error or ValueError("Gemini ROI inpaint failed completely")
+            log("3", "⚠️ Gemini failed or timed out. Running flawless OpenCV ROI Compositing...")
+            roi_bgr = cv2.cvtColor(np.array(roi_img), cv2.COLOR_RGB2BGR)
+            
+            # Find the new bounds inside the ROI for OpenCV to place the door
+            xs_roi = [p[0] for p in roi_pts]
+            ys_roi = [p[1] for p in roi_pts]
+            box_pixel = (min(xs_roi), min(ys_roi), max(xs_roi), max(ys_roi))
+            
+            # 🚨 CRUCIAL: We do overlay directly. We DO NOT use cv2.inpaint here = NO X-shaped blurs! 🚨
+            final_roi_bgr = overlay_door_into_room(roi_bgr, door_bgra_cv, box_pixel, add_shadow=True)
+            edited_roi_pil = Image.fromarray(cv2.cvtColor(final_roi_bgr, cv2.COLOR_BGR2RGB))
 
-        # 6. Paste back cleanly!
+        # 7. Paste back cleanly!
         log("4", "Pasting edited ROI back into original picture...")
         final_img = room_raw.copy()
         final_img.paste(edited_roi_pil, (c_left, c_top))

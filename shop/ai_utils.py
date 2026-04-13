@@ -5,9 +5,15 @@ import base64
 import uuid
 import tempfile
 import traceback
+import io
 from PIL import Image
 from openai import OpenAI
 from django.conf import settings
+
+def log_error(msg):
+    with open('ai_error.log', 'a') as f:
+        f.write(f"[{time.ctime()}] {msg}\n")
+    print(msg)
 
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None, override_prompt=None):
     """
@@ -108,11 +114,17 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         return result_image_path
 
     except Exception as e:
-        print(f"\n❌ XATO (images.edit): {e}")
+        err_msg = f"XATO (images.edit): {str(e)}\n{traceback.format_exc()}"
+        log_error(err_msg)
         print("\n⚠️ DALL-E 3 fallback ishga tushmoqda...")
         
         # FALLBACK LOGIC
-        return fallback_with_dalle(client, door_name, room_image_path, door_image_path, result_image_path)
+        try:
+            return fallback_with_dalle(client, door_name, room_image_path, door_image_path, result_image_path)
+        except Exception as e2:
+            err_msg_fb = f"XATO (fallback): {str(e2)}\n{traceback.format_exc()}"
+            log_error(err_msg_fb)
+            raise e2
 
 def fallback_with_dalle(client, door_name, room_image_path, door_image_path, result_image_path):
     print('\n🔄 === DALL-E 3 FALLBACK ===')
@@ -121,8 +133,12 @@ def fallback_with_dalle(client, door_name, room_image_path, door_image_path, res
     door_desc = door_name
 
     def encode_image(image_path):
-        with open(image_path, "rb") as image_file:
-            return base64.b64encode(image_file.read()).decode('utf-8')
+        with Image.open(image_path) as img:
+            # Resize for GPT-4o to save tokens and avoid payload limit
+            img.thumbnail((800, 800))
+            buffered = io.BytesIO()
+            img.save(buffered, format="JPEG", quality=80)
+            return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
     try:
         base64_room = encode_image(room_image_path)

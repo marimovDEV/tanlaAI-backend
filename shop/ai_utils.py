@@ -129,8 +129,8 @@ def fallback_with_dalle(client, door_name, room_image_path, door_image_path, res
         r = client.chat.completions.create(
             model='gpt-4o', 
             messages=[{ 
-                role: 'user', 
-                content: [
+                'role': 'user', 
+                'content': [
                     {"type": "text", "text": "Describe this house entrance: wall color, floor, ceiling. Max 50 words. English."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_room}", "detail": "low"}}
                 ]
@@ -147,8 +147,8 @@ def fallback_with_dalle(client, door_name, room_image_path, door_image_path, res
             r = client.chat.completions.create(
                 model='gpt-4o', 
                 messages=[{ 
-                    role: 'user', 
-                    content: [
+                    'role': 'user', 
+                    'content': [
                         {"type": "text", "text": "Describe this door: material, color, style, panel design. Max 40 words. English."},
                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_door}", "detail": "low"}}
                     ]

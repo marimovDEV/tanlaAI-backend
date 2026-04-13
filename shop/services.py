@@ -1179,8 +1179,20 @@ class AIService:
             print(f"ERROR: [AI Service] HD Isolation failed: {e}")
             import traceback
             traceback.print_exc()
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"ERROR: [AI Service] Visualization failed for product {product.id}: {error_details}")
+            
+            # Save error to a dedicated log for easier debugging
+            try:
+                with open('ai_debug.log', 'a+') as f:
+                    f.write(f"\n--- ERROR {product.id} ---\n{error_details}\n")
+            except:
+                pass
+
             product.ai_status = 'error'
-            product.save(update_fields=['ai_status'])
+            product.ai_error = str(error_details)[:500]
+            product.save(update_fields=['ai_status', 'ai_error'])
 
     @staticmethod
     def refine_corners_with_mask(detected_box, wall_mask, room_bgr):
@@ -1319,6 +1331,16 @@ class AIService:
                 
                 # Use the wall mask to refine the corners from the raw detected_box
                 corners = AIService.refine_corners_with_mask(detected_box, wall_mask, room_bgr)
+                
+                # Basic validation to prevent degenerate homography
+                area = 0.5 * abs(
+                    (corners['top_left'][0] * (corners['top_right'][1] - corners['bottom_left'][1]) +
+                     corners['top_right'][0] * (corners['bottom_left'][1] - corners['top_left'][1]) +
+                     corners['bottom_left'][0] * (corners['top_left'][1] - corners['top_right'][1]))
+                )
+                if area < 500: # Opening too small
+                    raise ValueError("Refined corners produce degenerate area")
+                    
                 print(f"DEBUG: [AI Service] Perspective corners identified: {corners}")
                 use_perspective = True
             except Exception as sam_err:

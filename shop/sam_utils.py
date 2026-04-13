@@ -18,9 +18,9 @@ class SAMService:
             if not os.path.exists(checkpoint_path):
                 raise FileNotFoundError(f"SAM checkpoint not found at {checkpoint_path}")
             
-            # Use MPS (Metal) on Mac if available, else CPU
-            device = "mps" if torch.backends.mps.is_available() else "cpu"
-            print(f"DEBUG: [SAM Service] Loading model to {device}...")
+            # Use CPU for background workers to ensure stability in subthreads
+            device = "cpu"
+            print(f"DEBUG: [SAM Service] Loading model to {device} (Thread-Safe)...")
             
             sam = sam_model_registry[model_type](checkpoint=checkpoint_path)
             sam.to(device=device)

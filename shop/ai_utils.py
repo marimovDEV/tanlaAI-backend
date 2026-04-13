@@ -15,6 +15,14 @@ def log_error(msg):
         f.write(f"[{time.ctime()}] {msg}\n")
     print(msg)
 
+def load_visualization_metadata(image_path):
+    """
+    Kechki payt metadata fayllarini yuklash uchun funksiya.
+    Hozirgi yangi pipeline'da metadata alohida faylda saqlanmaydi, 
+    shuning uchun None qaytaramiz.
+    """
+    return None
+
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None, override_prompt=None):
     """
     Mebel Bot'ning OpenAI (DALL-E 2 / DALL-E 3) vizualizatsiya logikasi.

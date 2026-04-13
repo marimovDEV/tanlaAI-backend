@@ -72,16 +72,41 @@ class SAMService:
         return masks[best_mask_idx]
 
     @staticmethod
-    def find_largest_vertical_plane(mask):
+    def get_opening_candidates(image_bgr):
         """
-        Finds the largest rectangular-ish region in the mask.
+        Structural search for architectural openings:
+        1. Find the wall.
+        2. Find 'holes' in the wall.
+        3. Return candidates.
         """
         import cv2
-        mask_uint8 = (mask * 255).astype(np.uint8)
-        contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        import numpy as np
         
-        if not contours:
-            return None
+        # 1. Get wall mask
+        wall_mask = SAMService.get_wall_mask(image_bgr)
+        h, w = wall_mask.shape[:2]
+        
+        # 2. Find the 'inverses'/holes in the wall
+        # We look for large vertical voids
+        wall_uint8 = (wall_mask * 255).astype(np.uint8)
+        
+        # Invert: holes are now 255
+        holes_mask = cv2.bitwise_not(wall_uint8)
+        
+        # Clean the holes mask (ignore tiny noise)
+        kernel = np.ones((5, 5), np.uint8)
+        holes_mask = cv2.morphologyEx(holes_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        
+        # Find contours of holes
+        contours, _ = cv2.findContours(holes_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        candidates = []
+        for cnt in contours:
+            x, y, cw, ch = cv2.boundingRect(cnt)
+            area_ratio = (cw * ch) / float(w * h)
             
-        largest_contour = max(contours, key=cv2.contourArea)
-        return largest_contour
+            # Doors are usually > 3% of image area and vertical
+            if area_ratio > 0.02 and ch > cw * 1.2:
+                candidates.append((x, y, x + cw, y + ch))
+                
+        return candidates, wall_mask

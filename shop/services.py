@@ -254,6 +254,10 @@ def score_door_candidate(x, y, candidate_width, candidate_height, image_width, i
     if bottom_ratio < 0.58: # Likely a window or ceiling hole
         return None
 
+    floor_anchor_bonus = 0
+    if bottom_ratio > 0.90: # Directly anchored to the floor
+        floor_anchor_bonus = 10.0 # Massive bonus! Doors reach the floor, windows don't.
+
     # Penalty for starting too high (likely a window or sky)
     top_ratio = y / float(max(1, image_height))
     top_penalty = 0
@@ -273,11 +277,12 @@ def score_door_candidate(x, y, candidate_width, candidate_height, image_width, i
     score = (
         (height_ratio * 6.0)     # Verticality is key
         + (area_ratio * 4.0)       # Size matters
-        + (bottom_ratio * 5.0)     # MUST touch the bottom half significantly
-        + (edge_density * 2.5)     # Some contrast, but don't over-rely on it
-        - (center_x_dist * 6.0)    # Strong penalty for off-center (like the window on the left)
+        + (bottom_ratio * 5.0)     # Reach depth
+        + (edge_density * 2.5)     # Some contrast
+        - (center_x_dist * 8.0)    # VERY strong penalty for off-center
         - (aspect_penalty * 2.0)   # Mismatched shape
-        - top_penalty              # Penalty for top-sticking boxes
+        - top_penalty              # Top-sticking
+        + floor_anchor_bonus      # Floor anchoring is the definitive door signal
     )
     
     # Bonus for realistic door proportions (narrow and tall)
@@ -712,6 +717,33 @@ def detect_door_frame_box_with_lines(room_bgr, expected_aspect_ratio, seed_box=N
 
 
 def detect_door_opening_box(room_bgr, expected_aspect_ratio):
+    try:
+        from .sam_utils import SAMService
+        print("DEBUG: [AI Service] Attempting structural search with SAM...")
+        candidates, wall_mask = SAMService.get_opening_candidates(room_bgr)
+        
+        image_height, image_width = room_bgr.shape[:2]
+        best_box = None
+        best_score = float('-inf')
+        
+        for cand in candidates:
+            x1, y1, x2, y2 = cand
+            score = score_door_candidate(
+                x1, y1, x2-x1, y2-y1, 
+                image_width, image_height, 
+                expected_aspect_ratio, 
+                (wall_mask == 0).astype(np.uint8) # The 'Signal' is the void
+            )
+            if score and score > best_score:
+                best_score = score
+                best_box = cand
+                
+        if best_box:
+            normalized = normalize_door_opening_box(best_box, image_width, image_height, expected_aspect_ratio)
+            return normalized, 'sam-structural'
+    except Exception as e:
+        print(f"WARNING: [AI Service] SAM structural search failed: {e}")
+
     yolo_box = detect_door_box_with_yolo(room_bgr, expected_aspect_ratio)
     if yolo_box is not None:
         image_height, image_width = room_bgr.shape[:2]

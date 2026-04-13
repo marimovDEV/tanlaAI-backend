@@ -649,6 +649,7 @@ class AdminRunActionApiView(views.APIView):
             'migrate': ['python', 'manage.py', 'migrate'],
             'collectstatic': ['python', 'manage.py', 'collectstatic', '--noinput'],
             'pip_install': ['pip', 'install', '-r', 'requirements.txt'],
+            'check_models': ['find', 'models', '-maxdepth', '3'],
             'restart_service': shlex.split(getattr(settings, 'ADMIN_RESTART_COMMAND', 'sudo systemctl restart tanla-ai.service')),
             'status_service': shlex.split(getattr(settings, 'ADMIN_STATUS_COMMAND', 'sudo systemctl status tanla-ai.service --no-pager')),
         }

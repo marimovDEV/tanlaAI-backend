@@ -25,7 +25,6 @@ from .serializers import (
     HomeBannerSerializer, LeadRequestSerializer, ProductSerializer,
     TelegramUserSerializer, WishlistSerializer,
 )
-from ..services import AIService
 from ..utils import verify_telegram_webapp_data
 
 
@@ -311,6 +310,7 @@ class ProductViewSet(viewsets.ModelViewSet):
         product.save(update_fields=['ai_status'])
         
         import threading
+        # Delayed import to prevent global API crash if dependencies are missing
         from ..services import AIService
         threading.Thread(target=AIService.process_product_background, args=(product,)).start()
         
@@ -348,6 +348,7 @@ class ProductViewSet(viewsets.ModelViewSet):
             product.save(update_fields=['ai_status'])
             
             # Use the service to start background removal
+            # Delayed import to prevent global API crash if dependencies are missing
             from ..services import AIService
             import threading
             threading.Thread(target=AIService.process_product_background, args=(product,)).start()

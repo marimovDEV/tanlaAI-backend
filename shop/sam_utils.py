@@ -1,9 +1,5 @@
 import os
-import cv2
-import numpy as np
-import torch
 from django.conf import settings
-from segment_anything import sam_model_registry, SamPredictor
 
 class SAMService:
     _instance = None
@@ -12,6 +8,8 @@ class SAMService:
     @classmethod
     def get_predictor(cls):
         if cls._predictor is None:
+            import torch
+            from segment_anything import sam_model_registry, SamPredictor
             model_type = "vit_b"
             checkpoint_path = os.path.join(settings.BASE_DIR, 'models', 'sam', 'sam_vit_b_01ec64.pth')
             
@@ -35,6 +33,7 @@ class SAMService:
         Uses SAM to segment the wall.
         If hint_box is provided, it uses it to find the wall *around* that box.
         """
+        import numpy as np
         predictor = SAMService.get_predictor()
         predictor.set_image(image_bgr)
         

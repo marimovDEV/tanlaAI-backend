@@ -1183,6 +1183,101 @@ class AIService:
             product.save(update_fields=['ai_status'])
 
     @staticmethod
+    def refine_corners_with_mask(detected_box, wall_mask, room_bgr):
+        """
+        Takes a raw detection box and a SAM mask to find the precise 4 corners
+        of the architectural opening.
+        """
+        import cv2
+        import numpy as np
+
+        x1, y1, x2, y2 = detected_box
+        h, w = wall_mask.shape[:2]
+        
+        # 1. Create a ROI around the detection
+        pad_w = int((x2 - x1) * 0.2)
+        pad_h = int((y2 - y1) * 0.2)
+        roi_x1 = max(0, x1 - pad_w)
+        roi_y1 = max(0, y1 - pad_h)
+        roi_x2 = min(w, x2 + pad_w)
+        roi_y2 = min(h, y2 + pad_h)
+        
+        # 2. Extract edges from the mask in this ROI
+        mask_roi = (wall_mask[roi_y1:roi_y2, roi_x1:roi_x2] * 255).astype(np.uint8)
+        
+        # 3. Find contours in the mask ROI
+        contours, _ = cv2.findContours(mask_roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            # Fallback to rectangle corners if no contour found
+            return {
+                'top_left': (x1, y1), 'top_right': (x2, y1),
+                'bottom_right': (x2, y2), 'bottom_left': (x1, y2)
+            }
+            
+        # Get the largest contour in the ROI
+        cnt = max(contours, key=cv2.contourArea)
+        
+        # Approximate to a simpler shape (hopefully a quad)
+        epsilon = 0.05 * cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, epsilon, True)
+        
+        if len(approx) == 4:
+            # Shift back to full image coordinates
+            pts = approx.reshape(4, 2)
+            pts[:, 0] += roi_x1
+            pts[:, 1] += roi_y1
+            
+            # Sort corners: top-left, top-right, bottom-right, bottom-left
+            # Simple heuristic: sort by y then x
+            pts = pts[np.argsort(pts[:, 1])] # sort by y
+            top_pts = pts[:2][np.argsort(pts[:2, 0])] # top 2 sorted by x
+            bottom_pts = pts[2:][np.argsort(pts[2:, 0])[::-1]] # bottom 2 sorted by x (desc)
+            
+            return {
+                'top_left': tuple(top_pts[0]),
+                'top_right': tuple(top_pts[1]),
+                'bottom_right': tuple(bottom_pts[0]),
+                'bottom_left': tuple(bottom_pts[1])
+            }
+        
+        # Fallback 2: Bound Rect if quad approximation failed
+        return {
+            'top_left': (x1, y1), 'top_right': (x2, y1),
+            'bottom_right': (x2, y2), 'bottom_left': (x1, y2)
+        }
+
+    @staticmethod
+    def overlay_door_perspective(room_bgr, door_rgba, corners):
+        """
+        Overlays the door using high-fidelity homography warping.
+        """
+        import cv2
+        import numpy as np
+
+        h, w = room_bgr.shape[:2]
+        
+        # 1. Warp the door to the corners
+        warped_door = perspective_warp_door_to_corners(door_rgba, corners, w, h)
+        
+        # 2. Extract alpha and RGB
+        door_rgb = warped_door[:, :, :3]
+        door_alpha = warped_door[:, :, 3].astype(np.float32) / 255.0
+        
+        # 3. Shadow logic (Simplified for perspective)
+        # We'll use the bounding box of corners to apply shadow
+        pts = np.array([corners['top_left'], corners['top_right'], 
+                        corners['bottom_right'], corners['bottom_left']], np.int32)
+        x, y, bw, bh = cv2.boundingRect(pts)
+        
+        composite = apply_soft_shadow(room_bgr, warped_door[:, :, 3], 0, 0) # apply shadow globally using warped mask
+        
+        # 4. Blend
+        mask_3d = door_alpha[..., None]
+        blended = (mask_3d * door_rgb.astype(np.float32)) + ((1.0 - mask_3d) * composite.astype(np.float32))
+        
+        return np.clip(blended, 0, 255).astype(np.uint8)
+
+    @staticmethod
     def generate_room_preview(product, room_image_path, result_image_path):
         """
         Deterministic room visualization pipeline:
@@ -1215,8 +1310,20 @@ class AIService:
 
             expected_aspect_ratio = get_expected_door_aspect_ratio(product, door_rgba=door_rgba)
             detected_box, detection_method = detect_door_opening_box(room_bgr, expected_aspect_ratio)
-            box_1000 = pixels_to_box_1000(detected_box, room_bgr.shape[1], room_bgr.shape[0])
-            print(f"DEBUG: [AI Service] Door opening detected via {detection_method}: {box_1000}")
+            
+            # --- NEW: Scene Understanding with SAM ---
+            try:
+                from .sam_utils import SAMService
+                print(f"DEBUG: [AI Service] Refining scene understanding with SAM for {product.id}...")
+                wall_mask = SAMService.get_wall_mask(room_bgr, hint_box=detected_box)
+                
+                # Use the wall mask to refine the corners from the raw detected_box
+                corners = AIService.refine_corners_with_mask(detected_box, wall_mask, room_bgr)
+                print(f"DEBUG: [AI Service] Perspective corners identified: {corners}")
+                use_perspective = True
+            except Exception as sam_err:
+                print(f"WARNING: [AI Service] SAM refinement failed, falling back to box: {sam_err}")
+                use_perspective = False
 
             try:
                 client = AIService.get_gemini_client()
@@ -1226,7 +1333,10 @@ class AIService:
                 print(f"WARNING: [AI Service] AI door removal failed, using OpenCV inpaint: {removal_error}")
                 cleaned_room = remove_door_from_room_locally(room_bgr, detected_box)
 
-            final_room = overlay_door_into_room(cleaned_room, door_rgba, detected_box, add_shadow=True)
+            if use_perspective:
+                final_room = AIService.overlay_door_perspective(cleaned_room, door_rgba, corners)
+            else:
+                final_room = overlay_door_into_room(cleaned_room, door_rgba, detected_box, add_shadow=True)
 
             if not cv2.imwrite(result_image_path, final_room):
                 raise ValueError("Failed to save final room visualization")

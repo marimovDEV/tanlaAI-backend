@@ -363,14 +363,23 @@ class AdminAITestViewSet(viewsets.ModelViewSet):
         os.makedirs(result_dir, exist_ok=True)
         result_path = os.path.join(result_dir, f"{request_id}.png")
         
-        # We need the physical path of the room image
-        room_path = test_obj.room_image.path
-        
         try:
+            # We need the physical path of the room image
+            if not test_obj.room_image:
+                 return Response({'error': 'Xonaning rasmi yuklanmagan!'}, status=status.HTTP_400_BAD_REQUEST)
+            room_path = test_obj.room_image.path
+
+            # Check for SAM model file
+            model_path = os.path.join(settings.BASE_DIR, 'models', 'sam', 'sam_vit_b_01ec64.pth')
+            if not os.path.exists(model_path):
+                return Response({
+                    'error': 'SAM model fayli serverdan topilmadi!',
+                    'detail': f'Iltimos, sam_vit_b_01ec64.pth faylini quyidagi manzilga yuklang: {model_path}',
+                    'hint': 'Ushbu fayl Gitga qo‘shilmagan (og‘irligi sababli). Uni qo‘lda yuklash talab etiladi.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
             from ..services import AIService
             # Run the new high-fidelity SAM + Perspective pipeline
-            # Note: The new pipeline is deterministic and doesn't use the custom prompt for now
-            # as it focuses on architectural reconstruction.
             AIService.generate_room_preview(
                 product, 
                 room_path, 

@@ -241,30 +241,50 @@ def score_door_candidate(x, y, candidate_width, candidate_height, image_width, i
     width_ratio = candidate_width / float(max(1, image_width))
     aspect_ratio = candidate_width / float(max(1, candidate_height))
 
-    if area_ratio < 0.03 or area_ratio > 0.80:
+    # Strict architectural filters for doors
+    if area_ratio < 0.04 or area_ratio > 0.85:
         return None
-    if height_ratio < 0.35 or width_ratio < 0.10:
+    if height_ratio < 0.40 or width_ratio < 0.12:
         return None
-    if aspect_ratio < 0.15 or aspect_ratio > 0.95:
+    if aspect_ratio < 0.18 or aspect_ratio > 0.90:
         return None
 
-    center_penalty = abs(((x + (candidate_width / 2.0)) / max(1, image_width)) - 0.5)
+    # Doors for floor-level openings MUST reach near the bottom of the image
     bottom_ratio = (y + candidate_height) / float(max(1, image_height))
-    if bottom_ratio < 0.55:
+    if bottom_ratio < 0.58: # Likely a window or ceiling hole
         return None
 
+    # Penalty for starting too high (likely a window or sky)
+    top_ratio = y / float(max(1, image_height))
+    top_penalty = 0
+    if top_ratio < 0.05: # Too close to top edge
+        top_penalty = 2.0
+
+    # Center-of-scene priority (Windows are often at the edges)
+    center_x_dist = abs(((x + (candidate_width / 2.0)) / max(1, image_width)) - 0.5)
+    
     aspect_penalty = abs(aspect_ratio - expected_aspect_ratio)
+    
+    # Internal signal density (contrast/edges)
     region = signal_mask[y:y + candidate_height, x:x + candidate_width]
     edge_density = float(np.count_nonzero(region)) / float(max(1, area))
 
-    return (
-        (height_ratio * 4.0)
-        + (area_ratio * 3.0)
-        + (bottom_ratio * 1.5)
-        + (edge_density * 3.0)
-        - (center_penalty * 2.5)
-        - (aspect_penalty * 1.5)
+    # Weighting factors
+    score = (
+        (height_ratio * 6.0)     # Verticality is key
+        + (area_ratio * 4.0)       # Size matters
+        + (bottom_ratio * 5.0)     # MUST touch the bottom half significantly
+        + (edge_density * 2.5)     # Some contrast, but don't over-rely on it
+        - (center_x_dist * 6.0)    # Strong penalty for off-center (like the window on the left)
+        - (aspect_penalty * 2.0)   # Mismatched shape
+        - top_penalty              # Penalty for top-sticking boxes
     )
+    
+    # Bonus for realistic door proportions (narrow and tall)
+    if 0.3 <= aspect_ratio <= 0.6:
+        score += 2.0
+    
+    return score
 
 
 @lru_cache(maxsize=1)
@@ -497,21 +517,27 @@ def detect_door_box_with_opencv(room_bgr, expected_aspect_ratio):
     import numpy as np
 
     gray = cv2.cvtColor(room_bgr, cv2.COLOR_BGR2GRAY)
+    # Use CLAHE to improve contrast in dark areas if the image is high-contrast
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blurred, 60, 160)
+    # Looser Canny thresholds to catch the dark doorway edges
+    edges = cv2.Canny(blurred, 40, 120)
     adaptive = cv2.adaptiveThreshold(
         blurred,
         255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY_INV,
-        31,
-        7,
+        41, # Slightly larger block size
+        5,  # Slightly lower C
     )
 
     combined = cv2.bitwise_or(edges, adaptive)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=2)
-    combined = cv2.dilate(combined, kernel, iterations=1)
+    # Stronger morphological closing to bridge gaps in dark areas
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=3)
+    combined = cv2.dilate(combined, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=1)
 
     contours, _ = cv2.findContours(combined, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     image_height, image_width = gray.shape[:2]

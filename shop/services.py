@@ -249,20 +249,24 @@ def score_door_candidate(x, y, candidate_width, candidate_height, image_width, i
     if aspect_ratio < 0.18 or aspect_ratio > 0.90:
         return None
 
-    # Doors for floor-level openings MUST reach near the bottom of the image
+    # Doors for floor-level openings MUST reach the bottom part of the image
     bottom_ratio = (y + candidate_height) / float(max(1, image_height))
-    if bottom_ratio < 0.58: # Likely a window or ceiling hole
+    # CRITICAL: Doors reach the floor. Windows do not.
+    # Increasing this to 0.85 is a safe bet for architectural photos.
+    if bottom_ratio < 0.82: 
+        return None
+
+    # Doors are vertical. If it's wider than it is tall, it's likely a window or a wide opening.
+    if candidate_width > candidate_height:
         return None
 
     floor_anchor_bonus = 0
-    if bottom_ratio > 0.90: # Directly anchored to the floor
-        floor_anchor_bonus = 10.0 # Massive bonus! Doors reach the floor, windows don't.
+    if bottom_ratio > 0.94: # Deeply anchored to the floor
+        floor_anchor_bonus = 15.0 
 
     # Penalty for starting too high (likely a window or sky)
     top_ratio = y / float(max(1, image_height))
-    top_penalty = 0
-    if top_ratio < 0.05: # Too close to top edge
-        top_penalty = 2.0
+    top_penalty = (1.0 - top_ratio) * 3.0 # The higher it starts, the more we penalize it
 
     # Center-of-scene priority (Windows are often at the edges)
     center_x_dist = abs(((x + (candidate_width / 2.0)) / max(1, image_width)) - 0.5)
@@ -793,9 +797,10 @@ def remove_door_from_room_with_ai(room_bgr, pixel_box, client):
     )
     mask_image = types.Image(image_bytes=mask_buf.tobytes())
     prompt = (
-        "Remove the door and frame from the masked area and reconstruct the wall naturally. "
-        "Keep wall texture, molding, trim, skirting, and floor perspective consistent. "
-        "Do not add another door, doorway opening, furniture, or artifacts."
+        "Completely remove the door frame and internal void from ONLY the masked area. "
+        "Fill it with the exact same wall texture, color, and finish as the neighboring wall. "
+        "Keep floor perspective, skirting boards, and trim perfect. "
+        "Strictly produce a plain, flat wall without any doors, openings, frames, or decorative elements."
     )
 
     last_error = None

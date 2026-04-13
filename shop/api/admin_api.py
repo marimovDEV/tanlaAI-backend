@@ -12,7 +12,7 @@ from django.shortcuts import get_object_or_404
 
 from ..models import (
     Product, Category, TelegramUser, Company,
-    HomeBanner, LeadRequest, AIResult, Subscription, AITest
+    HomeBanner, LeadRequest, AIResult, Subscription, AITest, SystemSettings
 )
 from rest_framework import serializers as drf_serializers
 from .serializers import (
@@ -367,13 +367,14 @@ class AdminAITestViewSet(viewsets.ModelViewSet):
         room_path = test_obj.room_image.path
         
         try:
-            # Run the same pipeline used by users
-            # Pass custom prompt if provided in the model
-            visualize_door_in_room(
+            from ..services import AIService
+            # Run the new high-fidelity SAM + Perspective pipeline
+            # Note: The new pipeline is deterministic and doesn't use the custom prompt for now
+            # as it focuses on architectural reconstruction.
+            AIService.generate_room_preview(
                 product, 
                 room_path, 
-                result_path,
-                override_prompt=test_obj.prompt
+                result_path
             )
             
             # Save the result image relative path

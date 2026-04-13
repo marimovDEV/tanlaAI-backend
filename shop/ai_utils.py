@@ -33,12 +33,9 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
     print(f"🚪 Eshik: {door_name}")
     print(f"🖼️ Eshik rasmi: {'Bor ✅' if door_image_path else 'Yo`q ❌'}")
 
-    api_key = getattr(settings, 'OPENAI_API_KEY', None)
-    if not api_key:
-        api_key = os.environ.get("OPENAI_API_KEY")
-
-    if not api_key or not api_key.startswith('sk-'):
-        raise Exception('OpenAI API key topilmadi!')
+    if not api_key or not str(api_key).strip().startswith('sk-'):
+        api_key_str = str(api_key).strip() if api_key else "None"
+        raise Exception(f'OpenAI API key topilmadi yoki noto‘g‘ri formatda! (Boslanishi: {api_key_str[:7]}...)')
 
     client = OpenAI(api_key=api_key)
 

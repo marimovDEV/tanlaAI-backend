@@ -1417,8 +1417,7 @@ class AIService:
                 print(f"DEBUG: [AI Service] Starting HOLLISTIC reconstruction for product {product.id}...")
                 final_room_path = AIService.generate_holistic_room_view(
                     product, 
-                    room_bgr, 
-                    detected_box, 
+                    room_image_path, 
                     result_image_path
                 )
                 return final_room_path
@@ -1450,69 +1449,20 @@ class AIService:
 
 
     @staticmethod
-    def generate_holistic_room_view(product, room_bgr, detected_box, result_image_path):
+    def generate_holistic_room_view(product, room_image_path, result_image_path):
         """
-        Uses Gemini Imagen 3 to 'install' a door into the opening.
-        This provides perfect lighting, shadows, and architectural integration.
+        Premium Holistic Reconstruction (DALL-E 3 + GPT-4o).
+        Redraws the entire room to incorporate the door photorealistically.
         """
-        import cv2
-        import numpy as np
-        from google.genai import types
+        from .ai_utils import visualize_door_in_room
         
-        client = AIService.get_gemini_client()
-        image_height, image_width = room_bgr.shape[:2]
-        
-        # 1. Create a tight mask around the door opening
-        mask = build_box_mask(image_height, image_width, detected_box, pad_x_ratio=0.08, pad_y_ratio=0.05)
-        
-        # 2. Encode images
-        ok_room, room_buf = cv2.imencode('.png', room_bgr)
-        ok_mask, mask_buf = cv2.imencode('.png', mask)
-        if not ok_room or not ok_mask:
-            raise ValueError("Failed to encode room or mask")
-
-        # 3. Get Door Description (Crucial for Gemini)
-        # We'll use a descriptive string based on product name and attributes
-        # In a real scenario, we could use GPT-4o but for speed we construct a prompt here.
-        door_name = product.name or "modern architectural door"
-        door_desc = f"{door_name}. Material: wooden with elegant patterns. Style: contemporary."
-        
-        # If we have the door image, we COULD send it as a reference image to Gemini if supported
-        # But for INPAINT_EDIT, the prompt is the primary driver.
-        prompt = (
-            f"Install a new beautiful and high-quality {door_desc} exactly into the masked opening. "
-            "Ensure the door fits perfectly into the frame. "
-            "The door should have realistic shadows on the floor and match the room's lighting perfectly. "
-            "Do not add any furniture or other artifacts."
-        )
-
-        reference_image = types.RawReferenceImage(
-            reference_image=types.Image(image_bytes=room_buf.tobytes()),
-            reference_id=0,
-        )
-        mask_image = types.Image(image_bytes=mask_buf.tobytes())
-        
-        # 4. Generate
-        response = client.models.edit_image(
-            model='imagen-3.0-capability-001',
-            prompt=prompt,
-            reference_images=[reference_image],
-            config=types.EditImageConfig(
-                edit_mode='INPAINT_EDIT',
-                number_of_images=1,
-                output_mime_type='image/png',
-                mask=mask_image,
-            ),
-        )
-        
-        if not response.generated_images:
-            raise ValueError("Gemini failed to generate holistic room view")
-            
-        # 5. Save and Return
-        with open(result_image_path, 'wb') as f:
-            f.write(response.generated_images[0].image.image_bytes)
-            
-        return result_image_path
+        print(f"DEBUG: [AI Service] Invoking Full Scene Reconstruction for product {product.id}...")
+        try:
+            # We call the already-implemented holistic visualization logic
+            return visualize_door_in_room(product, room_image_path, result_image_path)
+        except Exception as e:
+            print(f"ERROR: [AI Service] Full Scene Reconstruction failed: {e}")
+            raise
 
 
 class WishlistService:

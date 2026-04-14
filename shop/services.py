@@ -1497,20 +1497,36 @@ class AIService:
             ]
 
             gemini_models = [
-                'gemini-2.5-flash-image',
-                'gemini-3.1-flash-image-preview',
-                'gemini-3-pro-image-preview',
+                'gemini-3-pro-image-preview',    # Nano Banana Pro (Professional)
+                'gemini-3.1-flash-image-preview',# Nano Banana 2 (High Speed)
+                'gemini-2.5-flash-image',        # Standard
             ]
             
             from google import genai
             
             for key in api_keys:
-                print(f"DEBUG: [AI Service] Trying API key starting with {key[:10]}...")
+                print(f"DEBUG: [AI Service] Using Nano Banana Engine with key {key[:10]}...")
                 client = genai.Client(api_key=key)
                 
+                # Optimized prompt for 'Nano Banana' professional features
+                prompt_text = (
+                    "Professional Interior Design / Studio-Quality Door Replacement:\n"
+                    "1. First image is the original room. Second image is the target door asset.\n"
+                    "2. Replace the existing door in the room with the target door asset.\n"
+                    "3. PRESERVATION: Keep the wall texture, floor, lighting, and surrounding room elements 100% UNCHANGED.\n"
+                    "4. INTEGRATION: Match the door's 3D perspective and lighting exactly to the room's architecture.\n"
+                    "5. Output high-fidelity, photorealistic result for professional asset production."
+                )
+                
+                contents = [
+                    types.Part.from_bytes(data=room_bytes, mime_type=room_mime),
+                    types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
+                    prompt_text,
+                ]
+
                 for model_name in gemini_models:
                     try:
-                        print(f"DEBUG: [AI Service]   Trying Gemini model: {model_name}")
+                        print(f"DEBUG: [AI Service]   Requesting Professional Generation ({model_name})...")
                         response = client.models.generate_content(
                             model=model_name,
                             contents=contents,
@@ -1524,17 +1540,19 @@ class AIService:
                                 if part.inline_data is not None:
                                     img = PILImage.open(BytesIO(part.inline_data.data))
                                     img.save(result_image_path, format='PNG')
-                                    print(f"DEBUG: [AI Service] Gemini SUCCESS with {model_name} on key {key[:10]}...")
+                                    print(f"DEBUG: [AI Service] Professional Success: {model_name} on key {key[:10]}...")
                                     return result_image_path
+                                elif part.text:
+                                    print(f"DEBUG: [AI Service]   Model returned text instead of image: {part.text[:100]}...")
                     except Exception as e:
                         err_str = str(e)
-                        print(f"WARNING: [AI Service]   Gemini {model_name} failed: {err_str[:200]}")
+                        print(f"WARNING: [AI Service]   Generation failed for {model_name}: {err_str[:200]}")
                         
                         # Stop iterating models if quota exhausted, move onto next key
                         if "429 RESOURCE_EXHAUSTED" in err_str or "exceeded your current quota" in err_str:
-                            print("DEBUG: [AI Service]   Quota exhausted for this key, swapping key...")
-                            break # breaks model loop, continues key loop
-                        continue # try next model if it wasn't a quota error
+                            print(f"DEBUG: [AI Service]   Quota exhausted for key {key[:10]}, skipping to next key...")
+                            break # Move to next key immediately
+                        continue # Try next model if it wasn't a quota error
 
         except Exception as gemini_err:
             print(f"WARNING: [AI Service] Gemini tier failed completely: {gemini_err}")

@@ -1448,20 +1448,21 @@ class AIService:
     @staticmethod
     def generate_holistic_room_view(product, room_image_path, result_image_path):
         """
-        Direct Multi-Modal Reconstruction (Gemini Imagen 3).
-        Mirrors the Gemini Web experience by showing the AI both the room and the product.
+        Direct Gemini Generative Reconstruction.
+        Uses the SAME approach as Gemini Web chat: generate_content with both images.
+        NOT edit_image/Imagen — that's a completely different, limited API.
         """
-        import cv2
-        import numpy as np
         from google.genai import types
+        from PIL import Image as PILImage
+        from io import BytesIO
         
         client = AIService.get_gemini_client()
-        image_height, image_width = room_bgr.shape[:2]
-
-        # 1. Prepare Images
+        
+        # 1. Read room image bytes
         with open(room_image_path, 'rb') as f:
             room_bytes = f.read()
             
+        # 2. Read product/door image bytes
         door_path = product.image.path
         if product.image_no_bg and product.image_no_bg.name and os.path.exists(product.image_no_bg.path):
             door_path = product.image_no_bg.path
@@ -1471,59 +1472,78 @@ class AIService:
         with open(door_path, 'rb') as f:
             door_bytes = f.read()
 
-        # 2. Get Door Opening Mask (to guide the AI where the door goes)
-        # We'll use a slightly padded mask of the detected box as a guide.
-        # This prevents the AI from getting lost, but we'll use a prompt that allows global integration.
-        expected_aspect_ratio = get_expected_door_aspect_ratio(product)
-        detected_box, _ = detect_door_opening_box(room_bgr, expected_aspect_ratio)
-        mask = build_box_mask(image_height, image_width, detected_box, pad_x_ratio=0.15, pad_y_ratio=0.10)
-        ok_mask, mask_buf = cv2.imencode('.png', mask)
+        # Detect mime types
+        room_mime = 'image/jpeg'
+        if room_image_path.lower().endswith('.png'):
+            room_mime = 'image/png'
+        door_mime = 'image/png' if door_path.lower().endswith('.png') else 'image/jpeg'
 
-        # 3. Create Multi-Modal Prompt
-        door_name = product.name or "architectural door"
-        prompt = (
-            f"Replace the existing door in the room with this exact {door_name} from the product image. "
-            "Keep the rest of the room (walls, floor, curtains, furniture) completely identical. "
-            "Ensure the door fits perfectly into the architectural opening. "
-            "Integrate natural lighting and realistic floor shadows for a photorealistic result."
-        )
+        # 3. Simple prompt — exactly like Gemini Web chat
+        prompt_text = "shu honaga men tashlagan eshikni qoyib ber"
 
-        room_ref = types.RawReferenceImage(
-            reference_image=types.Image(image_bytes=room_bytes),
-            reference_id=0,
-        )
-        door_ref = types.RawReferenceImage(
-            reference_image=types.Image(image_bytes=door_bytes),
-            reference_id=1,
-        )
-        mask_image = types.Image(image_bytes=mask_buf.tobytes())
+        # 4. Build content parts: room image + door image + text prompt
+        contents = [
+            types.Part.from_bytes(data=room_bytes, mime_type=room_mime),
+            types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
+            prompt_text,
+        ]
 
-        try:
-            # We use INPAINT_EDIT with the detected mask to guide the AI precisely where to work,
-            # while providing BOTH images as visual references.
-            response = client.models.edit_image(
-                model='imagen-3.0-capability-001',
-                prompt=prompt,
-                reference_images=[room_ref, door_ref],
-                config=types.EditImageConfig(
-                    edit_mode='INPAINT_EDIT',
-                    number_of_images=1,
-                    output_mime_type='image/png',
-                    mask=mask_image,
-                ),
-            )
-            
-            if not response.generated_images:
-                raise ValueError("Gemini failed to generate holistic room view")
+        # 5. Try multiple model names (the exact model name may differ between environments)
+        model_candidates = [
+            getattr(settings, 'GEMINI_IMAGE_MODEL', 'gemini-2.0-flash-exp'),
+            getattr(settings, 'GEMINI_IMAGE_FALLBACK_MODEL', 'gemini-2.0-flash'),
+            'gemini-2.0-flash-exp',
+            'gemini-2.0-flash',
+        ]
+        # Deduplicate while preserving order
+        seen = set()
+        models_to_try = []
+        for m in model_candidates:
+            if m and m not in seen:
+                seen.add(m)
+                models_to_try.append(m)
+
+        last_error = None
+        for model_name in models_to_try:
+            try:
+                print(f"DEBUG: [AI Service] Trying generate_content with model={model_name}")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["IMAGE", "TEXT"],
+                    ),
+                )
                 
-            # 4. Save result
-            with open(result_image_path, 'wb') as f:
-                f.write(response.generated_images[0].image.image_bytes)
-                
-            return result_image_path
-        except Exception as e:
-            print(f"ERROR: [AI Service] Gemini Holistic Reconstruction failed: {e}")
-            raise
+                # 6. Extract image from response
+                if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                    for part in response.candidates[0].content.parts:
+                        if part.inline_data is not None:
+                            image_data = part.inline_data.data
+                            # Save the generated image
+                            img = PILImage.open(BytesIO(image_data))
+                            img.save(result_image_path, format='PNG')
+                            print(f"DEBUG: [AI Service] Holistic reconstruction SUCCESS with {model_name}: {result_image_path}")
+                            return result_image_path
+                    
+                    # If we got here, no inline_data was found
+                    text_parts = [p.text for p in response.candidates[0].content.parts if p.text]
+                    print(f"WARNING: [AI Service] Model {model_name} returned text only: {text_parts}")
+                    last_error = ValueError(f"Model {model_name} did not return an image. Response: {text_parts}")
+                    continue
+                else:
+                    last_error = ValueError(f"Model {model_name} returned empty response")
+                    print(f"WARNING: [AI Service] {last_error}")
+                    continue
+                    
+            except Exception as e:
+                last_error = e
+                print(f"WARNING: [AI Service] Model {model_name} failed: {e}")
+                continue
+        
+        # All models failed
+        raise ValueError(f"All Gemini models failed for holistic reconstruction. Last error: {last_error}")
+
 
 
 class WishlistService:

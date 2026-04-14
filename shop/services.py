@@ -1410,19 +1410,16 @@ class AIService:
                 print(f"WARNING: [AI Service] SAM refinement failed, falling back to box: {sam_err}")
                 use_perspective = False
 
-            try:
-                # NEW HOLISTIC APPROACH:
-                # Instead of manual overlay, we use AI to reconstruct the room with the new door.
-                # This ensures perfect lighting and floor reflections.
-                print(f"DEBUG: [AI Service] Starting HOLLISTIC reconstruction for product {product.id}...")
-                final_room_path = AIService.generate_holistic_room_view(
-                    product, 
-                    room_image_path, 
-                    result_image_path
-                )
-                return final_room_path
-            except Exception as holistic_err:
-                print(f"WARNING: [AI Service] Holistic reconstruction failed, falling back to surgical: {holistic_err}")
+            # NEW HOLISTIC APPROACH:
+            # Instead of manual overlay, we use AI to reconstruct the room with the new door.
+            # This ensures perfect lighting and floor reflections.
+            print(f"DEBUG: [AI Service] Starting HOLLISTIC reconstruction for product {product.id}...")
+            final_room_path = AIService.generate_holistic_room_view(
+                product, 
+                room_image_path, 
+                result_image_path
+            )
+            return final_room_path
 
             try:
                 client = AIService.get_gemini_client()
@@ -1459,13 +1456,12 @@ class AIService:
         from google.genai import types
         
         client = AIService.get_gemini_client()
-        
-        # 1. Prepare Room Image
+        image_height, image_width = room_bgr.shape[:2]
+
+        # 1. Prepare Images
         with open(room_image_path, 'rb') as f:
             room_bytes = f.read()
             
-        # 2. Prepare Product Image
-        # We try to get the best version of the product image (with no background if possible)
         door_path = product.image.path
         if product.image_no_bg and product.image_no_bg.name and os.path.exists(product.image_no_bg.path):
             door_path = product.image_no_bg.path
@@ -1475,14 +1471,21 @@ class AIService:
         with open(door_path, 'rb') as f:
             door_bytes = f.read()
 
+        # 2. Get Door Opening Mask (to guide the AI where the door goes)
+        # We'll use a slightly padded mask of the detected box as a guide.
+        # This prevents the AI from getting lost, but we'll use a prompt that allows global integration.
+        expected_aspect_ratio = get_expected_door_aspect_ratio(product)
+        detected_box, _ = detect_door_opening_box(room_bgr, expected_aspect_ratio)
+        mask = build_box_mask(image_height, image_width, detected_box, pad_x_ratio=0.15, pad_y_ratio=0.10)
+        ok_mask, mask_buf = cv2.imencode('.png', mask)
+
         # 3. Create Multi-Modal Prompt
-        # We use reference_images to show the AI exactly what we want to combine.
+        door_name = product.name or "architectural door"
         prompt = (
-            "This is a photo of a room and a photo of a door product. "
-            "Please redraw the room and install this exact door into the existing doorway opening. "
-            "Maintain the room's wall colors, floor texture, lighting, and general perspective. "
-            "The door must look perfectly integrated with natural shadows on the floor. "
-            "Ensure the final result is a photorealistic architectural visualization."
+            f"Replace the existing door in the room with this exact {door_name} from the product image. "
+            "Keep the rest of the room (walls, floor, curtains, furniture) completely identical. "
+            "Ensure the door fits perfectly into the architectural opening. "
+            "Integrate natural lighting and realistic floor shadows for a photorealistic result."
         )
 
         room_ref = types.RawReferenceImage(
@@ -1493,23 +1496,25 @@ class AIService:
             reference_image=types.Image(image_bytes=door_bytes),
             reference_id=1,
         )
+        mask_image = types.Image(image_bytes=mask_buf.tobytes())
 
         try:
-            # We use edit_image with dual reference to 'remix' the content
+            # We use INPAINT_EDIT with the detected mask to guide the AI precisely where to work,
+            # while providing BOTH images as visual references.
             response = client.models.edit_image(
                 model='imagen-3.0-capability-001',
                 prompt=prompt,
                 reference_images=[room_ref, door_ref],
                 config=types.EditImageConfig(
+                    edit_mode='INPAINT_EDIT',
                     number_of_images=1,
                     output_mime_type='image/png',
-                    # We don't use a mask to allow global lighting adjustments, 
-                    # mirroring the Gemini Web prompt-based experience.
+                    mask=mask_image,
                 ),
             )
             
             if not response.generated_images:
-                raise ValueError("No images generated by Gemini Imagen")
+                raise ValueError("Gemini failed to generate holistic room view")
                 
             # 4. Save result
             with open(result_image_path, 'wb') as f:

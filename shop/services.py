@@ -1450,8 +1450,18 @@ class AIService:
             from PIL import Image as PILImage
             from io import BytesIO
 
-            print(f"DEBUG: [AI Service] TIER 2: Gemini generate_content for product {product.id}...")
-            client = AIService.get_gemini_client()
+            print(f"DEBUG: [AI Service] TIER 1: Gemini generate_content for product {product.id}...")
+            
+            # Fetch multiple keys for fallback
+            api_keys_str = getattr(settings, 'GEMINI_API_KEYS', '')
+            api_keys = [k.strip() for k in api_keys_str.split(',') if k.strip()]
+            if not api_keys:
+                single_key = getattr(settings, 'GEMINI_API_KEY', '')
+                if single_key:
+                    api_keys = [single_key]
+            
+            if not api_keys:
+                raise ValueError("No GEMINI keys configured")
 
             with open(room_image_path, 'rb') as f:
                 room_bytes = f.read()
@@ -1491,28 +1501,40 @@ class AIService:
                 'gemini-3.1-flash-image-preview',
                 'gemini-3-pro-image-preview',
             ]
+            
+            from google import genai
+            
+            for key in api_keys:
+                print(f"DEBUG: [AI Service] Trying API key starting with {key[:10]}...")
+                client = genai.Client(api_key=key)
+                
+                for model_name in gemini_models:
+                    try:
+                        print(f"DEBUG: [AI Service]   Trying Gemini model: {model_name}")
+                        response = client.models.generate_content(
+                            model=model_name,
+                            contents=contents,
+                            config=types.GenerateContentConfig(
+                                response_modalities=["IMAGE", "TEXT"],
+                            ),
+                        )
 
-            for model_name in gemini_models:
-                try:
-                    print(f"DEBUG: [AI Service] Trying Gemini model: {model_name}")
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=contents,
-                        config=types.GenerateContentConfig(
-                            response_modalities=["IMAGE", "TEXT"],
-                        ),
-                    )
-
-                    if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
-                        for part in response.candidates[0].content.parts:
-                            if part.inline_data is not None:
-                                img = PILImage.open(BytesIO(part.inline_data.data))
-                                img.save(result_image_path, format='PNG')
-                                print(f"DEBUG: [AI Service] Gemini SUCCESS with {model_name}")
-                                return result_image_path
-                except Exception as e:
-                    print(f"WARNING: [AI Service] Gemini {model_name} failed: {e}")
-                    continue
+                        if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                            for part in response.candidates[0].content.parts:
+                                if part.inline_data is not None:
+                                    img = PILImage.open(BytesIO(part.inline_data.data))
+                                    img.save(result_image_path, format='PNG')
+                                    print(f"DEBUG: [AI Service] Gemini SUCCESS with {model_name} on key {key[:10]}...")
+                                    return result_image_path
+                    except Exception as e:
+                        err_str = str(e)
+                        print(f"WARNING: [AI Service]   Gemini {model_name} failed: {err_str[:200]}")
+                        
+                        # Stop iterating models if quota exhausted, move onto next key
+                        if "429 RESOURCE_EXHAUSTED" in err_str or "exceeded your current quota" in err_str:
+                            print("DEBUG: [AI Service]   Quota exhausted for this key, swapping key...")
+                            break # breaks model loop, continues key loop
+                        continue # try next model if it wasn't a quota error
 
         except Exception as gemini_err:
             print(f"WARNING: [AI Service] Gemini tier failed completely: {gemini_err}")

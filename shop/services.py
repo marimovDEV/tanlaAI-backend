@@ -1233,8 +1233,9 @@ class AIService:
             product.image.save(f"hd_isolated_{product.id}.png", ContentFile(final_bytes), save=False)
             product.image_no_bg.save(f"hd_trans_{product.id}.png", ContentFile(final_bytes), save=False)
             product.ai_status = 'completed'
-            product.ai_error = f"Method: {method_used}" # Store method for debug
+            product.ai_error = ''  # Clear any previous errors
             product.save()
+            print(f"DEBUG: [AI Service] BG removal completed using method: {method_used}")
             
             print(f"DEBUG: [AI Service] Success! HD isolated using {method_used} for {product.id}")
 
@@ -1410,17 +1411,20 @@ class AIService:
                 print(f"WARNING: [AI Service] SAM refinement failed, falling back to box: {sam_err}")
                 use_perspective = False
 
-            # NEW HOLISTIC APPROACH:
-            # Instead of manual overlay, we use AI to reconstruct the room with the new door.
-            # This ensures perfect lighting and floor reflections.
-            print(f"DEBUG: [AI Service] Starting HOLLISTIC reconstruction for product {product.id}...")
-            final_room_path = AIService.generate_holistic_room_view(
-                product, 
-                room_image_path, 
-                result_image_path
-            )
-            return final_room_path
+            # PRIMARY: Holistic AI Reconstruction (Gemini generate_content)
+            try:
+                print(f"DEBUG: [AI Service] Starting HOLISTIC reconstruction for product {product.id}...")
+                final_room_path = AIService.generate_holistic_room_view(
+                    product, 
+                    room_image_path, 
+                    result_image_path
+                )
+                return final_room_path
+            except Exception as holistic_err:
+                print(f"WARNING: [AI Service] Holistic reconstruction failed: {holistic_err}")
+                print(f"WARNING: [AI Service] Falling back to surgical overlay...")
 
+            # FALLBACK: Surgical overlay (old method)
             try:
                 client = AIService.get_gemini_client()
                 cleaned_room = remove_door_from_room_with_ai(room_bgr, detected_box, client)
@@ -1479,7 +1483,11 @@ class AIService:
         door_mime = 'image/png' if door_path.lower().endswith('.png') else 'image/jpeg'
 
         # 3. Simple prompt — exactly like Gemini Web chat
-        prompt_text = "shu honaga men tashlagan eshikni qoyib ber"
+        prompt_text = (
+            "Birinchi rasmda xona ko'rsatilgan, ikkinchi rasmda eshik. "
+            "Shu eshikni xonadagi eshik o'rniga o'rnatib, yangi rasm yarat. "
+            "Xonaning devori, poli, yorug'ligi o'zgarmsin."
+        )
 
         # 4. Build content parts: room image + door image + text prompt
         contents = [
@@ -1488,12 +1496,13 @@ class AIService:
             prompt_text,
         ]
 
-        # 5. Try multiple model names (the exact model name may differ between environments)
+        # 5. Try multiple model names
+        # Models that support native image generation via generate_content:
         model_candidates = [
-            getattr(settings, 'GEMINI_IMAGE_MODEL', 'gemini-2.0-flash-exp'),
-            getattr(settings, 'GEMINI_IMAGE_FALLBACK_MODEL', 'gemini-2.0-flash'),
-            'gemini-2.0-flash-exp',
-            'gemini-2.0-flash',
+            'gemini-2.0-flash-exp',             # Best for image gen
+            'gemini-2.0-flash',                  # Stable
+            getattr(settings, 'GEMINI_IMAGE_MODEL', ''),
+            getattr(settings, 'GEMINI_IMAGE_FALLBACK_MODEL', ''),
         ]
         # Deduplicate while preserving order
         seen = set()

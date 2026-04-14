@@ -1352,33 +1352,34 @@ class AIService:
         """
         Main pipeline for room visualization.
         
-        TIER 1: Gemini AI holistic generation (best quality, like gemini.google.com)
-        TIER 2: Surgical OpenCV overlay (fallback, keeps room 1=1)
+        TIER 1: Gemini AI (photo editor mode — keeps room identical, only swaps door)
+        TIER 2: DALL-E 3 fallback
+        TIER 3: OpenCV surgical overlay (safety net)
         """
-        # === TIER 1: AI HOLISTIC GENERATION (Primary: Gemini with Extreme Preservation) ===
+        # === TIER 1: GEMINI AI PHOTO EDITOR ===
         try:
-            print(f"DEBUG: [AI Service] TIER 1: Attempting Gemini holistic generation with extreme preservation...")
+            print(f"DEBUG: [AI Service] TIER 1: Gemini photo-editor mode for product {product.id}...")
             result = AIService.generate_holistic_room_view(product, room_image_path, result_image_path)
             if result and os.path.exists(result):
-                print(f"DEBUG: [AI Service] TIER 1 SUCCESS: Gemini holistic complete")
+                print(f"DEBUG: [AI Service] TIER 1 SUCCESS")
                 return result
-        except Exception as holistic_err:
-            print(f"WARNING: [AI Service] TIER 1 failed (Gemini): {holistic_err}")
+        except Exception as e:
+            print(f"WARNING: [AI Service] TIER 1 failed: {e}")
 
-        # === TIER 2: AI HOLISTIC GENERATION (DALL-E 3 fallback) ===
+        # === TIER 2: DALL-E 3 ===
         try:
             from .ai_utils import visualize_door_in_room
-            print(f"DEBUG: [AI Service] TIER 2: Attempting DALL-E 3 fallback...")
+            print(f"DEBUG: [AI Service] TIER 2: DALL-E 3 for product {product.id}...")
             result = visualize_door_in_room(product, room_image_path, result_image_path)
             if result and os.path.exists(result) and os.path.getsize(result) > 1000:
-                print(f"DEBUG: [AI Service] TIER 2 SUCCESS: DALL-E 3 complete")
+                print(f"DEBUG: [AI Service] TIER 2 SUCCESS")
                 return result
-        except Exception as dalle_err:
-            print(f"WARNING: [AI Service] TIER 2 failed (DALL-E 3): {dalle_err}")
+        except Exception as e:
+            print(f"WARNING: [AI Service] TIER 2 failed: {e}")
 
-        # === TIER 3: SURGICAL OVERLAY (Last resort: Safety net) ===
+        # === TIER 3: OPENCV SURGICAL OVERLAY ===
         try:
-            print(f"DEBUG: [AI Service] TIER 3: Falling back to 1:1 surgical overlay safety net...")
+            print(f"DEBUG: [AI Service] TIER 3: OpenCV overlay for product {product.id}...")
             import cv2
             import numpy as np
 
@@ -1386,7 +1387,6 @@ class AIService:
             if room_bgr is None:
                 raise ValueError("Room image could not be loaded")
 
-            # Safely get door image path
             door_path = None
             if hasattr(product, 'image_no_bg') and product.image_no_bg and product.image_no_bg.name and os.path.exists(product.image_no_bg.path):
                 door_path = product.image_no_bg.path
@@ -1396,11 +1396,11 @@ class AIService:
                 door_path = product.original_image.path
 
             if not door_path:
-                raise ValueError("No valid door image found for product")
+                raise ValueError("No valid door image found")
 
             door_rgba = cv2.imread(door_path, cv2.IMREAD_UNCHANGED)
             if door_rgba is None:
-                raise ValueError("Door image could not be loaded via cv2")
+                raise ValueError("Door image could not be loaded")
             if door_rgba.ndim == 2:
                 door_rgba = cv2.cvtColor(door_rgba, cv2.COLOR_GRAY2BGRA)
             elif door_rgba.shape[2] == 3:
@@ -1409,173 +1409,136 @@ class AIService:
 
             expected_aspect_ratio = get_expected_door_aspect_ratio(product, door_rgba=door_rgba)
             detected_box, detection_method = detect_door_opening_box(room_bgr, expected_aspect_ratio)
-            
-            # Refine scene understanding with SAM
+
             try:
                 from .sam_utils import SAMService
-                print(f"DEBUG: [AI Service] Refining scene understanding with SAM for {product.id}...")
                 wall_mask = SAMService.get_wall_mask(room_bgr, hint_box=detected_box)
                 corners = AIService.refine_corners_with_mask(detected_box, wall_mask, room_bgr)
-                
                 area = 0.5 * abs(
                     (corners['top_left'][0] * (corners['top_right'][1] - corners['bottom_left'][1]) +
                      corners['top_right'][0] * (corners['bottom_left'][1] - corners['top_left'][1]) +
                      corners['bottom_left'][0] * (corners['top_left'][1] - corners['top_right'][1]))
                 )
                 if area < 500:
-                    raise ValueError("Refined corners produce degenerate area")
-                    
-                print(f"DEBUG: [AI Service] Perspective corners identified: {corners}")
+                    raise ValueError("Degenerate area")
                 use_perspective = True
-            except Exception as sam_err:
-                print(f"WARNING: [AI Service] SAM refinement failed, falling back to box: {sam_err}")
+            except Exception:
                 use_perspective = False
 
-            # Remove old door
             cleaned_room = remove_door_from_room_locally(room_bgr, detected_box)
-
-            # Overlay new door
             if use_perspective:
                 final_room = AIService.overlay_door_perspective(cleaned_room, door_rgba, corners)
             else:
                 final_room = overlay_door_into_room(cleaned_room, door_rgba, detected_box, add_shadow=True)
 
             if not cv2.imwrite(result_image_path, final_room):
-                raise ValueError("Failed to save final room visualization")
+                raise ValueError("Failed to save")
 
-            print(f"DEBUG: [AI Service] TIER 3 SUCCESS: 1:1 Surgical overlay ready: {result_image_path}")
+            print(f"DEBUG: [AI Service] TIER 3 SUCCESS")
             return result_image_path
 
-        except Exception as surgical_err:
-            print(f"ERROR: [AI Service] All tiers failed: {surgical_err}")
-            raise
-        except Exception as error:
-            print(f"ERROR: [AI Service] Room preview generation failed: {error}")
+        except Exception as e:
+            print(f"ERROR: [AI Service] All tiers failed: {e}")
             raise
 
 
     @staticmethod
     def generate_holistic_room_view(product, room_image_path, result_image_path):
         """
-        Holistic AI Reconstruction using Gemini generate_content.
-        Sends room + door images to Gemini and gets back a photorealistic composite.
+        AI door replacement using Gemini.
+        Sends room photo + door product image → gets back edited photo.
         """
+        from google.genai import types
+        from google import genai
+        from PIL import Image as PILImage
+        from io import BytesIO
 
-        # === GEMINI generate_content (like gemini.google.com) ===
-        try:
-            from google.genai import types
-            from PIL import Image as PILImage
-            from io import BytesIO
+        # --- Get API keys ---
+        api_keys_str = getattr(settings, 'GEMINI_API_KEYS', '')
+        api_keys = [k.strip() for k in api_keys_str.split(',') if k.strip()]
+        if not api_keys:
+            single_key = getattr(settings, 'GEMINI_API_KEY', '')
+            if single_key:
+                api_keys = [single_key]
+        if not api_keys:
+            raise ValueError("No GEMINI keys configured")
 
-            print(f"DEBUG: [AI Service] TIER 1: Gemini generate_content for product {product.id}...")
-            
-            # Fetch multiple keys for fallback
-            api_keys_str = getattr(settings, 'GEMINI_API_KEYS', '')
-            api_keys = [k.strip() for k in api_keys_str.split(',') if k.strip()]
-            if not api_keys:
-                single_key = getattr(settings, 'GEMINI_API_KEY', '')
-                if single_key:
-                    api_keys = [single_key]
-            
-            if not api_keys:
-                raise ValueError("No GEMINI keys configured")
+        # --- Load images ---
+        with open(room_image_path, 'rb') as f:
+            room_bytes = f.read()
 
-            with open(room_image_path, 'rb') as f:
-                room_bytes = f.read()
+        door_path = product.image.path
+        if hasattr(product, 'image_no_bg') and product.image_no_bg and product.image_no_bg.name and os.path.exists(product.image_no_bg.path):
+            door_path = product.image_no_bg.path
+        elif hasattr(product, 'original_image') and product.original_image and product.original_image.name and os.path.exists(product.original_image.path):
+            door_path = product.original_image.path
 
-            door_path = product.image.path
-            if product.image_no_bg and product.image_no_bg.name and os.path.exists(product.image_no_bg.path):
-                door_path = product.image_no_bg.path
-            elif product.original_image and product.original_image.name and os.path.exists(product.original_image.path):
-                door_path = product.original_image.path
+        with open(door_path, 'rb') as f:
+            door_bytes = f.read()
 
-            with open(door_path, 'rb') as f:
-                door_bytes = f.read()
+        room_mime = 'image/png' if room_image_path.lower().endswith('.png') else 'image/jpeg'
+        door_mime = 'image/png' if door_path.lower().endswith('.png') else 'image/jpeg'
 
-            room_mime = 'image/png' if room_image_path.lower().endswith('.png') else 'image/jpeg'
-            door_mime = 'image/png' if door_path.lower().endswith('.png') else 'image/jpeg'
+        # --- SIMPLE, DIRECT prompt (no fancy keywords that trigger AI creativity) ---
+        prompt_text = (
+            "Sen rasm tahrirlovchisan (photo editor). Sening vazifang FAQAT bitta:\n"
+            "1-rasm: Mijozning haqiqiy xonasi. 2-rasm: Yangi eshik.\n\n"
+            "VAZIFA: 1-rasmdagi eski eshikni 2-rasmdagi eshik bilan almashtir.\n\n"
+            "QOIDALAR:\n"
+            "- Xonaning HAMMA narsasi (devor, pol, gilam, parda, mebel, shift) AYNAN O'ZGARMAY qolsin.\n"
+            "- Hech qanday YANGI narsa (mebel, gul, chiroq) QO'SHMA.\n"
+            "- Yorug'likni, rangni O'ZGARTIRMA.\n"
+            "- Eshik eski eshik turgan joyga AYNAN sig'sin.\n"
+            "- Eshik pol bilan bir tekisda bo'lsin.\n"
+            "- Faqat bitta rasm qaytar.\n"
+            "- Bu haqiqiy mijozning uyi. Fantastika, saroy, luxs QILMA."
+        )
 
-            prompt_text = (
-                "Birinchi rasmda xona ko'rsatilgan, ikkinchi rasmda eshik ko'rsatilgan. "
-                "Shu eshikni xonadagi mavjud eshik o'rniga qo'yib ber. "
-                "Muhim qoidalar: "
-                "1. Xonaning devori, poli, gilamlari, yorug'ligi, ranglari AYNAN o'zgarishsiz qolsin. "
-                "2. Eshik xonadagi eski eshik joylashgan AYNAN shu joyga o'rnatilsin. "
-                "3. Eshikning o'lchami xonadagi eshik o'lchamiga mos bo'lsin. "
-                "4. Eshik perspektivasi (burchagi) xona perspektivasiga mos bo'lsin. "
-                "5. Natija fotorealistik bo'lsin, sun'iy ko'rinmasin. "
-                "6. Faqat bitta rasm qaytar — xona + yangi eshik."
-            )
+        contents = [
+            types.Part.from_bytes(data=room_bytes, mime_type=room_mime),
+            types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
+            prompt_text,
+        ]
 
-            contents = [
-                types.Part.from_bytes(data=room_bytes, mime_type=room_mime),
-                types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
-                prompt_text,
-            ]
+        gemini_models = [
+            'gemini-2.0-flash-exp',              # Best for image editing
+            'gemini-2.5-flash-preview-04-17',    # Latest flash
+            'gemini-2.0-flash',                  # Stable
+        ]
 
-            gemini_models = [
-                'gemini-3.1-flash-image-preview',# Nano Banana 2 (High Speed, used in Gemini Web App)
-                'gemini-3-pro-image-preview',    # Nano Banana Pro (Highest Quality)
-                'gemini-2.5-flash-image',        # Standard
-            ]
-            
-            from google import genai
-            
-            for key in api_keys:
-                print(f"DEBUG: [AI Service] Using Nano Banana Engine with key {key[:10]}...")
-                client = genai.Client(api_key=key)
-                
-                # Real-World 'Kirish Eshigi' Methodology (User's v4 - Anti-Fantasy)
-                prompt_text = (
-                    "STRICT REAL-WORLD VISUALIZATION INSTRUCTIONS:\n"
-                    "1. DESIGN FIDELITY: Maintain the EXACT 'kirish eshigi' design and solid patterns of the CHOSEN DOOR IMAGE. DO NOT create a full glass or balcony door.\n"
-                    "2. CONTEXT: Create a realistic entry door that opens into a dark hallway or inner space. AVOID large balconies or strong backlighting.\n"
-                    "3. LIGHTING: Use very SUBTLE lighting from the hallway behind. Maintain the original dark glass and gold-etched details with grounded realism.\n"
-                    "4. ARCHITECTURAL BLEND: Seamlessly blend the door frame with the existing ornate cornice and room structure, ensuring it is flush with the floor.\n"
-                    "5. PRESERVATION: Keep all foreground elements (carpet, curtains, radiator, pillows, furniture) from the original room 100% UNCHANGED.\n"
-                    "6. ANTI-FANTASY: Strictly avoid any fantastical elements, glows, or unrealistic lighting effects. The result must be 100% realistic."
-                )
-                
-                contents = [
-                    types.Part.from_bytes(data=room_bytes, mime_type=room_mime),
-                    types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
-                    prompt_text,
-                ]
+        for key in api_keys:
+            print(f"DEBUG: [AI Service] Trying Gemini with key {key[:10]}...")
+            client = genai.Client(api_key=key)
 
-                for model_name in gemini_models:
-                    try:
-                        print(f"DEBUG: [AI Service]   Requesting Professional Generation ({model_name})...")
-                        response = client.models.generate_content(
-                            model=model_name,
-                            contents=contents,
-                            config=types.GenerateContentConfig(
-                                response_modalities=["IMAGE", "TEXT"],
-                            ),
-                        )
+            for model_name in gemini_models:
+                try:
+                    print(f"DEBUG: [AI Service]   Model: {model_name}...")
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            response_modalities=["IMAGE", "TEXT"],
+                        ),
+                    )
 
-                        if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
-                            for part in response.candidates[0].content.parts:
-                                if part.inline_data is not None:
-                                    img = PILImage.open(BytesIO(part.inline_data.data))
-                                    img.save(result_image_path, format='PNG')
-                                    print(f"DEBUG: [AI Service] Professional Success: {model_name} on key {key[:10]}...")
-                                    return result_image_path
-                                elif part.text:
-                                    print(f"DEBUG: [AI Service]   Model returned text instead of image: {part.text[:100]}...")
-                    except Exception as e:
-                        err_str = str(e)
-                        print(f"WARNING: [AI Service]   Generation failed for {model_name}: {err_str[:200]}")
-                        
-                        # Stop iterating models if quota exhausted, move onto next key
-                        if "429 RESOURCE_EXHAUSTED" in err_str or "exceeded your current quota" in err_str:
-                            print(f"DEBUG: [AI Service]   Quota exhausted for key {key[:10]}, skipping to next key...")
-                            break # Move to next key immediately
-                        continue # Try next model if it wasn't a quota error
+                    if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                        for part in response.candidates[0].content.parts:
+                            if part.inline_data is not None:
+                                img = PILImage.open(BytesIO(part.inline_data.data))
+                                img.save(result_image_path, format='PNG')
+                                print(f"DEBUG: [AI Service]   SUCCESS: {model_name}")
+                                return result_image_path
+                            elif part.text:
+                                print(f"DEBUG: [AI Service]   Text response: {part.text[:100]}...")
+                except Exception as e:
+                    err_str = str(e)
+                    print(f"WARNING: [AI Service]   Failed {model_name}: {err_str[:200]}")
+                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
+                        print(f"DEBUG: [AI Service]   Quota exhausted, next key...")
+                        break
+                    continue
 
-        except Exception as gemini_err:
-            print(f"WARNING: [AI Service] Gemini tier failed completely: {gemini_err}")
-
-        raise ValueError("All holistic reconstruction methods failed (DALL-E 3 + Gemini)")
+        raise ValueError("Gemini generation failed on all keys/models")
 
 class WishlistService:
     """Service layer for wishlist operations."""

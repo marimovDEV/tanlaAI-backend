@@ -127,16 +127,14 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         except Exception as e:
             print(f"   ⚠️ GPT-4o door analysis failed (using name): {e}")
     
-    # Real-World 'Kirish Eshigi' Methodology (User's v4 - Anti-Fantasy)
+    # Simple, direct prompt — no fancy keywords that trigger AI creativity
     prompt = (
-        f"STRICT REAL-WORLD ARCHITECTURAL VISUALIZATION. "
-        f"CONTEXT: A real-world room ({house_desc}). "
-        f"TASK: Replace original door with EXACT NEW 'KIRISH ESHIGI' MODEL: {door_desc}. "
-        f"CRITICAL 1: Create a realistic entry door that opens into a DARK HALLWAY or inner room. AVOID any balconies or terrace lighting. "
-        f"CRITICAL 2: Maintain original solid design, dark glass, and gold-etched patterns 1:1. NO GLASS EXPANSION. "
-        f"LIGHTING: Very SUBTLE indoor lighting. AVOID strong backlighting or glows. "
-        f"PRESERVATION: Keep the rug, curtains, furniture, and room context 100% UNCHANGED. "
-        f"Result: 100% realistic interior photograph, professional style, no fantasy elements."
+        f"Edit this photo of a real room. Replace the existing door with this new door: {door_desc}. "
+        f"Room context: {house_desc}. "
+        f"STRICT RULES: Keep EVERYTHING in the room EXACTLY the same — walls, floor, carpet, curtains, furniture, lighting. "
+        f"Do NOT add any new objects. Do NOT change colors or lighting. "
+        f"Place the new door where the old door was. Door must be flush with the floor. "
+        f"This is a real customer's home. No fantasy, no palace, no luxury upgrades."
     )
     
     print(f"   Prompt: {prompt[:150]}...")

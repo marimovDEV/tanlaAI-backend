@@ -926,78 +926,34 @@ def overlay_door_into_room(room_bgr, door_rgba, pixel_box, add_shadow=True, wall
             alpha = np.full(door_rgba.shape[:2] + (1,), 255, dtype=np.uint8)
             door_rgba = np.concatenate([door_rgba[:, :, :3], alpha], axis=2)
 
-    door_height, door_width = door_rgba.shape[:2]
-    scale = min(target_width / float(max(1, door_width)), target_height / float(max(1, door_height)))
-    scale = max(scale, 1e-6)
-    resized_width = max(1, int(round(door_width * scale)))
-    resized_height = max(1, int(round(door_height * scale)))
+    # Scale door to FILL the detected box exactly — no floating
+    resized_door = cv2.resize(door_rgba, (target_width, target_height), interpolation=cv2.INTER_LANCZOS4)
 
-    resized_door = cv2.resize(door_rgba, (resized_width, resized_height), interpolation=cv2.INTER_LANCZOS4)
-    
-    # --- 3D PERSPECTIVE WARP (Trapezoid Transform) ---
+    # Apply optional 3D perspective warp based on wall angle
     if abs(wall_angle) > 2:
-        # A positive angle means wall twists to the right (left side stays tall, right side shrinks)
-        # We will shrink the 'distant' side by a factor proportional to the angle
-        # Max angle is usually +/- 30 degrees. 30 degrees = ~15% shrinkage on the distant side.
         shrink_ratio = min(0.3, abs(wall_angle) / 100.0)
-        shrink_px = int(resized_height * shrink_ratio)
-        
-        src_pts = np.float32([
-            [0, 0],
-            [resized_width, 0],
-            [resized_width, resized_height],
-            [0, resized_height]
-        ])
-        
+        shrink_px = int(target_height * shrink_ratio)
+        src_pts = np.float32([[0, 0], [target_width, 0], [target_width, target_height], [0, target_height]])
         if wall_angle > 0:
-            # Right side is further away (smaller)
-            dst_pts = np.float32([
-                [0, 0],
-                [resized_width, shrink_px],
-                [resized_width, resized_height - shrink_px],
-                [0, resized_height]
-            ])
+            dst_pts = np.float32([[0, 0], [target_width, shrink_px], [target_width, target_height - shrink_px], [0, target_height]])
         else:
-            # Left side is further away (smaller)
-            dst_pts = np.float32([
-                [0, shrink_px],
-                [resized_width, 0],
-                [resized_width, resized_height],
-                [0, resized_height - shrink_px]
-            ])
-            
+            dst_pts = np.float32([[0, shrink_px], [target_width, 0], [target_width, target_height], [0, target_height - shrink_px]])
         M = cv2.getPerspectiveTransform(src_pts, dst_pts)
         resized_door = cv2.warpPerspective(
-            resized_door, 
-            M, 
-            (resized_width, resized_height),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(0, 0, 0, 0)
+            resized_door, M, (target_width, target_height),
+            flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0)
         )
-    # -------------------------------------------------
 
-    place_left = left + max(0, (target_width - resized_width) // 2)
-    place_top = bottom - resized_height
-    place_left, place_top, place_right, place_bottom = sanitize_pixel_box(
-        (place_left, place_top, place_left + resized_width, place_top + resized_height),
-        image_width,
-        image_height,
-    )
-
-    actual_width = place_right - place_left
-    actual_height = place_bottom - place_top
-    resized_door = resized_door[:actual_height, :actual_width]
     alpha = resized_door[:, :, 3].astype(np.float32) / 255.0
-
     composite = room_bgr.copy()
-    if add_shadow:
-        composite = apply_soft_shadow(composite, resized_door[:, :, 3], place_left, place_top)
 
-    region = composite[place_top:place_bottom, place_left:place_right].astype(np.float32)
+    if add_shadow:
+        composite = apply_soft_shadow(composite, resized_door[:, :, 3], left, top)
+
+    region = composite[top:bottom, left:right].astype(np.float32)
     door_rgb = resized_door[:, :, :3].astype(np.float32)
     blended = (alpha[..., None] * door_rgb) + ((1.0 - alpha[..., None]) * region)
-    composite[place_top:place_bottom, place_left:place_right] = np.clip(blended, 0, 255).astype(np.uint8)
+    composite[top:bottom, left:right] = np.clip(blended, 0, 255).astype(np.uint8)
     return composite
 
 

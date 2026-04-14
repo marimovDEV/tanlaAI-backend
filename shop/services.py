@@ -608,6 +608,16 @@ def normalize_door_opening_box(pixel_box, image_width, image_height, expected_as
         right = left + box_width
         top = max(0, bottom - box_height)
 
+    # Expand slightly to cover the outer frame (nalichnik) of the old door
+    final_width = right - left
+    final_height = bottom - top
+    pad_w = int(final_width * 0.04)
+    pad_h = int(final_height * 0.04)
+    
+    left = max(0, left - pad_w)
+    right = min(image_width, right + pad_w)
+    top = max(0, top - pad_h)
+
     return sanitize_pixel_box((left, top, right, bottom), image_width, image_height)
 
 

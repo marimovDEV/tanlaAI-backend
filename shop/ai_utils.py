@@ -127,16 +127,16 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         except Exception as e:
             print(f"   ⚠️ GPT-4o door analysis failed (using name): {e}")
     
-    # High-Fidelity Backlit & Pattern Preservation (User's Methodology v3)
+    # Real-World 'Kirish Eshigi' Methodology (User's v4 - Anti-Fantasy)
     prompt = (
-        f"EXTREMELY PRECISE ARCHITECTURAL VISUALIZATION. "
+        f"STRICT REAL-WORLD ARCHITECTURAL VISUALIZATION. "
         f"CONTEXT: A real-world room ({house_desc}). "
-        f"TASK: Replace original door with EXACT NEW MODEL: {door_desc}. "
-        f"LIGHTING DESIGN: Create a strong 'balkon/terrace' feel. Integrate the door with powerful BACKLIT ILLUMINATION coming from BEHIND it. "
-        f"This backlighting must filter vividly through the DARK GLASS and GOLD-ETCHED PATTERNS, illuminating them brightly. "
-        f"FIDELITY: Maintain the intricate glass and panel details of the new door model 1:1. "
-        f"PRESERVATION: Keep the rug, curtains, and all foreground furniture 100% UNCHANGED. "
-        f"Photorealistic, 8k, professional interior catalog style."
+        f"TASK: Replace original door with EXACT NEW 'KIRISH ESHIGI' MODEL: {door_desc}. "
+        f"CRITICAL 1: Create a realistic entry door that opens into a DARK HALLWAY or inner room. AVOID any balconies or terrace lighting. "
+        f"CRITICAL 2: Maintain original solid design, dark glass, and gold-etched patterns 1:1. NO GLASS EXPANSION. "
+        f"LIGHTING: Very SUBTLE indoor lighting. AVOID strong backlighting or glows. "
+        f"PRESERVATION: Keep the rug, curtains, furniture, and room context 100% UNCHANGED. "
+        f"Result: 100% realistic interior photograph, professional style, no fantasy elements."
     )
     
     print(f"   Prompt: {prompt[:150]}...")

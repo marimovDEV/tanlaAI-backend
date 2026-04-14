@@ -1524,15 +1524,15 @@ class AIService:
                 print(f"DEBUG: [AI Service] Using Nano Banana Engine with key {key[:10]}...")
                 client = genai.Client(api_key=key)
                 
-                # High-Fidelity Backlit & Pattern Preservation (User's Methodology v3)
+                # Real-World 'Kirish Eshigi' Methodology (User's v4 - Anti-Fantasy)
                 prompt_text = (
-                    "PRECISION ARCHITECTURAL VISUALIZATION INSTRUCTIONS:\n"
-                    "1. DESIGN FIDELITY: Maintain the EXACT intricate gold-etched pattern and dark glass style of the CHOSEN DOOR IMAGE.\n"
-                    "2. REPLACEMENT: Replace the old door in the original room with this new door model.\n"
-                    "3. BACKLIT ILLUMINATION: Create a strong 'balkon' or 'terrace' feel. Integrate the new door with powerful backlit illumination coming from BEHIND it. "
-                    "This backlighting must filter vividly through the dark glass and the intricate gold patterns, illuminating them brightly.\n"
+                    "STRICT REAL-WORLD VISUALIZATION INSTRUCTIONS:\n"
+                    "1. DESIGN FIDELITY: Maintain the EXACT 'kirish eshigi' design and solid patterns of the CHOSEN DOOR IMAGE. DO NOT create a full glass or balcony door.\n"
+                    "2. CONTEXT: Create a realistic entry door that opens into a dark hallway or inner space. AVOID large balconies or strong backlighting.\n"
+                    "3. LIGHTING: Use very SUBTLE lighting from the hallway behind. Maintain the original dark glass and gold-etched details with grounded realism.\n"
                     "4. ARCHITECTURAL BLEND: Seamlessly blend the door frame with the existing ornate cornice and room structure, ensuring it is flush with the floor.\n"
-                    "5. CONTEXT PRESERVATION: Maintain all foreground elements (carpet, curtains, radiator, pillows, furniture) from the original room 100% UNCHANGED."
+                    "5. PRESERVATION: Keep all foreground elements (carpet, curtains, radiator, pillows, furniture) from the original room 100% UNCHANGED.\n"
+                    "6. ANTI-FANTASY: Strictly avoid any fantastical elements, glows, or unrealistic lighting effects. The result must be 100% realistic."
                 )
                 
                 contents = [

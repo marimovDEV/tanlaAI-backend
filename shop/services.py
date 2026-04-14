@@ -1420,20 +1420,11 @@ class AIService:
     @staticmethod
     def generate_holistic_room_view(product, room_image_path, result_image_path):
         """
-        Tiered Holistic Reconstruction:
-        1. PRIMARY: OpenAI DALL-E 3 + GPT-4o (proven, working now)
-        2. FALLBACK: Gemini generate_content (for when billing is enabled)
+        Holistic AI Reconstruction using Gemini generate_content.
+        Sends room + door images to Gemini and gets back a photorealistic composite.
         """
-        
-        # === TIER 1: DALL-E 3 (GPT-4o analysis + DALL-E 3 generation) ===
-        try:
-            from .ai_utils import visualize_door_in_room
-            print(f"DEBUG: [AI Service] TIER 1: DALL-E 3 reconstruction for product {product.id}...")
-            return visualize_door_in_room(product, room_image_path, result_image_path)
-        except Exception as dalle_err:
-            print(f"WARNING: [AI Service] DALL-E 3 failed: {dalle_err}")
 
-        # === TIER 2: Gemini generate_content (needs billing) ===
+        # === GEMINI generate_content (like gemini.google.com) ===
         try:
             from google.genai import types
             from PIL import Image as PILImage

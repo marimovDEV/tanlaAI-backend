@@ -1452,108 +1452,88 @@ class AIService:
     @staticmethod
     def generate_holistic_room_view(product, room_image_path, result_image_path):
         """
-        Direct Gemini Generative Reconstruction.
-        Uses the SAME approach as Gemini Web chat: generate_content with both images.
-        NOT edit_image/Imagen — that's a completely different, limited API.
+        Tiered Holistic Reconstruction:
+        1. PRIMARY: OpenAI DALL-E 3 + GPT-4o (proven, working now)
+        2. FALLBACK: Gemini generate_content (for when billing is enabled)
         """
-        from google.genai import types
-        from PIL import Image as PILImage
-        from io import BytesIO
         
-        client = AIService.get_gemini_client()
-        
-        # 1. Read room image bytes
-        with open(room_image_path, 'rb') as f:
-            room_bytes = f.read()
-            
-        # 2. Read product/door image bytes
-        door_path = product.image.path
-        if product.image_no_bg and product.image_no_bg.name and os.path.exists(product.image_no_bg.path):
-            door_path = product.image_no_bg.path
-        elif product.original_image and product.original_image.name and os.path.exists(product.original_image.path):
-            door_path = product.original_image.path
-            
-        with open(door_path, 'rb') as f:
-            door_bytes = f.read()
+        # === TIER 1: DALL-E 3 (GPT-4o analysis + DALL-E 3 generation) ===
+        try:
+            from .ai_utils import visualize_door_in_room
+            print(f"DEBUG: [AI Service] TIER 1: DALL-E 3 reconstruction for product {product.id}...")
+            return visualize_door_in_room(product, room_image_path, result_image_path)
+        except Exception as dalle_err:
+            print(f"WARNING: [AI Service] DALL-E 3 failed: {dalle_err}")
 
-        # Detect mime types
-        room_mime = 'image/jpeg'
-        if room_image_path.lower().endswith('.png'):
-            room_mime = 'image/png'
-        door_mime = 'image/png' if door_path.lower().endswith('.png') else 'image/jpeg'
+        # === TIER 2: Gemini generate_content (needs billing) ===
+        try:
+            from google.genai import types
+            from PIL import Image as PILImage
+            from io import BytesIO
 
-        # 3. Simple prompt — exactly like Gemini Web chat
-        prompt_text = (
-            "Birinchi rasmda xona ko'rsatilgan, ikkinchi rasmda eshik. "
-            "Shu eshikni xonadagi eshik o'rniga o'rnatib, yangi rasm yarat. "
-            "Xonaning devori, poli, yorug'ligi o'zgarmsin."
-        )
+            print(f"DEBUG: [AI Service] TIER 2: Gemini generate_content for product {product.id}...")
+            client = AIService.get_gemini_client()
 
-        # 4. Build content parts: room image + door image + text prompt
-        contents = [
-            types.Part.from_bytes(data=room_bytes, mime_type=room_mime),
-            types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
-            prompt_text,
-        ]
+            with open(room_image_path, 'rb') as f:
+                room_bytes = f.read()
 
-        # 5. Try multiple model names
-        # Models that support native image generation via generate_content:
-        model_candidates = [
-            'gemini-2.0-flash-exp',             # Best for image gen
-            'gemini-2.0-flash',                  # Stable
-            getattr(settings, 'GEMINI_IMAGE_MODEL', ''),
-            getattr(settings, 'GEMINI_IMAGE_FALLBACK_MODEL', ''),
-        ]
-        # Deduplicate while preserving order
-        seen = set()
-        models_to_try = []
-        for m in model_candidates:
-            if m and m not in seen:
-                seen.add(m)
-                models_to_try.append(m)
+            door_path = product.image.path
+            if product.image_no_bg and product.image_no_bg.name and os.path.exists(product.image_no_bg.path):
+                door_path = product.image_no_bg.path
+            elif product.original_image and product.original_image.name and os.path.exists(product.original_image.path):
+                door_path = product.original_image.path
 
-        last_error = None
-        for model_name in models_to_try:
-            try:
-                print(f"DEBUG: [AI Service] Trying generate_content with model={model_name}")
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        response_modalities=["IMAGE", "TEXT"],
-                    ),
-                )
-                
-                # 6. Extract image from response
-                if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
-                    for part in response.candidates[0].content.parts:
-                        if part.inline_data is not None:
-                            image_data = part.inline_data.data
-                            # Save the generated image
-                            img = PILImage.open(BytesIO(image_data))
-                            img.save(result_image_path, format='PNG')
-                            print(f"DEBUG: [AI Service] Holistic reconstruction SUCCESS with {model_name}: {result_image_path}")
-                            return result_image_path
-                    
-                    # If we got here, no inline_data was found
-                    text_parts = [p.text for p in response.candidates[0].content.parts if p.text]
-                    print(f"WARNING: [AI Service] Model {model_name} returned text only: {text_parts}")
-                    last_error = ValueError(f"Model {model_name} did not return an image. Response: {text_parts}")
+            with open(door_path, 'rb') as f:
+                door_bytes = f.read()
+
+            room_mime = 'image/png' if room_image_path.lower().endswith('.png') else 'image/jpeg'
+            door_mime = 'image/png' if door_path.lower().endswith('.png') else 'image/jpeg'
+
+            prompt_text = (
+                "Birinchi rasmda xona ko'rsatilgan, ikkinchi rasmda eshik. "
+                "Shu eshikni xonadagi eshik o'rniga o'rnatib, yangi rasm yarat. "
+                "Xonaning devori, poli, yorug'ligi o'zgarmsin."
+            )
+
+            contents = [
+                types.Part.from_bytes(data=room_bytes, mime_type=room_mime),
+                types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
+                prompt_text,
+            ]
+
+            gemini_models = [
+                'gemini-2.5-flash-image',
+                'gemini-3.1-flash-image-preview',
+                'gemini-3-pro-image-preview',
+                'gemini-2.0-flash-exp',
+            ]
+
+            for model_name in gemini_models:
+                try:
+                    print(f"DEBUG: [AI Service] Trying Gemini model: {model_name}")
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            response_modalities=["IMAGE", "TEXT"],
+                        ),
+                    )
+
+                    if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                        for part in response.candidates[0].content.parts:
+                            if part.inline_data is not None:
+                                img = PILImage.open(BytesIO(part.inline_data.data))
+                                img.save(result_image_path, format='PNG')
+                                print(f"DEBUG: [AI Service] Gemini SUCCESS with {model_name}")
+                                return result_image_path
+                except Exception as e:
+                    print(f"WARNING: [AI Service] Gemini {model_name} failed: {e}")
                     continue
-                else:
-                    last_error = ValueError(f"Model {model_name} returned empty response")
-                    print(f"WARNING: [AI Service] {last_error}")
-                    continue
-                    
-            except Exception as e:
-                last_error = e
-                print(f"WARNING: [AI Service] Model {model_name} failed: {e}")
-                continue
-        
-        # All models failed
-        raise ValueError(f"All Gemini models failed for holistic reconstruction. Last error: {last_error}")
 
+        except Exception as gemini_err:
+            print(f"WARNING: [AI Service] Gemini tier failed completely: {gemini_err}")
 
+        raise ValueError("All holistic reconstruction methods failed (DALL-E 3 + Gemini)")
 
 class WishlistService:
     """Service layer for wishlist operations."""

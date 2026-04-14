@@ -4,6 +4,7 @@ Proven pipeline: GPT-4o analyzes both images, DALL-E 3 generates the final resul
 """
 import os
 import io
+import json
 import base64
 import tempfile
 import traceback
@@ -24,8 +25,34 @@ def log_error(msg):
 
 
 def load_visualization_metadata(image_path):
-    """Legacy stub - not used in new pipeline."""
-    return None
+    """Load optional JSON sidecar metadata for a generated visualization."""
+    if not image_path:
+        return None
+
+    metadata_path = f"{image_path}.json"
+    if not os.path.exists(metadata_path):
+        return None
+
+    try:
+        with open(metadata_path, 'r', encoding='utf-8') as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+    except Exception as exc:
+        log_error(f"Failed to load visualization metadata for {image_path}: {exc}")
+        return None
+
+
+def save_visualization_metadata(image_path, metadata):
+    """Persist optional JSON sidecar metadata next to a generated visualization."""
+    if not image_path or not metadata:
+        return
+
+    metadata_path = f"{image_path}.json"
+    try:
+        with open(metadata_path, 'w', encoding='utf-8') as fh:
+            json.dump(metadata, fh, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        log_error(f"Failed to save visualization metadata for {image_path}: {exc}")
 
 
 def _get_openai_client():

@@ -786,34 +786,23 @@ def detect_door_opening_box(room_bgr, expected_aspect_ratio):
 
 
 def remove_door_from_room_locally(room_bgr, pixel_box):
-    """Remove old door + frame + threshold using OpenCV inpainting.
-    Expands the area slightly to ensure frame and threshold are fully removed."""
+    """Remove old door structure from the room using OpenCV inpainting."""
     import cv2
     import numpy as np
 
-    result = room_bgr.copy()
-    image_height, image_width = result.shape[:2]
-    x1, y1, x2, y2 = sanitize_pixel_box(pixel_box, image_width, image_height)
-
-    # EXPAND inpaint area to cover frame + threshold (opposite of shrinking)
-    pad_x = int((x2 - x1) * 0.08)  # 8% expansion horizontally
-    pad_y = int((y2 - y1) * 0.05)  # 5% expansion vertically
-    rx1 = max(0, x1 - pad_x)
-    ry1 = max(0, y1 - pad_y)
-    rx2 = min(image_width, x2 + pad_x)
-    ry2 = min(image_height, y2 + pad_y)
-
-    # Create mask for the door + frame area
+    image_height, image_width = room_bgr.shape[:2]
+    # Use the box exactly as provided
+    left, top, right, bottom = sanitize_pixel_box(pixel_box, image_width, image_height)
+    
+    # Create mask for the exact box area
     mask = np.zeros((image_height, image_width), dtype=np.uint8)
-    mask[ry1:ry2, rx1:rx2] = 255
+    mask[top:bottom, left:right] = 255
 
-    # Dilate mask to catch any remaining frame edges
-    kernel = np.ones((15, 15), np.uint8)
-    mask = cv2.dilate(mask, kernel, iterations=1)
+    # Dilate mask very slightly (3px) just for cleaner edges at the wall transition
+    mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=1)
 
-    # Inpaint using TELEA algorithm (fills with surrounding wall texture)
-    result = cv2.inpaint(result, mask, inpaintRadius=10, flags=cv2.INPAINT_TELEA)
-
+    # Inpaint using TELEA (sharper than Navier-Stokes for wall textures)
+    result = cv2.inpaint(room_bgr, mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
     return result
 
 
@@ -1516,30 +1505,37 @@ class AIService:
 
         # === STEP 1: DETECT DOOR AREA + CREATE MASK ===
         print(f"DEBUG: [Pipeline] Step 1: Detecting door area...")
-        expected_aspect_ratio = get_expected_door_aspect_ratio(product, door_rgba=door_rgba)
         detected_box, detection_method = detect_door_opening_box(room_bgr, expected_aspect_ratio)
-        placement_box = expand_pixel_box(detected_box, w, h, pad_x_ratio=0.06, pad_y_ratio=0.04)
-        x1, y1, x2, y2 = placement_box
-        print(f"DEBUG: [Pipeline]   Door detected at ({x1},{y1})-({x2},{y2}) via {detection_method}")
+        # Expand box aggressively once to ensure it covers ALL old frame components.
+        # This is our Master Box for both Removal and Insertion.
+        master_box = expand_pixel_box(detected_box, w, h, pad_x_ratio=0.08, pad_y_ratio=0.06)
+        x1, y1, x2, y2 = master_box
+        print(f"DEBUG: [Pipeline]   Master Box (for removal & insertion): ({x1},{y1})-({x2},{y2})")
 
         preview_metadata['pipeline']['expected_aspect_ratio'] = round(float(expected_aspect_ratio), 4)
         preview_metadata['pipeline']['detection_method'] = detection_method
         preview_metadata['pipeline']['detected_box'] = [int(value) for value in detected_box]
         preview_metadata['pipeline']['placement_box'] = [x1, y1, x2, y2]
 
-        mask = build_box_mask(h, w, placement_box, pad_x_ratio=0.0, pad_y_ratio=0.0)
+        # Use the exact Master Box for everything
+        mask = build_box_mask(h, w, master_box, pad_x_ratio=0.0, pad_y_ratio=0.0)
 
         # === STEP 2: REMOVE OLD DOOR (INPAINTING) ===
         print(f"DEBUG: [Pipeline] Step 2: Removing old door (inpainting)...")
-        cleaned_room = remove_door_from_room_locally(room_bgr, placement_box)
+        # To perfectly hide inpainting, the inpaint mask should be slightly SMALLER than the door area.
+        # So we inpaint based on detected_box + small padding, then overlay based on master_box.
+        inpaint_box = expand_pixel_box(detected_box, w, h, pad_x_ratio=0.05, pad_y_ratio=0.04)
+        cleaned_room = remove_door_from_room_locally(room_bgr, inpaint_box)
         preview_metadata['pipeline']['old_door_removal'] = 'opencv_inpaint'
         print(f"DEBUG: [Pipeline]   Old door removed, wall filled with texture")
 
         # === STEP 3: INSERT NEW DOOR (on clean wall) ===
         print(f"DEBUG: [Pipeline] Step 3: Placing new door on clean wall...")
-        lit_door_rgba = match_door_lighting_to_room(door_rgba, room_bgr, placement_box)
-        composite = overlay_door_into_room(cleaned_room, lit_door_rgba, placement_box, add_shadow=True)
-        composite = add_floor_contact_shadow(composite, placement_box)
+        # Note: overlay uses the larger Master Box to perfectly cover the inpaint blur.
+        lit_door_rgba = match_door_lighting_to_room(door_rgba, room_bgr, master_box)
+        composite = overlay_door_into_room(cleaned_room, lit_door_rgba, master_box, add_shadow=True)
+        composite = add_floor_contact_shadow(composite, master_box)
+_box)
         print(f"DEBUG: [Pipeline]   Composite created (room preserved, old door removed)")
 
         # Save OpenCV result as SAFE fallback

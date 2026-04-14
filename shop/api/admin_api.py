@@ -352,7 +352,6 @@ class AdminAITestViewSet(viewsets.ModelViewSet):
         import os
         import uuid
         from django.conf import settings
-        from ..ai_utils import visualize_door_in_room
 
         test_obj = self.get_object()
         product = test_obj.door
@@ -369,17 +368,9 @@ class AdminAITestViewSet(viewsets.ModelViewSet):
                  return Response({'error': 'Xonaning rasmi yuklanmagan!'}, status=status.HTTP_400_BAD_REQUEST)
             room_path = test_obj.room_image.path
 
-            # Check for SAM model file
-            model_path = os.path.join(settings.BASE_DIR, 'models', 'sam', 'sam_vit_b_01ec64.pth')
-            if not os.path.exists(model_path):
-                return Response({
-                    'error': 'SAM model fayli serverdan topilmadi!',
-                    'detail': f'Iltimos, sam_vit_b_01ec64.pth faylini quyidagi manzilga yuklang: {model_path}',
-                    'hint': 'Ushbu fayl Gitga qo‘shilmagan (og‘irligi sababli). Uni qo‘lda yuklash talab etiladi.'
-                }, status=status.HTTP_400_BAD_REQUEST)
-
             from ..services import AIService
-            # Run the new high-fidelity SAM + Perspective pipeline
+            # Run the locked-scene hybrid pipeline.
+            # SAM is optional inside the service; if unavailable it falls back to YOLO/OpenCV.
             AIService.generate_room_preview(
                 product, 
                 room_path, 
@@ -393,7 +384,10 @@ class AdminAITestViewSet(viewsets.ModelViewSet):
             # Load metadata if exists
             from ..ai_utils import load_visualization_metadata
             try:
-                metadata = load_visualization_metadata(result_path)
+                metadata = load_visualization_metadata(result_path) or {}
+                if test_obj.prompt:
+                    metadata.setdefault('pipeline', {})
+                    metadata['pipeline']['tester_note'] = test_obj.prompt
                 test_obj.metadata = metadata
             except:
                 pass

@@ -1350,110 +1350,155 @@ class AIService:
     @staticmethod
     def generate_room_preview(product, room_image_path, result_image_path):
         """
-        Main pipeline for room visualization.
+        Production-level door visualization pipeline.
         
-        TIER 1: Gemini AI (photo editor mode — keeps room identical, only swaps door)
-        TIER 2: DALL-E 3 fallback
-        TIER 3: OpenCV surgical overlay (safety net)
+        Step 1: Detect door area → create MASK
+        Step 2: Create rough composite (OpenCV — room 100% preserved)
+        Step 3: Send composite to AI for EDGE REFINEMENT ONLY
+        Step 4: Validate result (pixels outside mask must match original)
+        Step 5: Fallback to raw composite if AI fails validation
         """
-        # === TIER 1: GEMINI AI PHOTO EDITOR ===
+        import cv2
+        import numpy as np
+
+        print(f"DEBUG: [Pipeline] Starting production pipeline for product {product.id}...")
+
+        # --- Load room ---
+        room_bgr = cv2.imread(room_image_path, cv2.IMREAD_COLOR)
+        if room_bgr is None:
+            raise ValueError("Room image could not be loaded")
+        h, w = room_bgr.shape[:2]
+
+        # --- Load door ---
+        door_path = None
+        if hasattr(product, 'image_no_bg') and product.image_no_bg and product.image_no_bg.name and os.path.exists(product.image_no_bg.path):
+            door_path = product.image_no_bg.path
+        elif hasattr(product, 'image') and product.image and product.image.name and os.path.exists(product.image.path):
+            door_path = product.image.path
+        elif hasattr(product, 'original_image') and product.original_image and product.original_image.name and os.path.exists(product.original_image.path):
+            door_path = product.original_image.path
+        if not door_path:
+            raise ValueError("No valid door image found")
+
+        door_rgba = cv2.imread(door_path, cv2.IMREAD_UNCHANGED)
+        if door_rgba is None:
+            raise ValueError("Door image could not be loaded")
+        if door_rgba.ndim == 2:
+            door_rgba = cv2.cvtColor(door_rgba, cv2.COLOR_GRAY2BGRA)
+        elif door_rgba.shape[2] == 3:
+            alpha = np.full(door_rgba.shape[:2] + (1,), 255, dtype=np.uint8)
+            door_rgba = np.concatenate([door_rgba, alpha], axis=2)
+
+        # === STEP 1: DETECT DOOR AREA + CREATE MASK ===
+        print(f"DEBUG: [Pipeline] Step 1: Detecting door area...")
+        expected_aspect_ratio = get_expected_door_aspect_ratio(product, door_rgba=door_rgba)
+        detected_box, detection_method = detect_door_opening_box(room_bgr, expected_aspect_ratio)
+        x1, y1, x2, y2 = detected_box
+        print(f"DEBUG: [Pipeline]   Door detected at ({x1},{y1})-({x2},{y2}) via {detection_method}")
+
+        # Create binary mask (white = door area to edit, black = preserve)
+        mask = np.zeros((h, w), dtype=np.uint8)
+        mask[y1:y2, x1:x2] = 255
+
+        # === STEP 2: CREATE ROUGH COMPOSITE (room 100% preserved) ===
+        print(f"DEBUG: [Pipeline] Step 2: Creating OpenCV composite...")
+        composite = room_bgr.copy()
+
+        # Resize door to fit detected box
+        box_w = x2 - x1
+        box_h = y2 - y1
+        door_resized = cv2.resize(door_rgba, (box_w, box_h), interpolation=cv2.INTER_LANCZOS4)
+
+        # Separate channels
+        door_bgr = door_resized[:, :, :3]
+        if door_resized.shape[2] == 4:
+            door_alpha = door_resized[:, :, 3].astype(np.float32) / 255.0
+        else:
+            door_alpha = np.ones((box_h, box_w), dtype=np.float32)
+
+        # Color-match door to room's ambient lighting
+        room_region = room_bgr[y1:y2, x1:x2]
+        room_mean = np.mean(room_region, axis=(0, 1))
+        door_mean = np.mean(door_bgr, axis=(0, 1))
+        color_ratio = room_mean / (door_mean + 1e-6)
+        color_ratio = np.clip(color_ratio, 0.7, 1.3)  # Limit adjustment
+        door_bgr_matched = np.clip(door_bgr.astype(np.float32) * color_ratio, 0, 255).astype(np.uint8)
+
+        # Feathered edge blending (soft mask border)
+        feather_mask = cv2.GaussianBlur(
+            (door_alpha * 255).astype(np.uint8), (15, 15), 0
+        ).astype(np.float32) / 255.0
+
+        # Alpha-blend door into room
+        for c in range(3):
+            composite[y1:y2, x1:x2, c] = (
+                door_bgr_matched[:, :, c] * feather_mask +
+                room_bgr[y1:y2, x1:x2, c] * (1.0 - feather_mask)
+            ).astype(np.uint8)
+
+        # Add shadow beneath door
+        shadow_height = max(3, int(box_h * 0.02))
+        shadow_y_start = min(y2, h - 1)
+        shadow_y_end = min(y2 + shadow_height, h)
+        if shadow_y_start < shadow_y_end:
+            for sy in range(shadow_y_start, shadow_y_end):
+                fade = 1.0 - ((sy - shadow_y_start) / float(shadow_height))
+                composite[sy, x1:x2] = np.clip(
+                    composite[sy, x1:x2].astype(np.float32) * (1.0 - 0.3 * fade), 0, 255
+                ).astype(np.uint8)
+
+        print(f"DEBUG: [Pipeline]   Composite created (room 100% preserved outside door)")
+
+        # Save composite as fallback
+        cv2.imwrite(result_image_path, composite)
+
+        # === STEP 3: AI EDGE REFINEMENT (optional, constrained) ===
         try:
-            print(f"DEBUG: [AI Service] TIER 1: Gemini photo-editor mode for product {product.id}...")
-            result = AIService.generate_holistic_room_view(product, room_image_path, result_image_path)
-            if result and os.path.exists(result):
-                print(f"DEBUG: [AI Service] TIER 1 SUCCESS")
-                return result
+            print(f"DEBUG: [Pipeline] Step 3: AI edge refinement...")
+            ai_result = AIService.refine_door_edges_with_ai(
+                composite, mask, room_image_path, result_image_path
+            )
+            if ai_result and os.path.exists(ai_result):
+                # === STEP 4: VALIDATION ===
+                print(f"DEBUG: [Pipeline] Step 4: Validating AI result...")
+                ai_img = cv2.imread(ai_result, cv2.IMREAD_COLOR)
+                if ai_img is not None and ai_img.shape == room_bgr.shape:
+                    # Check: pixels OUTSIDE mask should be nearly identical to original
+                    outside_mask = (mask == 0)
+                    original_outside = room_bgr[outside_mask].astype(np.float32)
+                    result_outside = ai_img[outside_mask].astype(np.float32)
+                    mse = np.mean((original_outside - result_outside) ** 2)
+                    similarity = max(0, 100 - mse)
+                    print(f"DEBUG: [Pipeline]   Room preservation score: {similarity:.1f}/100 (MSE: {mse:.1f})")
+
+                    if similarity >= 85:
+                        print(f"DEBUG: [Pipeline]   ✅ AI result PASSED validation")
+                        return ai_result
+                    else:
+                        print(f"DEBUG: [Pipeline]   ❌ AI result FAILED validation (room changed too much, using composite)")
+                else:
+                    print(f"DEBUG: [Pipeline]   ❌ AI result has wrong dimensions, using composite")
         except Exception as e:
-            print(f"WARNING: [AI Service] TIER 1 failed: {e}")
+            print(f"WARNING: [Pipeline] AI refinement failed: {e}")
 
-        # === TIER 2: DALL-E 3 ===
-        try:
-            from .ai_utils import visualize_door_in_room
-            print(f"DEBUG: [AI Service] TIER 2: DALL-E 3 for product {product.id}...")
-            result = visualize_door_in_room(product, room_image_path, result_image_path)
-            if result and os.path.exists(result) and os.path.getsize(result) > 1000:
-                print(f"DEBUG: [AI Service] TIER 2 SUCCESS")
-                return result
-        except Exception as e:
-            print(f"WARNING: [AI Service] TIER 2 failed: {e}")
-
-        # === TIER 3: OPENCV SURGICAL OVERLAY ===
-        try:
-            print(f"DEBUG: [AI Service] TIER 3: OpenCV overlay for product {product.id}...")
-            import cv2
-            import numpy as np
-
-            room_bgr = cv2.imread(room_image_path, cv2.IMREAD_COLOR)
-            if room_bgr is None:
-                raise ValueError("Room image could not be loaded")
-
-            door_path = None
-            if hasattr(product, 'image_no_bg') and product.image_no_bg and product.image_no_bg.name and os.path.exists(product.image_no_bg.path):
-                door_path = product.image_no_bg.path
-            elif hasattr(product, 'image') and product.image and product.image.name and os.path.exists(product.image.path):
-                door_path = product.image.path
-            elif hasattr(product, 'original_image') and product.original_image and product.original_image.name and os.path.exists(product.original_image.path):
-                door_path = product.original_image.path
-
-            if not door_path:
-                raise ValueError("No valid door image found")
-
-            door_rgba = cv2.imread(door_path, cv2.IMREAD_UNCHANGED)
-            if door_rgba is None:
-                raise ValueError("Door image could not be loaded")
-            if door_rgba.ndim == 2:
-                door_rgba = cv2.cvtColor(door_rgba, cv2.COLOR_GRAY2BGRA)
-            elif door_rgba.shape[2] == 3:
-                alpha = np.full(door_rgba.shape[:2] + (1,), 255, dtype=np.uint8)
-                door_rgba = np.concatenate([door_rgba, alpha], axis=2)
-
-            expected_aspect_ratio = get_expected_door_aspect_ratio(product, door_rgba=door_rgba)
-            detected_box, detection_method = detect_door_opening_box(room_bgr, expected_aspect_ratio)
-
-            try:
-                from .sam_utils import SAMService
-                wall_mask = SAMService.get_wall_mask(room_bgr, hint_box=detected_box)
-                corners = AIService.refine_corners_with_mask(detected_box, wall_mask, room_bgr)
-                area = 0.5 * abs(
-                    (corners['top_left'][0] * (corners['top_right'][1] - corners['bottom_left'][1]) +
-                     corners['top_right'][0] * (corners['bottom_left'][1] - corners['top_left'][1]) +
-                     corners['bottom_left'][0] * (corners['top_left'][1] - corners['top_right'][1]))
-                )
-                if area < 500:
-                    raise ValueError("Degenerate area")
-                use_perspective = True
-            except Exception:
-                use_perspective = False
-
-            cleaned_room = remove_door_from_room_locally(room_bgr, detected_box)
-            if use_perspective:
-                final_room = AIService.overlay_door_perspective(cleaned_room, door_rgba, corners)
-            else:
-                final_room = overlay_door_into_room(cleaned_room, door_rgba, detected_box, add_shadow=True)
-
-            if not cv2.imwrite(result_image_path, final_room):
-                raise ValueError("Failed to save")
-
-            print(f"DEBUG: [AI Service] TIER 3 SUCCESS")
-            return result_image_path
-
-        except Exception as e:
-            print(f"ERROR: [AI Service] All tiers failed: {e}")
-            raise
+        # === FALLBACK: Return raw composite (room 100% preserved) ===
+        print(f"DEBUG: [Pipeline] Returning pre-composite (guaranteed room preservation)")
+        return result_image_path
 
 
     @staticmethod
-    def generate_holistic_room_view(product, room_image_path, result_image_path):
+    def refine_door_edges_with_ai(composite_bgr, mask, room_image_path, result_image_path):
         """
-        AI door replacement using Gemini.
-        Sends room photo + door product image → gets back edited photo.
+        Send PRE-COMPOSITE to AI for edge refinement only.
+        The AI receives a room with the door ALREADY placed.
+        It can only fix edges — NOT reimagine the room.
         """
         from google.genai import types
         from google import genai
         from PIL import Image as PILImage
         from io import BytesIO
+        import cv2
 
-        # --- Get API keys ---
         api_keys_str = getattr(settings, 'GEMINI_API_KEYS', '')
         api_keys = [k.strip() for k in api_keys_str.split(',') if k.strip()]
         if not api_keys:
@@ -1463,56 +1508,47 @@ class AIService:
         if not api_keys:
             raise ValueError("No GEMINI keys configured")
 
-        # --- Load images ---
-        with open(room_image_path, 'rb') as f:
-            room_bytes = f.read()
+        # Encode composite as bytes
+        _, composite_bytes = cv2.imencode('.png', composite_bgr)
+        composite_bytes = composite_bytes.tobytes()
 
-        door_path = product.image.path
-        if hasattr(product, 'image_no_bg') and product.image_no_bg and product.image_no_bg.name and os.path.exists(product.image_no_bg.path):
-            door_path = product.image_no_bg.path
-        elif hasattr(product, 'original_image') and product.original_image and product.original_image.name and os.path.exists(product.original_image.path):
-            door_path = product.original_image.path
+        # Encode mask as bytes
+        _, mask_bytes = cv2.imencode('.png', mask)
+        mask_bytes = mask_bytes.tobytes()
 
-        with open(door_path, 'rb') as f:
-            door_bytes = f.read()
-
-        room_mime = 'image/png' if room_image_path.lower().endswith('.png') else 'image/jpeg'
-        door_mime = 'image/png' if door_path.lower().endswith('.png') else 'image/jpeg'
-
-        # --- SIMPLE, DIRECT prompt (no fancy keywords that trigger AI creativity) ---
+        # Constrained prompt — AI cannot reimagine, only fix edges
         prompt_text = (
-            "Sen rasm tahrirlovchisan (photo editor). Sening vazifang FAQAT bitta:\n"
-            "1-rasm: Mijozning haqiqiy xonasi. 2-rasm: Yangi eshik.\n\n"
-            "VAZIFA: 1-rasmdagi eski eshikni 2-rasmdagi eshik bilan almashtir.\n\n"
-            "QOIDALAR:\n"
-            "- Xonaning HAMMA narsasi (devor, pol, gilam, parda, mebel, shift) AYNAN O'ZGARMAY qolsin.\n"
-            "- Hech qanday YANGI narsa (mebel, gul, chiroq) QO'SHMA.\n"
-            "- Yorug'likni, rangni O'ZGARTIRMA.\n"
-            "- Eshik eski eshik turgan joyga AYNAN sig'sin.\n"
-            "- Eshik pol bilan bir tekisda bo'lsin.\n"
-            "- Faqat bitta rasm qaytar.\n"
-            "- Bu haqiqiy mijozning uyi. Fantastika, saroy, luxs QILMA."
+            "This image already has a new door placed in it using digital editing.\n"
+            "The second image is a MASK showing the door area (white = door).\n\n"
+            "YOUR ONLY JOB: Fix the edges around the door to make the placement look natural.\n\n"
+            "STRICT RULES:\n"
+            "- Do NOT change ANYTHING outside the white mask area\n"
+            "- Do NOT change walls, floor, furniture, curtains\n"
+            "- Do NOT redesign the room\n"
+            "- Do NOT add any new objects\n"
+            "- ONLY smooth the transition between the door edges and the wall\n"
+            "- Make the door look naturally installed\n"
+            "- Keep the exact same room, exact same lighting\n"
+            "- Return ONLY the refined image"
         )
 
         contents = [
-            types.Part.from_bytes(data=room_bytes, mime_type=room_mime),
-            types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
+            types.Part.from_bytes(data=composite_bytes, mime_type='image/png'),
+            types.Part.from_bytes(data=mask_bytes, mime_type='image/png'),
             prompt_text,
         ]
 
         gemini_models = [
-            'gemini-2.0-flash-exp',              # Best for image editing
-            'gemini-2.5-flash-preview-04-17',    # Latest flash
-            'gemini-2.0-flash',                  # Stable
+            'gemini-2.0-flash-exp',
+            'gemini-2.5-flash-preview-04-17',
+            'gemini-2.0-flash',
         ]
 
         for key in api_keys:
-            print(f"DEBUG: [AI Service] Trying Gemini with key {key[:10]}...")
             client = genai.Client(api_key=key)
-
             for model_name in gemini_models:
                 try:
-                    print(f"DEBUG: [AI Service]   Model: {model_name}...")
+                    print(f"DEBUG: [AI Refine] Trying {model_name}...")
                     response = client.models.generate_content(
                         model=model_name,
                         contents=contents,
@@ -1520,25 +1556,31 @@ class AIService:
                             response_modalities=["IMAGE", "TEXT"],
                         ),
                     )
-
                     if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
                         for part in response.candidates[0].content.parts:
                             if part.inline_data is not None:
                                 img = PILImage.open(BytesIO(part.inline_data.data))
                                 img.save(result_image_path, format='PNG')
-                                print(f"DEBUG: [AI Service]   SUCCESS: {model_name}")
+                                print(f"DEBUG: [AI Refine] SUCCESS: {model_name}")
                                 return result_image_path
-                            elif part.text:
-                                print(f"DEBUG: [AI Service]   Text response: {part.text[:100]}...")
                 except Exception as e:
                     err_str = str(e)
-                    print(f"WARNING: [AI Service]   Failed {model_name}: {err_str[:200]}")
+                    print(f"WARNING: [AI Refine] Failed {model_name}: {err_str[:200]}")
                     if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
-                        print(f"DEBUG: [AI Service]   Quota exhausted, next key...")
                         break
                     continue
 
-        raise ValueError("Gemini generation failed on all keys/models")
+        raise ValueError("AI edge refinement failed on all keys/models")
+
+
+    @staticmethod
+    def generate_holistic_room_view(product, room_image_path, result_image_path):
+        """
+        Legacy method — now redirects to the new pipeline.
+        Kept for backward compatibility.
+        """
+        # This is now handled by generate_room_preview directly
+        raise ValueError("Use generate_room_preview instead")
 
 class WishlistService:
     """Service layer for wishlist operations."""

@@ -1448,8 +1448,6 @@ class AIService:
                 return result
         except Exception as dalle_err:
             print(f"WARNING: [AI Service] TIER 3 failed (DALL-E 3): {dalle_err}")
-ge_path
-
         except Exception as error:
             print(f"ERROR: [AI Service] Room preview generation failed: {error}")
             raise

@@ -1328,10 +1328,23 @@ class AIService:
         """
         Main pipeline for room visualization.
         
-        Surgical Overlay with OpenCV: Keeps the user's room exactly 1=1.
+        TIER 1: Gemini AI holistic generation (best quality, like gemini.google.com)
+        TIER 2: Surgical OpenCV overlay (fallback, keeps room 1=1)
         """
+        
+        # === TIER 1: AI HOLISTIC GENERATION (Gemini) ===
         try:
-            # === SURGICAL OVERLAY ===
+            print(f"DEBUG: [AI Service] TIER 1: Attempting Gemini holistic generation for product {product.id}...")
+            result = AIService.generate_holistic_room_view(product, room_image_path, result_image_path)
+            if result and os.path.exists(result):
+                print(f"DEBUG: [AI Service] TIER 1 SUCCESS: Gemini holistic generation complete")
+                return result
+        except Exception as holistic_err:
+            print(f"WARNING: [AI Service] TIER 1 failed (Gemini holistic): {holistic_err}")
+
+        # === TIER 2: SURGICAL OVERLAY (OpenCV fallback) ===
+        try:
+            print(f"DEBUG: [AI Service] TIER 2: Falling back to surgical overlay for product {product.id}...")
             import cv2
             import numpy as np
 
@@ -1339,7 +1352,7 @@ class AIService:
             if room_bgr is None:
                 raise ValueError("Room image could not be loaded")
 
-            # Safely get door image path (avoids crash if 'image' has no file)
+            # Safely get door image path
             door_path = None
             if hasattr(product, 'image_no_bg') and product.image_no_bg and product.image_no_bg.name and os.path.exists(product.image_no_bg.path):
                 door_path = product.image_no_bg.path
@@ -1370,7 +1383,6 @@ class AIService:
                 wall_mask = SAMService.get_wall_mask(room_bgr, hint_box=detected_box)
                 corners = AIService.refine_corners_with_mask(detected_box, wall_mask, room_bgr)
                 
-                # Validation to prevent degenerate homography
                 area = 0.5 * abs(
                     (corners['top_left'][0] * (corners['top_right'][1] - corners['bottom_left'][1]) +
                      corners['top_right'][0] * (corners['bottom_left'][1] - corners['top_left'][1]) +
@@ -1386,13 +1398,7 @@ class AIService:
                 use_perspective = False
 
             # Remove old door
-            try:
-                client = AIService.get_gemini_client()
-                cleaned_room = remove_door_from_room_with_ai(room_bgr, detected_box, client)
-                print(f"DEBUG: [AI Service] Old door removed with AI for product {product.id}")
-            except Exception as removal_error:
-                print(f"WARNING: [AI Service] AI door removal failed, using OpenCV inpaint: {removal_error}")
-                cleaned_room = remove_door_from_room_locally(room_bgr, detected_box)
+            cleaned_room = remove_door_from_room_locally(room_bgr, detected_box)
 
             # Overlay new door
             if use_perspective:
@@ -1403,7 +1409,7 @@ class AIService:
             if not cv2.imwrite(result_image_path, final_room):
                 raise ValueError("Failed to save final room visualization")
 
-            print(f"DEBUG: [AI Service] Deterministic room preview ready: {result_image_path}")
+            print(f"DEBUG: [AI Service] TIER 2 SUCCESS: Surgical overlay ready: {result_image_path}")
             return result_image_path
 
         except Exception as error:
@@ -1452,9 +1458,15 @@ class AIService:
             door_mime = 'image/png' if door_path.lower().endswith('.png') else 'image/jpeg'
 
             prompt_text = (
-                "Birinchi rasmda xona ko'rsatilgan, ikkinchi rasmda eshik. "
-                "Shu eshikni xonadagi eshik o'rniga o'rnatib, yangi rasm yarat. "
-                "Xonaning devori, poli, yorug'ligi o'zgarmsin."
+                "Birinchi rasmda xona ko'rsatilgan, ikkinchi rasmda eshik ko'rsatilgan. "
+                "Shu eshikni xonadagi mavjud eshik o'rniga qo'yib ber. "
+                "Muhim qoidalar: "
+                "1. Xonaning devori, poli, gilamlari, yorug'ligi, ranglari AYNAN o'zgarishsiz qolsin. "
+                "2. Eshik xonadagi eski eshik joylashgan AYNAN shu joyga o'rnatilsin. "
+                "3. Eshikning o'lchami xonadagi eshik o'lchamiga mos bo'lsin. "
+                "4. Eshik perspektivasi (burchagi) xona perspektivasiga mos bo'lsin. "
+                "5. Natija fotorealistik bo'lsin, sun'iy ko'rinmasin. "
+                "6. Faqat bitta rasm qaytar — xona + yangi eshik."
             )
 
             contents = [
@@ -1464,10 +1476,9 @@ class AIService:
             ]
 
             gemini_models = [
-                'gemini-2.5-flash-image',
-                'gemini-3.1-flash-image-preview',
-                'gemini-3-pro-image-preview',
                 'gemini-2.0-flash-exp',
+                'gemini-2.5-flash-preview-04-17',
+                'gemini-2.0-flash-preview-image-generation',
             ]
 
             for model_name in gemini_models:

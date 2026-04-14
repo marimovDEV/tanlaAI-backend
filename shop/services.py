@@ -1513,8 +1513,8 @@ class AIService:
             ]
 
             gemini_models = [
-                'gemini-3-pro-image-preview',    # Nano Banana Pro (Professional)
-                'gemini-3.1-flash-image-preview',# Nano Banana 2 (High Speed)
+                'gemini-3.1-flash-image-preview',# Nano Banana 2 (High Speed, used in Gemini Web App)
+                'gemini-3-pro-image-preview',    # Nano Banana Pro (Highest Quality)
                 'gemini-2.5-flash-image',        # Standard
             ]
             
@@ -1524,14 +1524,15 @@ class AIService:
                 print(f"DEBUG: [AI Service] Using Nano Banana Engine with key {key[:10]}...")
                 client = genai.Client(api_key=key)
                 
-                # Optimized prompt for 'Nano Banana' professional features
+                # Specialized Nano Banana Integration Prompt
                 prompt_text = (
-                    "Professional Interior Design / Studio-Quality Door Replacement:\n"
-                    "1. First image is the original room. Second image is the target door asset.\n"
-                    "2. Replace the existing door in the room with the target door asset.\n"
-                    "3. PRESERVATION: Keep the wall texture, floor, lighting, and surrounding room elements 100% UNCHANGED.\n"
-                    "4. INTEGRATION: Match the door's 3D perspective and lighting exactly to the room's architecture.\n"
-                    "5. Output high-fidelity, photorealistic result for professional asset production."
+                    "Professional Interior Architecture Photography:\n"
+                    "1. SOURCE: First image is the original room. Second image is the target door product.\n"
+                    "2. ACTION: Seamlessly integrate the target door into the room's doorway.\n"
+                    "3. FIDELITY: Maintain the room's wall textures, floor shadows, and ambient lighting exactly as seen.\n"
+                    "4. BLENDING: The new door must look like it was physically part of the room during the original photoshoot.\n"
+                    "5. COMPOSITION: Match the door's 3D perspective and structural frame to the room's architectural lines.\n"
+                    "6. Result must be 100% photorealistic with zero artifacts."
                 )
                 
                 contents = [

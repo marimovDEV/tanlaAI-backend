@@ -780,10 +780,30 @@ def detect_door_opening_box(room_bgr, expected_aspect_ratio):
 
 
 def remove_door_from_room_locally(room_bgr, pixel_box):
-    # Simply return the room untouched. 
-    # Because drawing dark gray boxes or inpainting looks terrible if YOLO box is wrong. 
-    # Just paste over it naturally.
-    return room_bgr.copy()
+    """Remove old door using OpenCV inpainting — fills the area with wall texture."""
+    import cv2
+    import numpy as np
+
+    result = room_bgr.copy()
+    image_height, image_width = result.shape[:2]
+    x1, y1, x2, y2 = sanitize_pixel_box(pixel_box, image_width, image_height)
+
+    # Shrink inpaint area slightly to preserve wall edges/frame
+    pad_x = int((x2 - x1) * 0.05)
+    pad_y = int((y2 - y1) * 0.03)
+    rx1 = max(0, x1 + pad_x)
+    ry1 = max(0, y1 + pad_y)
+    rx2 = min(image_width, x2 - pad_x)
+    ry2 = min(image_height, y2 - pad_y)
+
+    # Create mask for the door area
+    mask = np.zeros((image_height, image_width), dtype=np.uint8)
+    mask[ry1:ry2, rx1:rx2] = 255
+
+    # Inpaint using TELEA algorithm (fills with surrounding texture)
+    result = cv2.inpaint(result, mask, inpaintRadius=7, flags=cv2.INPAINT_TELEA)
+
+    return result
 
 
 def remove_door_from_room_with_ai(room_bgr, pixel_box, client):

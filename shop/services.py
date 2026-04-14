@@ -1450,11 +1450,11 @@ class AIService:
             (door_alpha * 255).astype(np.uint8), (15, 15), 0
         ).astype(np.float32) / 255.0
 
-        # Alpha-blend door into room
+        # Alpha-blend NEW door into CLEANED room (not original!)
         for c in range(3):
             composite[y1:y2, x1:x2, c] = (
                 door_bgr_matched[:, :, c] * feather_mask +
-                room_bgr[y1:y2, x1:x2, c] * (1.0 - feather_mask)
+                cleaned_room[y1:y2, x1:x2, c] * (1.0 - feather_mask)
             ).astype(np.uint8)
 
         # Add shadow beneath door

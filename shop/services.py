@@ -772,11 +772,24 @@ def detect_door_opening_box(room_bgr, expected_aspect_ratio):
 
 def remove_door_from_room_locally(room_bgr, pixel_box):
     import cv2
+    import numpy as np
 
-    image_height, image_width = room_bgr.shape[:2]
-    # Minimize padding to avoid massive blurry stretched borders
-    mask = build_box_mask(image_height, image_width, pixel_box, pad_x_ratio=0.02, pad_y_ratio=0.02)
-    return cv2.inpaint(room_bgr, mask, 3, cv2.INPAINT_TELEA)
+    result = room_bgr.copy()
+    x1, y1, x2, y2 = pixel_box
+    
+    # Shrink the box slightly so we don't paint over the actual wall frame
+    pad_y = int((y2 - y1) * 0.02)
+    pad_x = int((x2 - x1) * 0.02)
+    
+    rx1 = max(0, x1 + pad_x)
+    ry1 = max(0, y1 + pad_y)
+    rx2 = min(result.shape[1], x2 - pad_x)
+    ry2 = min(result.shape[0], y2 - pad_y)
+    
+    # Draw a dark gray rectangle to simulate a dark room behind the door
+    cv2.rectangle(result, (rx1, ry1), (rx2, ry2), (30, 35, 40), -1)
+    
+    return result
 
 
 def remove_door_from_room_with_ai(room_bgr, pixel_box, client):
@@ -1359,34 +1372,10 @@ class AIService:
         """
         Main pipeline for room visualization.
         
-        STAGE 1: Full Scene AI Reconstruction (DALL-E 3 / Gemini)
-        STAGE 2: (Fallback) Surgical Overlay with OpenCV
+        Surgical Overlay with OpenCV: Keeps the user's room exactly 1=1.
         """
         try:
-            # === STAGE 1: FULL SCENE RECONSTRUCTION ===
-            print(f"DEBUG: [AI Service] Starting STAGE 1 (Holistic Reconstruction) for product {product.id}...")
-            try:
-                final_room_path = AIService.generate_holistic_room_view(
-                    product, 
-                    room_image_path, 
-                    result_image_path
-                )
-                print(f"DEBUG: [AI Service] STAGE 1 SUCCESS: {final_room_path}")
-                return final_room_path
-            except Exception as holistic_err:
-                error_msg = f"DALL-E 3 ERROR: {holistic_err}"
-                print(f"WARNING: [AI Service] STAGE 1 Holistic reconstruction failed: {error_msg}")
-                try:
-                    with open(os.path.join(settings.BASE_DIR, 'dalle_error.log'), 'a') as f:
-                        import traceback, time
-                        f.write(f"[{time.ctime()}] {error_msg}\n{traceback.format_exc()}\n")
-                    product.ai_error = error_msg
-                    product.save(update_fields=['ai_error'])
-                except:
-                    pass
-                print(f"WARNING: [AI Service] Falling back to STAGE 2 (Surgical overlay)...")
-
-            # === STAGE 2: SURGICAL OVERLAY (FALLBACK) ===
+            # === SURGICAL OVERLAY ===
             import cv2
             import numpy as np
 

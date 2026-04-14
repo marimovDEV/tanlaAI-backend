@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import patch
 
 from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -136,3 +137,54 @@ class AppFlowTests(TestCase):
         )
         self.assertEqual(mismatch.status_code, 400)
         self.assertEqual(mismatch.json()['code'], 'dimension_mismatch')
+
+    def test_ai_generate_stores_request_state_in_session(self):
+        viewer = TelegramUserFactory()
+        company = CompanyFactory()
+        product = ProductFactory(
+            company=company,
+            category=CategoryFactory(name='Premium Eshiklar'),
+            ai_status='completed',
+        )
+        self.login_as_telegram_user(viewer)
+
+        with patch('shop.api.views.ai_executor.submit') as submit_mock:
+            response = self.client.post(
+                f'/api/v1/products/{product.id}/ai-generate/',
+                {
+                    'room_photo': SimpleUploadedFile('room.png', b'fake-image', content_type='image/png'),
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['status'], 'ok')
+        self.assertTrue(payload['request_id'])
+
+        session = self.client.session
+        job_state = session[f'ai_gen_{product.id}']
+        self.assertEqual(job_state['status'], 'running')
+        self.assertEqual(job_state['request_id'], payload['request_id'])
+        submit_mock.assert_called_once()
+
+    def test_ai_generate_result_prefers_session_error_message(self):
+        viewer = TelegramUserFactory()
+        product = ProductFactory(ai_status='completed')
+        self.login_as_telegram_user(viewer)
+
+        session = self.client.session
+        session[f'ai_gen_{product.id}'] = {
+            'status': 'error',
+            'request_id': 'req-123',
+            'error_msg': 'Door asset missing',
+        }
+        session.save()
+
+        response = self.client.get(
+            f'/api/v1/products/{product.id}/ai-generate/result/',
+            {'request_id': 'req-123'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'error')
+        self.assertEqual(response.json()['message'], 'Door asset missing')

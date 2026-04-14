@@ -1535,7 +1535,6 @@ class AIService:
         lit_door_rgba = match_door_lighting_to_room(door_rgba, room_bgr, master_box)
         composite = overlay_door_into_room(cleaned_room, lit_door_rgba, master_box, add_shadow=True)
         composite = add_floor_contact_shadow(composite, master_box)
-_box)
         print(f"DEBUG: [Pipeline]   Composite created (room preserved, old door removed)")
 
         # Save OpenCV result as SAFE fallback

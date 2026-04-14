@@ -4,6 +4,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 import shlex
 import subprocess
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -31,14 +32,31 @@ from ..utils import verify_telegram_webapp_data
 ai_executor = ThreadPoolExecutor(max_workers=2)
 
 
-def run_api_ai_background(product_id, room_path, result_path, tg_user_id):
+def format_generation_error(error):
+    message = str(error or '').strip()
+    if not message:
+        return 'AI generation failed.'
+
+    lines = [line.strip() for line in message.splitlines() if line.strip()]
+    if not lines:
+        return 'AI generation failed.'
+
+    short_message = lines[-1]
+    return short_message[:300]
+
+
+def run_api_ai_background(session_key, session_data_key, product_id, room_path, result_path, tg_user_id):
     print(f"DEBUG: [AI Service] Background task STARTED for product {product_id}")
+    from django.contrib.sessions.backends.db import SessionStore
+
+    session = SessionStore(session_key=session_key)
     try:
         product = Product.objects.get(pk=product_id)
         # Use the new high-fidelity SAM + Perspective pipeline
         from ..services import AIService
         AIService.generate_room_preview(product, room_path, result_path)
 
+        ai_result = None
         if tg_user_id:
             user = TelegramUser.objects.filter(id=tg_user_id).first()
             if user:
@@ -63,14 +81,22 @@ def run_api_ai_background(product_id, room_path, result_path, tg_user_id):
                         message="Mijoz mahsulotni SI orqali vizualizatsiya qildi.",
                     )
 
-        product.ai_status = 'completed'
-        product.save(update_fields=['ai_status'])
+        data = session.get(session_data_key, {})
+        data['status'] = 'done'
+        if ai_result:
+            data['ai_result_id'] = ai_result.id
+        session[session_data_key] = data
         logger.info(f"DEBUG: [AI Service] Background task COMPLETED for product {product_id}")
     except Exception as error:
-        import traceback
         error_msg = traceback.format_exc()
-        Product.objects.filter(pk=product_id).update(ai_status='error', ai_error=error_msg)
+        Product.objects.filter(pk=product_id).update(ai_error=error_msg[:1000])
+        data = session.get(session_data_key, {})
+        data['status'] = 'error'
+        data['error_msg'] = format_generation_error(error)
+        session[session_data_key] = data
         logger.error(f"DEBUG: API AI generation error for product {product_id}: {error}")
+    finally:
+        session.save()
 
 
 def build_ai_result_payload(request, ai_result):
@@ -337,7 +363,11 @@ class ProductViewSet(viewsets.ModelViewSet):
                 }, status=status.HTTP_400_BAD_REQUEST)
 
         if product.ai_status == 'processing':
-            return Response({'status': 'processing'})
+            return Response({
+                'status': 'preparing',
+                'message': 'Mahsulot rasmi hali tayyorlanmoqda. Bir necha soniyadan keyin qayta urinib ko‘ring.',
+                'code': 'not_ready',
+            })
 
         # If background is not removed yet, trigger it now instead of failing
         if product.ai_status == 'none':
@@ -391,26 +421,73 @@ class ProductViewSet(viewsets.ModelViewSet):
             for chunk in room_photo.chunks():
                 destination.write(chunk)
 
-        product.ai_status = 'processing'
-        product.save(update_fields=['ai_status'])
+        if not request.session.session_key:
+            request.session.create()
+
+        session_key_data = f'ai_gen_{product.id}'
+        request.session[session_key_data] = {
+            'status': 'running',
+            'request_id': request_id,
+            'product_id': product.id,
+        }
+        request.session.modified = True
+        request.session.save()
 
         print(f"DEBUG: [AI Service] Submitting background task for product {product.id}")
-        ai_executor.submit(run_api_ai_background, product.id, room_path, result_path, tg_user.id)
+        ai_executor.submit(
+            run_api_ai_background,
+            request.session.session_key,
+            session_key_data,
+            product.id,
+            room_path,
+            result_path,
+            tg_user.id,
+        )
         print(f"DEBUG: [AI Service] Task submitted successfully")
 
-        return Response({'status': 'ok'})
+        return Response({'status': 'ok', 'request_id': request_id})
 
     @action(detail=True, methods=['get'], url_path='ai-generate/result', permission_classes=[permissions.AllowAny])
     def ai_generate_result(self, request, pk=None):
         product = self.get_object()
+        tg_user = get_tg_user(request)
+        session_key_data = f'ai_gen_{product.id}'
+        session_data = request.session.get(session_key_data, {})
+        request_id = str(request.query_params.get('request_id', '')).strip()
 
-        if product.ai_status == 'completed':
-            latest_result = AIResult.objects.filter(product=product).order_by('-created_at').first()
+        if session_data:
+            current_request_id = str(session_data.get('request_id', '')).strip()
+            if request_id and current_request_id and request_id != current_request_id:
+                return Response({'status': 'processing'})
+
+            session_status = session_data.get('status')
+            if session_status == 'done':
+                ai_result_id = session_data.get('ai_result_id')
+                if ai_result_id:
+                    ai_result = AIResult.objects.filter(id=ai_result_id).first()
+                    if ai_result:
+                        return Response(build_ai_result_payload(request, ai_result))
+                return Response({'status': 'done'})
+
+            if session_status == 'error':
+                return Response({
+                    'status': 'error',
+                    'message': session_data.get('error_msg') or 'AI generation failed.',
+                })
+
+            if session_status in {'running', 'processing', 'pending'}:
+                return Response({'status': 'processing'})
+
+        if tg_user:
+            latest_result = AIResult.objects.filter(product=product, user=tg_user).order_by('-created_at').first()
             if latest_result:
                 return Response(build_ai_result_payload(request, latest_result))
 
         if product.ai_status == 'error':
-            return Response({'status': 'error', 'message': 'AI generation failed.'})
+            return Response({
+                'status': 'error',
+                'message': format_generation_error(product.ai_error),
+            })
 
         return Response({'status': 'processing'})
 

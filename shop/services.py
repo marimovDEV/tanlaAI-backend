@@ -1356,12 +1356,27 @@ class AIService:
     @staticmethod
     def generate_room_preview(product, room_image_path, result_image_path):
         """
-        Deterministic room visualization pipeline:
-        1. Detect the existing door opening with YOLO (if configured) or OpenCV.
-        2. Remove the old door from the detected area with AI inpainting.
-        3. Overlay the selected product door into the exact detected box.
+        Main pipeline for room visualization.
+        
+        STAGE 1: Full Scene AI Reconstruction (DALL-E 3 / Gemini)
+        STAGE 2: (Fallback) Surgical Overlay with OpenCV
         """
         try:
+            # === STAGE 1: FULL SCENE RECONSTRUCTION ===
+            print(f"DEBUG: [AI Service] Starting STAGE 1 (Holistic Reconstruction) for product {product.id}...")
+            try:
+                final_room_path = AIService.generate_holistic_room_view(
+                    product, 
+                    room_image_path, 
+                    result_image_path
+                )
+                print(f"DEBUG: [AI Service] STAGE 1 SUCCESS: {final_room_path}")
+                return final_room_path
+            except Exception as holistic_err:
+                print(f"WARNING: [AI Service] STAGE 1 Holistic reconstruction failed: {holistic_err}")
+                print(f"WARNING: [AI Service] Falling back to STAGE 2 (Surgical overlay)...")
+
+            # === STAGE 2: SURGICAL OVERLAY (FALLBACK) ===
             import cv2
             import numpy as np
 
@@ -1369,15 +1384,21 @@ class AIService:
             if room_bgr is None:
                 raise ValueError("Room image could not be loaded")
 
-            door_path = product.image.path
-            if product.image_no_bg and product.image_no_bg.name and os.path.exists(product.image_no_bg.path):
+            # Safely get door image path (avoids crash if 'image' has no file)
+            door_path = None
+            if hasattr(product, 'image_no_bg') and product.image_no_bg and product.image_no_bg.name and os.path.exists(product.image_no_bg.path):
                 door_path = product.image_no_bg.path
-            elif product.original_image and product.original_image.name and os.path.exists(product.original_image.path):
+            elif hasattr(product, 'image') and product.image and product.image.name and os.path.exists(product.image.path):
+                door_path = product.image.path
+            elif hasattr(product, 'original_image') and product.original_image and product.original_image.name and os.path.exists(product.original_image.path):
                 door_path = product.original_image.path
+
+            if not door_path:
+                raise ValueError("No valid door image found for product")
 
             door_rgba = cv2.imread(door_path, cv2.IMREAD_UNCHANGED)
             if door_rgba is None:
-                raise ValueError("Door image could not be loaded")
+                raise ValueError("Door image could not be loaded via cv2")
             if door_rgba.ndim == 2:
                 door_rgba = cv2.cvtColor(door_rgba, cv2.COLOR_GRAY2BGRA)
             elif door_rgba.shape[2] == 3:
@@ -1387,22 +1408,20 @@ class AIService:
             expected_aspect_ratio = get_expected_door_aspect_ratio(product, door_rgba=door_rgba)
             detected_box, detection_method = detect_door_opening_box(room_bgr, expected_aspect_ratio)
             
-            # --- NEW: Scene Understanding with SAM ---
+            # Refine scene understanding with SAM
             try:
                 from .sam_utils import SAMService
                 print(f"DEBUG: [AI Service] Refining scene understanding with SAM for {product.id}...")
                 wall_mask = SAMService.get_wall_mask(room_bgr, hint_box=detected_box)
-                
-                # Use the wall mask to refine the corners from the raw detected_box
                 corners = AIService.refine_corners_with_mask(detected_box, wall_mask, room_bgr)
                 
-                # Basic validation to prevent degenerate homography
+                # Validation to prevent degenerate homography
                 area = 0.5 * abs(
                     (corners['top_left'][0] * (corners['top_right'][1] - corners['bottom_left'][1]) +
                      corners['top_right'][0] * (corners['bottom_left'][1] - corners['top_left'][1]) +
                      corners['bottom_left'][0] * (corners['top_left'][1] - corners['top_right'][1]))
                 )
-                if area < 500: # Opening too small
+                if area < 500:
                     raise ValueError("Refined corners produce degenerate area")
                     
                 print(f"DEBUG: [AI Service] Perspective corners identified: {corners}")
@@ -1411,20 +1430,7 @@ class AIService:
                 print(f"WARNING: [AI Service] SAM refinement failed, falling back to box: {sam_err}")
                 use_perspective = False
 
-            # PRIMARY: Holistic AI Reconstruction (Gemini generate_content)
-            try:
-                print(f"DEBUG: [AI Service] Starting HOLISTIC reconstruction for product {product.id}...")
-                final_room_path = AIService.generate_holistic_room_view(
-                    product, 
-                    room_image_path, 
-                    result_image_path
-                )
-                return final_room_path
-            except Exception as holistic_err:
-                print(f"WARNING: [AI Service] Holistic reconstruction failed: {holistic_err}")
-                print(f"WARNING: [AI Service] Falling back to surgical overlay...")
-
-            # FALLBACK: Surgical overlay (old method)
+            # Remove old door
             try:
                 client = AIService.get_gemini_client()
                 cleaned_room = remove_door_from_room_with_ai(room_bgr, detected_box, client)
@@ -1433,6 +1439,7 @@ class AIService:
                 print(f"WARNING: [AI Service] AI door removal failed, using OpenCV inpaint: {removal_error}")
                 cleaned_room = remove_door_from_room_locally(room_bgr, detected_box)
 
+            # Overlay new door
             if use_perspective:
                 final_room = AIService.overlay_door_perspective(cleaned_room, door_rgba, corners)
             else:

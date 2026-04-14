@@ -1470,11 +1470,111 @@ class AIService:
 
         print(f"DEBUG: [Pipeline]   Composite created (room preserved, old door removed)")
 
-        # Save final result directly (no AI — 100% stable)
+        # Save OpenCV result as SAFE fallback
         cv2.imwrite(result_image_path, composite)
-        print(f"DEBUG: [Pipeline] ✅ DONE: {result_image_path}")
+
+        # === STEP 4: AI POLISH (lighting/shadow only — structure locked) ===
+        try:
+            print(f"DEBUG: [Pipeline] Step 4: AI polish (lighting/shadows only)...")
+            polished = AIService.ai_polish_only(composite, result_image_path)
+            if polished and os.path.exists(polished):
+                # VALIDATE: AI must not change structure
+                polished_img = cv2.imread(polished, cv2.IMREAD_COLOR)
+                if polished_img is not None and polished_img.shape == room_bgr.shape:
+                    # Compare pixels OUTSIDE door area
+                    outside_mask = (mask == 0)
+                    orig_pixels = room_bgr[outside_mask].astype(np.float32)
+                    pol_pixels = polished_img[outside_mask].astype(np.float32)
+                    mse = np.mean((orig_pixels - pol_pixels) ** 2)
+                    print(f"DEBUG: [Pipeline]   Polish validation MSE: {mse:.1f}")
+
+                    if mse < 15:  # Very strict — almost identical
+                        print(f"DEBUG: [Pipeline]   ✅ AI polish PASSED — using polished result")
+                        return polished
+                    else:
+                        print(f"DEBUG: [Pipeline]   ❌ AI polish changed too much — using OpenCV result")
+        except Exception as e:
+            print(f"WARNING: [Pipeline] AI polish failed (using OpenCV): {e}")
+
+        print(f"DEBUG: [Pipeline] ✅ DONE (OpenCV): {result_image_path}")
         return result_image_path
 
+
+    @staticmethod
+    def ai_polish_only(composite_bgr, result_image_path):
+        """
+        AI POLISH ONLY — no structural changes.
+        Takes a finished composite and only improves lighting/shadows.
+        """
+        from google.genai import types
+        from google import genai
+        from PIL import Image as PILImage
+        from io import BytesIO
+        import cv2
+
+        api_keys_str = getattr(settings, 'GEMINI_API_KEYS', '')
+        api_keys = [k.strip() for k in api_keys_str.split(',') if k.strip()]
+        if not api_keys:
+            single_key = getattr(settings, 'GEMINI_API_KEY', '')
+            if single_key:
+                api_keys = [single_key]
+        if not api_keys:
+            raise ValueError("No GEMINI keys configured")
+
+        _, img_bytes = cv2.imencode('.png', composite_bgr)
+        img_bytes = img_bytes.tobytes()
+
+        # POLISH-ONLY prompt — no creativity allowed
+        prompt_text = (
+            "This is a finished interior photo with a door already installed.\n"
+            "Your ONLY job: improve the realism of lighting and shadows.\n\n"
+            "STRICT RULES:\n"
+            "- Do NOT change any objects, furniture, or structure\n"
+            "- Do NOT move, resize, or redesign the door\n"
+            "- Do NOT add or remove anything\n"
+            "- Do NOT change wall colors or textures\n"
+            "- ONLY adjust: shadow softness, light reflection on door, edge blending\n"
+            "- Return the same image with improved lighting realism\n"
+            "- This is NOT a generation task — it is a POLISH task"
+        )
+
+        contents = [
+            types.Part.from_bytes(data=img_bytes, mime_type='image/png'),
+            prompt_text,
+        ]
+
+        gemini_models = [
+            'gemini-2.0-flash-exp',
+            'gemini-2.0-flash',
+        ]
+
+        for key in api_keys:
+            client = genai.Client(api_key=key)
+            for model_name in gemini_models:
+                try:
+                    print(f"DEBUG: [AI Polish] Trying {model_name}...")
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            response_modalities=["IMAGE", "TEXT"],
+                        ),
+                    )
+                    if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                        for part in response.candidates[0].content.parts:
+                            if part.inline_data is not None:
+                                img = PILImage.open(BytesIO(part.inline_data.data))
+                                img.save(result_image_path, format='PNG')
+                                print(f"DEBUG: [AI Polish] SUCCESS: {model_name}")
+                                return result_image_path
+                except Exception as e:
+                    err_str = str(e)
+                    print(f"WARNING: [AI Polish] Failed {model_name}: {err_str[:200]}")
+                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
+                        break
+                    continue
+
+        raise ValueError("AI polish failed on all keys/models")
 
     @staticmethod
     def refine_door_edges_with_ai(composite_bgr, mask, room_image_path, result_image_path):

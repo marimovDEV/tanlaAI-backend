@@ -1400,9 +1400,14 @@ class AIService:
         mask = np.zeros((h, w), dtype=np.uint8)
         mask[y1:y2, x1:x2] = 255
 
-        # === STEP 2: CREATE ROUGH COMPOSITE (room 100% preserved) ===
-        print(f"DEBUG: [Pipeline] Step 2: Creating OpenCV composite...")
-        composite = room_bgr.copy()
+        # === STEP 2: REMOVE OLD DOOR (INPAINTING) ===
+        print(f"DEBUG: [Pipeline] Step 2: Removing old door (inpainting)...")
+        cleaned_room = remove_door_from_room_locally(room_bgr, detected_box)
+        print(f"DEBUG: [Pipeline]   Old door removed, wall filled with texture")
+
+        # === STEP 3: INSERT NEW DOOR (on clean wall) ===
+        print(f"DEBUG: [Pipeline] Step 3: Placing new door on clean wall...")
+        composite = cleaned_room.copy()
 
         # Resize door to fit detected box
         box_w = x2 - x1
@@ -1452,15 +1457,15 @@ class AIService:
         # Save composite as fallback
         cv2.imwrite(result_image_path, composite)
 
-        # === STEP 3: AI EDGE REFINEMENT (optional, constrained) ===
+        # === STEP 4: AI EDGE REFINEMENT (optional, constrained) ===
         try:
-            print(f"DEBUG: [Pipeline] Step 3: AI edge refinement...")
+            print(f"DEBUG: [Pipeline] Step 4: AI edge refinement...")
             ai_result = AIService.refine_door_edges_with_ai(
                 composite, mask, room_image_path, result_image_path
             )
             if ai_result and os.path.exists(ai_result):
-                # === STEP 4: VALIDATION ===
-                print(f"DEBUG: [Pipeline] Step 4: Validating AI result...")
+                # === STEP 5: VALIDATION ===
+                print(f"DEBUG: [Pipeline] Step 5: Validating AI result...")
                 ai_img = cv2.imread(ai_result, cv2.IMREAD_COLOR)
                 if ai_img is not None and ai_img.shape == room_bgr.shape:
                     # Check: pixels OUTSIDE mask should be nearly identical to original

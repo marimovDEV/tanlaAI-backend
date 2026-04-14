@@ -1524,15 +1524,15 @@ class AIService:
                 print(f"DEBUG: [AI Service] Using Nano Banana Engine with key {key[:10]}...")
                 client = genai.Client(api_key=key)
                 
-                # Specialized Nano Banana Integration Prompt
+                # Surgical AI Integration Prompt (Context Preservation)
                 prompt_text = (
-                    "Professional Interior Architecture Photography:\n"
-                    "1. SOURCE: First image is the original room. Second image is the target door product.\n"
-                    "2. ACTION: Seamlessly integrate the target door into the room's doorway.\n"
-                    "3. FIDELITY: Maintain the room's wall textures, floor shadows, and ambient lighting exactly as seen.\n"
-                    "4. BLENDING: The new door must look like it was physically part of the room during the original photoshoot.\n"
-                    "5. COMPOSITION: Match the door's 3D perspective and structural frame to the room's architectural lines.\n"
-                    "6. Result must be 100% photorealistic with zero artifacts."
+                    "STRICT IMAGE EDITING INSTRUCTION:\n"
+                    "1. REFERENCE: Look at the FIRST image (original room) and the SECOND image (target door).\n"
+                    "2. PRESERVATION: Keep the FIRST image 100% ABSOLUTELY UNCHANGED. Do not remodel, do not add furniture, "
+                    "do not change walls, floor, ceiling, or lighting of the room.\n"
+                    "3. ACTION: ONLY replace the existing door in the FIRST image with the door from the SECOND image.\n"
+                    "4. REALISM: Integrate the new door seamlessly, matching the room's current perspective and lighting.\n"
+                    "5. MANDATE: Your output MUST be the SAME ROOM from the first image. No fantasy, no enhancements."
                 )
                 
                 contents = [

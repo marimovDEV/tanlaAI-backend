@@ -1,7 +1,12 @@
 import numpy as np
 from django.test import SimpleTestCase
+from unittest.mock import patch
+import tempfile
+from pathlib import Path
+import cv2
 
 from shop.services import (
+    AIService,
     build_box_mask,
     detect_door_opening_box,
     detect_door_box_with_opencv,
@@ -94,3 +99,32 @@ class RoomPreviewPipelineTests(SimpleTestCase):
 
         self.assertIn(method, {'opencv-lines', 'opencv', 'default'})
         self.assertGreater(compute_iou(detected_box, expected_box), 0.55)
+
+    def test_generate_room_preview_regression_does_not_raise_name_error(self):
+        room = np.full((260, 180, 3), 228, dtype=np.uint8)
+        room[40:228, 62:118] = (55, 55, 55)
+        room[228:260, :] = (190, 190, 190)
+
+        door_rgba = np.zeros((180, 70, 4), dtype=np.uint8)
+        door_rgba[:, :, :3] = (235, 235, 235)
+        door_rgba[:, :, 3] = 255
+
+        class DummyProduct:
+            id = 999
+            width = 80
+            height = 200
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            room_path = str(Path(tmpdir) / 'room.png')
+            result_path = str(Path(tmpdir) / 'result.png')
+            self.assertTrue(cv2.imwrite(room_path, room))
+
+            with (
+                patch('shop.services.load_best_door_rgba', return_value=door_rgba),
+                patch('shop.services.detect_door_opening_box', return_value=((58, 36, 122, 230), 'mock')),
+                patch.object(AIService, 'refine_door_edges_with_ai', side_effect=ValueError('skip ai')),
+            ):
+                output_path = AIService.generate_room_preview(DummyProduct(), room_path, result_path)
+
+            self.assertEqual(output_path, result_path)
+            self.assertTrue(Path(result_path).exists())

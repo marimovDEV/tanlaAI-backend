@@ -1502,6 +1502,7 @@ class AIService:
         # --- Load door ---
         door_rgba = load_best_door_rgba(product)
         preview_metadata['pipeline']['door_asset_size'] = [int(door_rgba.shape[1]), int(door_rgba.shape[0])]
+        expected_aspect_ratio = get_expected_door_aspect_ratio(product, door_rgba=door_rgba)
 
         # === STEP 1: DETECT DOOR AREA + CREATE MASK ===
         print(f"DEBUG: [Pipeline] Step 1: Detecting door area...")
@@ -1546,7 +1547,7 @@ class AIService:
             refined_path = AIService.refine_door_edges_with_ai(composite, mask, room_image_path, result_image_path)
             if refined_path and os.path.exists(refined_path):
                 refined_img = cv2.imread(refined_path, cv2.IMREAD_COLOR)
-                is_valid, validation = validate_locked_scene_candidate(refined_img, composite, placement_box)
+                is_valid, validation = validate_locked_scene_candidate(refined_img, composite, master_box)
                 preview_metadata['pipeline']['ai_validation'] = validation
                 print(
                     "DEBUG: [Pipeline]   Refine validation "

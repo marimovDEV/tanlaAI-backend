@@ -1524,15 +1524,16 @@ class AIService:
                 print(f"DEBUG: [AI Service] Using Nano Banana Engine with key {key[:10]}...")
                 client = genai.Client(api_key=key)
                 
-                # Surgical AI Integration Prompt (Context Preservation)
+                # Professional Prompt Engineering (User's Methodology)
                 prompt_text = (
-                    "STRICT IMAGE EDITING INSTRUCTION:\n"
-                    "1. REFERENCE: Look at the FIRST image (original room) and the SECOND image (target door).\n"
-                    "2. PRESERVATION: Keep the FIRST image 100% ABSOLUTELY UNCHANGED. Do not remodel, do not add furniture, "
-                    "do not change walls, floor, ceiling, or lighting of the room.\n"
-                    "3. ACTION: ONLY replace the existing door in the FIRST image with the door from the SECOND image.\n"
-                    "4. REALISM: Integrate the new door seamlessly, matching the room's current perspective and lighting.\n"
-                    "5. MANDATE: Your output MUST be the SAME ROOM from the first image. No fantasy, no enhancements."
+                    "Instructions for Professional AI Visualization:\n"
+                    "1. ANALYZE: First image is the original room. Second image is the target door design.\n"
+                    "2. ACTION: Replace the existing old door area with the exact design of the door from the second image.\n"
+                    "3. PLACEMENT: Place the door base STRICTLY ON THE FLOOR LINE. It must be flush with the floor.\n"
+                    "4. SCALE: Ensure the door fits the door frame dimensions perfectly with seamless architectural integration.\n"
+                    "5. LIGHTING: Match the room's original lighting and shadows. Ensure natural reflections on the door surface.\n"
+                    "6. PRESERVATION: Maintain the original wall texture, floor, and room context 1:1. Do not remodel the room.\n"
+                    "Goal: A highly realistic interior design photo, photorealistic, 8k, architectural visualization."
                 )
                 
                 contents = [

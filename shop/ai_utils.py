@@ -127,15 +127,16 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         except Exception as e:
             print(f"   ⚠️ GPT-4o door analysis failed (using name): {e}")
     
-    # --- Step 3: DALL-E 3 generates the final image ---
-    print("🎨 Step 3: DALL-E 3 generating final image...")
-    
+    # Professional Prompt Engineering (User's Methodology)
     prompt = (
-        f"A real-world interior photograph from a client. HOUSE CONTEXT: {house_desc}. "
-        f"CRITICAL: Keep the room EXACTLY as seen. Do not add furniture, decorations, or change the architecture. "
-        f"ONLY ACTION: Replace the door in the photograph with this new model: {door_desc}. "
-        f"Ensure architectural integration and matching lighting, but do not enhance or remodel the scene. "
-        f"The result must be the exact same room, surgically edited."
+        f"A highly realistic architectural visualization. "
+        f"CONTEXT: A real-world room with these details: {house_desc}. "
+        f"TASK: Replace the existing old door with this new double door design: {door_desc}. "
+        f"PLACEMENT: Place the door base STRICTLY ON THE FLOOR LINE. It must be flush with the floor. "
+        f"INTEGRATION: Perform seamless architectural integration into the existing wall. "
+        f"LIGHTING: Match the natural lighting and shadows of the room exactly. "
+        f"PRESERVATION: Maintain the original wall texture, floor, and room context 1:1. "
+        f"Result: Photorealistic, 8k, professional interior design photograph."
     )
     
     print(f"   Prompt: {prompt[:150]}...")

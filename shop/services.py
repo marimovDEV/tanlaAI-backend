@@ -784,7 +784,8 @@ def detect_door_opening_box(room_bgr, expected_aspect_ratio):
 
 
 def remove_door_from_room_locally(room_bgr, pixel_box):
-    """Remove old door using OpenCV inpainting — fills the area with wall texture."""
+    """Remove old door + frame + threshold using OpenCV inpainting.
+    Expands the area slightly to ensure frame and threshold are fully removed."""
     import cv2
     import numpy as np
 
@@ -792,20 +793,24 @@ def remove_door_from_room_locally(room_bgr, pixel_box):
     image_height, image_width = result.shape[:2]
     x1, y1, x2, y2 = sanitize_pixel_box(pixel_box, image_width, image_height)
 
-    # Shrink inpaint area slightly to preserve wall edges/frame
-    pad_x = int((x2 - x1) * 0.05)
-    pad_y = int((y2 - y1) * 0.03)
-    rx1 = max(0, x1 + pad_x)
-    ry1 = max(0, y1 + pad_y)
-    rx2 = min(image_width, x2 - pad_x)
-    ry2 = min(image_height, y2 - pad_y)
+    # EXPAND inpaint area to cover frame + threshold (opposite of shrinking)
+    pad_x = int((x2 - x1) * 0.08)  # 8% expansion horizontally
+    pad_y = int((y2 - y1) * 0.05)  # 5% expansion vertically
+    rx1 = max(0, x1 - pad_x)
+    ry1 = max(0, y1 - pad_y)
+    rx2 = min(image_width, x2 + pad_x)
+    ry2 = min(image_height, y2 + pad_y)
 
-    # Create mask for the door area
+    # Create mask for the door + frame area
     mask = np.zeros((image_height, image_width), dtype=np.uint8)
     mask[ry1:ry2, rx1:rx2] = 255
 
-    # Inpaint using TELEA algorithm (fills with surrounding texture)
-    result = cv2.inpaint(result, mask, inpaintRadius=7, flags=cv2.INPAINT_TELEA)
+    # Dilate mask to catch any remaining frame edges
+    kernel = np.ones((15, 15), np.uint8)
+    mask = cv2.dilate(mask, kernel, iterations=1)
+
+    # Inpaint using TELEA algorithm (fills with surrounding wall texture)
+    result = cv2.inpaint(result, mask, inpaintRadius=10, flags=cv2.INPAINT_TELEA)
 
     return result
 
@@ -1396,9 +1401,20 @@ class AIService:
         x1, y1, x2, y2 = detected_box
         print(f"DEBUG: [Pipeline]   Door detected at ({x1},{y1})-({x2},{y2}) via {detection_method}")
 
-        # Create binary mask (white = door area to edit, black = preserve)
+        # Create binary mask (white = door + frame area, black = preserve)
         mask = np.zeros((h, w), dtype=np.uint8)
-        mask[y1:y2, x1:x2] = 255
+        # Expand mask 10% beyond detected box to cover frame + threshold
+        expand_x = int((x2 - x1) * 0.10)
+        expand_y = int((y2 - y1) * 0.05)
+        mx1 = max(0, x1 - expand_x)
+        my1 = max(0, y1 - expand_y)
+        mx2 = min(w, x2 + expand_x)
+        my2 = min(h, y2 + expand_y)
+        mask[my1:my2, mx1:mx2] = 255
+
+        # Dilate mask further to catch frame edges (critical fix)
+        kernel = np.ones((20, 20), np.uint8)
+        mask = cv2.dilate(mask, kernel, iterations=1)
 
         # === STEP 2: REMOVE OLD DOOR (INPAINTING) ===
         print(f"DEBUG: [Pipeline] Step 2: Removing old door (inpainting)...")

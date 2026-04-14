@@ -1,191 +1,146 @@
+"""
+DALL-E 3 + GPT-4o Door Visualization.
+Proven pipeline: GPT-4o analyzes both images, DALL-E 3 generates the final result.
+"""
 import os
-import time
-import requests
+import io
 import base64
-import uuid
 import tempfile
 import traceback
-import io
+import requests
 from PIL import Image
 from openai import OpenAI
 from django.conf import settings
 
+
 def log_error(msg):
-    with open('ai_error.log', 'a') as f:
-        f.write(f"[{time.ctime()}] {msg}\n")
+    import time
+    try:
+        with open('ai_error.log', 'a') as f:
+            f.write(f"[{time.ctime()}] {msg}\n")
+    except:
+        pass
     print(msg)
 
+
 def load_visualization_metadata(image_path):
-    """
-    Kechki payt metadata fayllarini yuklash uchun funksiya.
-    Hozirgi yangi pipeline'da metadata alohida faylda saqlanmaydi, 
-    shuning uchun None qaytaramiz.
-    """
+    """Legacy stub - not used in new pipeline."""
     return None
+
+
+def _get_openai_client():
+    """Get OpenAI client with API key from settings."""
+    api_key = getattr(settings, 'OPENAI_API_KEY', None) or os.environ.get('OPENAI_API_KEY', '')
+    if not api_key or not str(api_key).strip().startswith('sk-'):
+        raise ValueError(f"OpenAI API key not found or invalid")
+    return OpenAI(api_key=api_key.strip())
+
+
+def _encode_image_for_gpt(image_path, max_size=800):
+    """Encode an image to base64 for GPT-4o, with size limit."""
+    with Image.open(image_path) as img:
+        img.thumbnail((max_size, max_size))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=80)
+        return base64.b64encode(buf.getvalue()).decode('utf-8')
+
 
 def visualize_door_in_room(product, room_image_path, result_image_path, box_1000=None, override_prompt=None):
     """
-    Mebel Bot'ning OpenAI (DALL-E 2 / DALL-E 3) vizualizatsiya logikasi.
+    Full Scene AI Reconstruction using GPT-4o + DALL-E 3.
+    
+    1. GPT-4o analyzes the room photo → text description
+    2. GPT-4o analyzes the door product → text description  
+    3. DALL-E 3 generates a new photorealistic room with the door installed
     """
-    print(f"\n🎨 === ESHIK VIZUALIZATSIYASI (Mebel Bot Pipeline) ===")
-    print(f"📸 Uy rasmi: {room_image_path}")
+    print(f"\n🎨 === DALL-E 3 VISUALIZATION START ===")
+    
+    client = _get_openai_client()
     
     door_name = product.name if hasattr(product, 'name') else 'Door'
+    
+    # Get door image path
     door_image_path = None
-    
     if hasattr(product, 'image_no_bg') and product.image_no_bg and product.image_no_bg.name:
-        door_image_path = product.image_no_bg.path
-    elif hasattr(product, 'image') and product.image and product.image.name:
-        door_image_path = product.image.path
-        
-    print(f"🚪 Eshik: {door_name}")
-    print(f"🖼️ Eshik rasmi: {'Bor ✅' if door_image_path else 'Yo`q ❌'}")
-
-    api_key = getattr(settings, 'OPENAI_API_KEY', None) or os.environ.get('OPENAI_API_KEY', '')
-
-    if not api_key or not str(api_key).strip().startswith('sk-'):
-        api_key_str = str(api_key).strip() if api_key else "None"
-        raise Exception(f"OpenAI API key topilmadi yoki noto'g'ri formatda! (Boslanishi: {api_key_str[:7]}...)")
-
-    client = OpenAI(api_key=api_key)
-
-    # Rasmlarni 1024x1024 GA KELTIRISH (DALL-E 2 talabi)
-    def prep_image(path):
-        img_temp = tempfile.NamedTemporaryFile(suffix='.png', delete=False).name
-        with Image.open(path) as img:
-            img = img.convert('RGBA')
-            # Resize
-            img = img.resize((1024, 1024), Image.Resampling.LANCZOS)
-            img.save(img_temp, format='PNG')
-        return img_temp
-
-    room_temp = prep_image(room_image_path)
-    door_temp = prep_image(door_image_path) if door_image_path else None
-
-    # Asosiy logikani try-catch ichida qilamiz, ishlamasa DALL-E 3 fallback ishlaydi
-    try:
-        url_result = None
-
-        if door_temp:
-             print('\n🚀 images.edit: 2 ta rasm (uy + eshik) yondashuvi...')
-             
-             prompt = (
-                 f"You have TWO images:\n"
-                 f"IMAGE 1 (house): Real photo of a house entrance/hallway\n"
-                 f"IMAGE 2 (door product): The exact door \"{door_name}\" to be installed\n\n"
-                 f"TASK: Install the door from IMAGE 2 into the house entrance in IMAGE 1.\n"
-                 f"- Keep the house in IMAGE 1 EXACTLY the same (walls, floor, ceiling, colors, lighting)\n"
-                 f"- Replace the existing door with the EXACT door shown in IMAGE 2 (same design, color, pattern)\n"
-                 f"- The door must fit naturally in the existing doorframe\n"
-                 f"- Result: realistic interior design preview photo"
-             )
-
-             # Python SDK da 'image' ro'yxatni qabul qilmaydi,
-             # DALL-E 2 faqat bitta rasm (yoki mask) qabul qiladi. 
-             # Lekin Mebel bot dagi "images.edit" bu yerda muqarrar fail bo'ladi yoki 
-             # shunchaki house'ni editlaydi. Uni 100% o'xshatish uchun quyidagicha qilinadi:
-             
-             with open(room_temp, 'rb') as f_room:
-                 response = client.images.edit(
-                     model="dall-e-2",
-                     image=f_room,
-                     prompt=prompt,
-                     n=1,
-                     size="1024x1024"
-                 )
-                 url_result = response.data[0].url
-        else:
-             print('\n🚀 images.edit: 1 ta rasm (faqat uy) yondashuvi...')
-             prompt = f"Edit this house entrance photo: replace the existing door with a \"{door_name}\" style door. Keep everything else exactly the same. Professional interior photography quality."
-             
-             with open(room_temp, 'rb') as f_room:
-                 response = client.images.edit(
-                     model="dall-e-2",
-                     image=f_room,
-                     prompt=prompt,
-                     n=1,
-                     size="1024x1024"
-                 )
-                 url_result = response.data[0].url
-
-        print('✅ images.edit muvaffaqiyatli!')
-        
-        # Rasmni saqlab olish
-        img_data = requests.get(url_result).content
-        with open(result_image_path, 'wb') as handler:
-            handler.write(img_data)
-        
-        # Clean up
-        if os.path.exists(room_temp): os.remove(room_temp)
-        if door_temp and os.path.exists(door_temp): os.remove(door_temp)
-        return result_image_path
-
-    except Exception as e:
-        err_msg = f"XATO (images.edit): {str(e)}\n{traceback.format_exc()}"
-        log_error(err_msg)
-        print("\n⚠️ DALL-E 3 fallback ishga tushmoqda...")
-        
-        # FALLBACK LOGIC
         try:
-            return fallback_with_dalle(client, door_name, room_image_path, door_image_path, result_image_path)
-        except Exception as e2:
-            err_msg_fb = f"XATO (fallback): {str(e2)}\n{traceback.format_exc()}"
-            log_error(err_msg_fb)
-            raise e2
-
-def fallback_with_dalle(client, door_name, room_image_path, door_image_path, result_image_path):
-    print('\n🔄 === DALL-E 3 FALLBACK ===')
+            if os.path.exists(product.image_no_bg.path):
+                door_image_path = product.image_no_bg.path
+        except:
+            pass
+    if not door_image_path and hasattr(product, 'original_image') and product.original_image and product.original_image.name:
+        try:
+            if os.path.exists(product.original_image.path):
+                door_image_path = product.original_image.path
+        except:
+            pass
+    if not door_image_path and hasattr(product, 'image') and product.image and product.image.name:
+        try:
+            if os.path.exists(product.image.path):
+                door_image_path = product.image.path
+        except:
+            pass
     
-    house_desc = 'modern house entrance with pink walls'
-    door_desc = door_name
-
-    def encode_image(image_path):
-        with Image.open(image_path) as img:
-            # Resize for GPT-4o to save tokens and avoid payload limit
-            img.thumbnail((800, 800))
-            buffered = io.BytesIO()
-            img.save(buffered, format="JPEG", quality=80)
-            return base64.b64encode(buffered.getvalue()).decode('utf-8')
-
+    print(f"🚪 Door: {door_name}")
+    print(f"📸 Room: {room_image_path}")
+    print(f"🖼️ Door Image: {door_image_path or 'N/A'}")
+    
+    # --- Step 1: GPT-4o analyzes the room ---
+    house_desc = "modern house entrance with light walls and wooden floor"
     try:
-        base64_room = encode_image(room_image_path)
+        print("📝 Step 1: GPT-4o analyzing room...")
+        base64_room = _encode_image_for_gpt(room_image_path)
         r = client.chat.completions.create(
-            model='gpt-4o', 
-            messages=[{ 
-                'role': 'user', 
+            model='gpt-4o',
+            messages=[{
+                'role': 'user',
                 'content': [
-                    {"type": "text", "text": "Describe this house entrance: wall color, floor, ceiling. Max 50 words. English."},
+                    {"type": "text", "text": "Describe this room/house entrance in detail: wall color, floor type, ceiling, curtains, furniture, lighting. Max 80 words. English only."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_room}", "detail": "low"}}
                 ]
-            }], 
-            max_tokens=120
+            }],
+            max_tokens=150
         )
         house_desc = r.choices[0].message.content
+        print(f"   Room description: {house_desc[:100]}...")
     except Exception as e:
-        print(f"GPT-4o room analysis error: {e}")
-
+        print(f"   ⚠️ GPT-4o room analysis failed (using default): {e}")
+    
+    # --- Step 2: GPT-4o analyzes the door ---
+    door_desc = door_name
     if door_image_path:
         try:
-            base64_door = encode_image(door_image_path)
+            print("📝 Step 2: GPT-4o analyzing door...")
+            base64_door = _encode_image_for_gpt(door_image_path)
             r = client.chat.completions.create(
-                model='gpt-4o', 
-                messages=[{ 
-                    'role': 'user', 
+                model='gpt-4o',
+                messages=[{
+                    'role': 'user',
                     'content': [
-                        {"type": "text", "text": "Describe this door: material, color, style, panel design. Max 40 words. English."},
+                        {"type": "text", "text": "Describe this door in detail: material, color, pattern, handle style, panel design. Max 50 words. English only."},
                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_door}", "detail": "low"}}
                     ]
-                }], 
-                max_tokens=100
+                }],
+                max_tokens=120
             )
             door_desc = r.choices[0].message.content
+            print(f"   Door description: {door_desc[:100]}...")
         except Exception as e:
-            print(f"GPT-4o door analysis error: {e}")
-
-    prompt = f"Photorealistic interior photo. House entrance: {house_desc}. New door installed: {door_desc} (product: {door_name}). Door fits perfectly. Professional interior design photo, natural lighting."
+            print(f"   ⚠️ GPT-4o door analysis failed (using name): {e}")
     
-    print(f"DALL-E 3 Prompt: {prompt}")
-
+    # --- Step 3: DALL-E 3 generates the final image ---
+    print("🎨 Step 3: DALL-E 3 generating final image...")
+    
+    prompt = (
+        f"Photorealistic interior photograph of a house entrance. "
+        f"Room details: {house_desc}. "
+        f"A brand new door has been installed in the doorway: {door_desc}. "
+        f"The door fits perfectly in the existing door frame. "
+        f"Professional architectural photography, natural indoor lighting, "
+        f"realistic shadows on the floor, high resolution interior design photo."
+    )
+    
+    print(f"   Prompt: {prompt[:150]}...")
+    
     res = client.images.generate(
         model='dall-e-3',
         prompt=prompt,
@@ -193,12 +148,16 @@ def fallback_with_dalle(client, door_name, room_image_path, door_image_path, res
         quality='hd',
         n=1
     )
-
-    print('✅ DALL-E 3 tayyor')
     
     url_result = res.data[0].url
+    print(f"   ✅ DALL-E 3 image URL received!")
+    
+    # Download and save
     img_data = requests.get(url_result).content
-    with open(result_image_path, 'wb') as handler:
-        handler.write(img_data)
-        
+    with open(result_image_path, 'wb') as f:
+        f.write(img_data)
+    
+    print(f"   ✅ Saved to: {result_image_path}")
+    print(f"🎨 === DALL-E 3 VISUALIZATION COMPLETE ===\n")
+    
     return result_image_path

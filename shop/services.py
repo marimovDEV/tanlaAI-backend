@@ -1373,7 +1373,16 @@ class AIService:
                 print(f"DEBUG: [AI Service] STAGE 1 SUCCESS: {final_room_path}")
                 return final_room_path
             except Exception as holistic_err:
-                print(f"WARNING: [AI Service] STAGE 1 Holistic reconstruction failed: {holistic_err}")
+                error_msg = f"DALL-E 3 ERROR: {holistic_err}"
+                print(f"WARNING: [AI Service] STAGE 1 Holistic reconstruction failed: {error_msg}")
+                try:
+                    with open(os.path.join(settings.BASE_DIR, 'dalle_error.log'), 'a') as f:
+                        import traceback, time
+                        f.write(f"[{time.ctime()}] {error_msg}\n{traceback.format_exc()}\n")
+                    product.ai_error = error_msg
+                    product.save(update_fields=['ai_error'])
+                except:
+                    pass
                 print(f"WARNING: [AI Service] Falling back to STAGE 2 (Surgical overlay)...")
 
             # === STAGE 2: SURGICAL OVERLAY (FALLBACK) ===

@@ -771,25 +771,10 @@ def detect_door_opening_box(room_bgr, expected_aspect_ratio):
 
 
 def remove_door_from_room_locally(room_bgr, pixel_box):
-    import cv2
-    import numpy as np
-
-    result = room_bgr.copy()
-    x1, y1, x2, y2 = pixel_box
-    
-    # Shrink the box slightly so we don't paint over the actual wall frame
-    pad_y = int((y2 - y1) * 0.02)
-    pad_x = int((x2 - x1) * 0.02)
-    
-    rx1 = max(0, x1 + pad_x)
-    ry1 = max(0, y1 + pad_y)
-    rx2 = min(result.shape[1], x2 - pad_x)
-    ry2 = min(result.shape[0], y2 - pad_y)
-    
-    # Draw a dark gray rectangle to simulate a dark room behind the door
-    cv2.rectangle(result, (rx1, ry1), (rx2, ry2), (30, 35, 40), -1)
-    
-    return result
+    # Simply return the room untouched. 
+    # Because drawing dark gray boxes or inpainting looks terrible if YOLO box is wrong. 
+    # Just paste over it naturally.
+    return room_bgr.copy()
 
 
 def remove_door_from_room_with_ai(room_bgr, pixel_box, client):

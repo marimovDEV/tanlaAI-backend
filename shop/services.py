@@ -1468,42 +1468,11 @@ class AIService:
                     composite[sy, x1:x2].astype(np.float32) * (1.0 - 0.3 * fade), 0, 255
                 ).astype(np.uint8)
 
-        print(f"DEBUG: [Pipeline]   Composite created (room 100% preserved outside door)")
+        print(f"DEBUG: [Pipeline]   Composite created (room preserved, old door removed)")
 
-        # Save composite as fallback
+        # Save final result directly (no AI — 100% stable)
         cv2.imwrite(result_image_path, composite)
-
-        # === STEP 4: AI EDGE REFINEMENT (optional, constrained) ===
-        try:
-            print(f"DEBUG: [Pipeline] Step 4: AI edge refinement...")
-            ai_result = AIService.refine_door_edges_with_ai(
-                composite, mask, room_image_path, result_image_path
-            )
-            if ai_result and os.path.exists(ai_result):
-                # === STEP 5: VALIDATION ===
-                print(f"DEBUG: [Pipeline] Step 5: Validating AI result...")
-                ai_img = cv2.imread(ai_result, cv2.IMREAD_COLOR)
-                if ai_img is not None and ai_img.shape == room_bgr.shape:
-                    # Check: pixels OUTSIDE mask should be nearly identical to original
-                    outside_mask = (mask == 0)
-                    original_outside = room_bgr[outside_mask].astype(np.float32)
-                    result_outside = ai_img[outside_mask].astype(np.float32)
-                    mse = np.mean((original_outside - result_outside) ** 2)
-                    similarity = max(0, 100 - mse)
-                    print(f"DEBUG: [Pipeline]   Room preservation score: {similarity:.1f}/100 (MSE: {mse:.1f})")
-
-                    if similarity >= 85:
-                        print(f"DEBUG: [Pipeline]   ✅ AI result PASSED validation")
-                        return ai_result
-                    else:
-                        print(f"DEBUG: [Pipeline]   ❌ AI result FAILED validation (room changed too much, using composite)")
-                else:
-                    print(f"DEBUG: [Pipeline]   ❌ AI result has wrong dimensions, using composite")
-        except Exception as e:
-            print(f"WARNING: [Pipeline] AI refinement failed: {e}")
-
-        # === FALLBACK: Return raw composite (room 100% preserved) ===
-        print(f"DEBUG: [Pipeline] Returning pre-composite (guaranteed room preservation)")
+        print(f"DEBUG: [Pipeline] ✅ DONE: {result_image_path}")
         return result_image_path
 
 

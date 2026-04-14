@@ -590,25 +590,24 @@ def default_door_box(image_width, image_height, expected_aspect_ratio):
 
 def normalize_door_opening_box(pixel_box, image_width, image_height, expected_aspect_ratio):
     left, top, right, bottom = sanitize_pixel_box(pixel_box, image_width, image_height)
+
+    # Trust the detector. Just make sure the box is at least a minimum viable size.
     width = right - left
     height = bottom - top
 
-    target_aspect_ratio = min(0.85, max(0.24, expected_aspect_ratio * 1.18))
-    min_height = int(round(image_height * 0.48))
-    desired_height = max(height, min_height)
-    desired_width = max(width, int(round(desired_height * target_aspect_ratio)))
-    desired_width = min(desired_width, int(round(image_width * 0.72)))
+    min_width = int(image_width * 0.15)
+    min_height = int(image_height * 0.30)
 
-    center_x = (left + right) / 2.0
-    
-    # v47.2 enhancement: Be more aggressive about grounding the door
-    # If the bottom is already low in the image, push it a bit further to ensure it hits floor
-    if bottom > image_height * 0.8:
-        bottom = min(image_height, bottom + int(image_height * 0.02))
-        
-    top = max(0, int(round(bottom - desired_height)))
-    left = int(round(center_x - (desired_width / 2.0)))
-    right = int(round(center_x + (desired_width / 2.0)))
+    if width < min_width or height < min_height:
+        # Box too small — fall back to center-based default
+        box_height = int(round(image_height * 0.65))
+        box_width = int(round(box_height * expected_aspect_ratio))
+        box_width = max(min_width, min(box_width, int(image_width * 0.55)))
+        center_x = (left + right) / 2.0
+        left = int(round(center_x - box_width / 2.0))
+        right = left + box_width
+        top = max(0, bottom - box_height)
+
     return sanitize_pixel_box((left, top, right, bottom), image_width, image_height)
 
 

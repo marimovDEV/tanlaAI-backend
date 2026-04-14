@@ -793,7 +793,10 @@ def remove_door_from_room_with_ai(room_bgr, pixel_box, client):
         reference_image=types.Image(image_bytes=room_buf.tobytes()),
         reference_id=0,
     )
-    mask_image = types.Image(image_bytes=mask_buf.tobytes())
+    mask_reference_image = types.RawReferenceImage(
+        reference_image=types.Image(image_bytes=mask_buf.tobytes()),
+        reference_id=1,
+    )
     prompt = (
         "Completely remove the door frame and internal void from ONLY the masked area. "
         "Fill it with the exact same wall texture, color, and finish as the neighboring wall. "
@@ -807,12 +810,12 @@ def remove_door_from_room_with_ai(room_bgr, pixel_box, client):
             response = client.models.edit_image(
                 model='imagen-3.0-capability-001',
                 prompt=prompt,
-                reference_images=[reference_image],
+                reference_images=[reference_image, mask_reference_image],
                 config=types.EditImageConfig(
                     edit_mode=edit_mode,
+                    mask_reference_id=1,
                     number_of_images=1,
                     output_mime_type='image/png',
-                    mask=mask_image,
                 ),
             )
             if not response.generated_images:
@@ -827,10 +830,13 @@ def remove_door_from_room_with_ai(room_bgr, pixel_box, client):
             if cleaned.shape[:2] != room_bgr.shape[:2]:
                 cleaned = cv2.resize(cleaned, (image_width, image_height), interpolation=cv2.INTER_LINEAR)
             return cleaned
-        except Exception as exc:
-            last_error = exc
+        except Exception as e:
+            last_error = e
+            continue
 
-    raise last_error or ValueError("AI door removal failed")
+    if last_error:
+        print(f"WARNING: [AI Service] Imagen 3 inpainting failed: {last_error}")
+    return room_bgr.copy()
 
 
 def apply_soft_shadow(room_bgr, alpha_mask, left, top, strength=0.18):

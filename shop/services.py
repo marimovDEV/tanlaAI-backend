@@ -1524,16 +1524,15 @@ class AIService:
                 print(f"DEBUG: [AI Service] Using Nano Banana Engine with key {key[:10]}...")
                 client = genai.Client(api_key=key)
                 
-                # Specialized Design Preservation Prompt (User's Methodology v2)
+                # High-Fidelity Backlit & Pattern Preservation (User's Methodology v3)
                 prompt_text = (
                     "PRECISION ARCHITECTURAL VISUALIZATION INSTRUCTIONS:\n"
-                    "1. ANALYZE: First image is the original room. Second image is the TARGET DOOR DESIGN.\n"
-                    "2. PRESERVE DESIGN: Maintain the EXACT intricate glass panel pattern and the lower panel carvings of the NEW DOOR IMAGE. "
-                    "DO NOT create a full glass door. Keep the solid parts and proportions of the target door design 1:1.\n"
-                    "3. PLACEMENT: Replace the old door with this precise new door. It must be FLUSH WITH THE FLOOR and integrated into the wall.\n"
-                    "4. CONTEXT: Maintain all original room elements (rug, curtains, walls, furniture) 100% UNCHANGED.\n"
-                    "5. LIGHTING: Apply realistic lighting and shadows that match the room, filtering through the intricate glass if applicable.\n"
-                    "Mandate: The output must be the original room with the EXACT target door model installed."
+                    "1. DESIGN FIDELITY: Maintain the EXACT intricate gold-etched pattern and dark glass style of the CHOSEN DOOR IMAGE.\n"
+                    "2. REPLACEMENT: Replace the old door in the original room with this new door model.\n"
+                    "3. BACKLIT ILLUMINATION: Create a strong 'balkon' or 'terrace' feel. Integrate the new door with powerful backlit illumination coming from BEHIND it. "
+                    "This backlighting must filter vividly through the dark glass and the intricate gold patterns, illuminating them brightly.\n"
+                    "4. ARCHITECTURAL BLEND: Seamlessly blend the door frame with the existing ornate cornice and room structure, ensuring it is flush with the floor.\n"
+                    "5. CONTEXT PRESERVATION: Maintain all foreground elements (carpet, curtains, radiator, pillows, furniture) from the original room 100% UNCHANGED."
                 )
                 
                 contents = [

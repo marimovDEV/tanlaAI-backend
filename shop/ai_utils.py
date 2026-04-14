@@ -127,15 +127,15 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         except Exception as e:
             print(f"   ⚠️ GPT-4o door analysis failed (using name): {e}")
     
-    # Specialized Design Preservation (User's Methodology v2)
+    # High-Fidelity Backlit & Pattern Preservation (User's Methodology v3)
     prompt = (
         f"EXTREMELY PRECISE ARCHITECTURAL VISUALIZATION. "
         f"CONTEXT: A real-world room ({house_desc}). "
-        f"TASK: Replace the existing old door with the EXACT NEW MODEL: {door_desc}. "
-        f"PREREQUISITE 1: Maintain the exact intricate glass panel pattern and original lower panel carvings of the target door. "
-        f"PREREQUISITE 2: DO NOT create a full glass door. Keep all solid parts and structural design 1:1. "
-        f"PREREQUISITE 3: Place the door base FLUSH WITH THE FLOOR and integrate into the wall. "
-        f"MAINTENANCE: Keep the rug, curtains, and all furniture 100% UNCHANGED. "
+        f"TASK: Replace original door with EXACT NEW MODEL: {door_desc}. "
+        f"LIGHTING DESIGN: Create a strong 'balkon/terrace' feel. Integrate the door with powerful BACKLIT ILLUMINATION coming from BEHIND it. "
+        f"This backlighting must filter vividly through the DARK GLASS and GOLD-ETCHED PATTERNS, illuminating them brightly. "
+        f"FIDELITY: Maintain the intricate glass and panel details of the new door model 1:1. "
+        f"PRESERVATION: Keep the rug, curtains, and all foreground furniture 100% UNCHANGED. "
         f"Photorealistic, 8k, professional interior catalog style."
     )
     

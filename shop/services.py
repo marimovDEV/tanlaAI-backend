@@ -579,13 +579,17 @@ def detect_door_box_with_opencv(room_bgr, expected_aspect_ratio):
 
 
 def default_door_box(image_width, image_height, expected_aspect_ratio):
-    box_height = int(round(image_height * 0.72))
+    # Professional Grounding: Modern doors start from floor level.
+    # We set the bottom at 97% of image height to ensure it sits on the floor.
+    box_height = int(round(image_height * 0.82)) 
     box_width = int(round(box_height * expected_aspect_ratio))
     box_width = max(int(image_width * 0.18), min(box_width, int(image_width * 0.55)))
 
     left = int(round((image_width - box_width) / 2.0))
-    top = int(round(image_height * 0.14))
-    return sanitize_pixel_box((left, top, left + box_width, top + box_height), image_width, image_height)
+    # Ground the door to the bottom area (0.97 * height)
+    bottom = int(round(image_height * 0.97))
+    top = bottom - box_height
+    return sanitize_pixel_box((left, top, left + box_width, bottom), image_width, image_height)
 
 
 def normalize_door_opening_box(pixel_box, image_width, image_height, expected_aspect_ratio):
@@ -1362,9 +1366,21 @@ class AIService:
         except Exception as holistic_err:
             print(f"WARNING: [AI Service] TIER 1 failed (Gemini holistic): {holistic_err}")
 
-        # === TIER 2: SURGICAL OVERLAY (OpenCV fallback) ===
+        # === TIER 2: AI HOLISTIC GENERATION (DALL-E 3 fallback) ===
         try:
-            print(f"DEBUG: [AI Service] TIER 2: Falling back to surgical overlay for product {product.id}...")
+            from .ai_utils import visualize_door_in_room
+            print(f"DEBUG: [AI Service] TIER 2: Falling back to DALL-E 3 professional visualization for product {product.id}...")
+            # DALL-E 3 reconstructs the room beautifully, similar to the Gemini results you like.
+            result = visualize_door_in_room(product, room_image_path, result_image_path)
+            if result and os.path.exists(result) and os.path.getsize(result) > 1000:
+                print(f"DEBUG: [AI Service] TIER 2 SUCCESS: DALL-E 3 visualization complete")
+                return result
+        except Exception as dalle_err:
+            print(f"WARNING: [AI Service] TIER 2 failed (DALL-E 3): {dalle_err}")
+
+        # === TIER 3: SURGICAL OVERLAY (OpenCV fallback) ===
+        try:
+            print(f"DEBUG: [AI Service] TIER 3: Falling back to surgical overlay for product {product.id}...")
             import cv2
             import numpy as np
 

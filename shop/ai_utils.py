@@ -131,12 +131,13 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
     print("🎨 Step 3: DALL-E 3 generating final image...")
     
     prompt = (
-        f"Photorealistic interior photograph of a house entrance. "
-        f"Room details: {house_desc}. "
-        f"A brand new door has been installed in the doorway: {door_desc}. "
-        f"The door fits perfectly in the existing door frame. "
-        f"Professional architectural photography, natural indoor lighting, "
-        f"realistic shadows on the floor, high resolution interior design photo."
+        f"A professional architectural photograph of a luxury interior house entrance. "
+        f"The room features: {house_desc}. "
+        f"In the center doorway, a premium new door has been flawlessly installed: {door_desc}. "
+        f"The lighting on the door matches the room's atmospheric lighting perfectly. "
+        f"Studio interior photography, high-end furniture catalog style, "
+        f"grounded realistic shadows on the floor, 8k resolution, crisp details, "
+        f"elegant and professional composition."
     )
     
     print(f"   Prompt: {prompt[:150]}...")

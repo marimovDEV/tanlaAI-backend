@@ -774,8 +774,9 @@ def remove_door_from_room_locally(room_bgr, pixel_box):
     import cv2
 
     image_height, image_width = room_bgr.shape[:2]
-    mask = build_box_mask(image_height, image_width, pixel_box, pad_x_ratio=0.10, pad_y_ratio=0.06)
-    return cv2.inpaint(room_bgr, mask, 7, cv2.INPAINT_TELEA)
+    # Minimize padding to avoid massive blurry stretched borders
+    mask = build_box_mask(image_height, image_width, pixel_box, pad_x_ratio=0.02, pad_y_ratio=0.02)
+    return cv2.inpaint(room_bgr, mask, 3, cv2.INPAINT_TELEA)
 
 
 def remove_door_from_room_with_ai(room_bgr, pixel_box, client):
@@ -784,7 +785,7 @@ def remove_door_from_room_with_ai(room_bgr, pixel_box, client):
     from google.genai import types
 
     image_height, image_width = room_bgr.shape[:2]
-    mask = build_box_mask(image_height, image_width, pixel_box, pad_x_ratio=0.12, pad_y_ratio=0.08)
+    mask = build_box_mask(image_height, image_width, pixel_box, pad_x_ratio=0.05, pad_y_ratio=0.05)
 
     ok_room, room_buf = cv2.imencode('.png', room_bgr)
     ok_mask, mask_buf = cv2.imencode('.png', mask)

@@ -1524,16 +1524,16 @@ class AIService:
                 print(f"DEBUG: [AI Service] Using Nano Banana Engine with key {key[:10]}...")
                 client = genai.Client(api_key=key)
                 
-                # Professional Prompt Engineering (User's Methodology)
+                # Specialized Design Preservation Prompt (User's Methodology v2)
                 prompt_text = (
-                    "Instructions for Professional AI Visualization:\n"
-                    "1. ANALYZE: First image is the original room. Second image is the target door design.\n"
-                    "2. ACTION: Replace the existing old door area with the exact design of the door from the second image.\n"
-                    "3. PLACEMENT: Place the door base STRICTLY ON THE FLOOR LINE. It must be flush with the floor.\n"
-                    "4. SCALE: Ensure the door fits the door frame dimensions perfectly with seamless architectural integration.\n"
-                    "5. LIGHTING: Match the room's original lighting and shadows. Ensure natural reflections on the door surface.\n"
-                    "6. PRESERVATION: Maintain the original wall texture, floor, and room context 1:1. Do not remodel the room.\n"
-                    "Goal: A highly realistic interior design photo, photorealistic, 8k, architectural visualization."
+                    "PRECISION ARCHITECTURAL VISUALIZATION INSTRUCTIONS:\n"
+                    "1. ANALYZE: First image is the original room. Second image is the TARGET DOOR DESIGN.\n"
+                    "2. PRESERVE DESIGN: Maintain the EXACT intricate glass panel pattern and the lower panel carvings of the NEW DOOR IMAGE. "
+                    "DO NOT create a full glass door. Keep the solid parts and proportions of the target door design 1:1.\n"
+                    "3. PLACEMENT: Replace the old door with this precise new door. It must be FLUSH WITH THE FLOOR and integrated into the wall.\n"
+                    "4. CONTEXT: Maintain all original room elements (rug, curtains, walls, furniture) 100% UNCHANGED.\n"
+                    "5. LIGHTING: Apply realistic lighting and shadows that match the room, filtering through the intricate glass if applicable.\n"
+                    "Mandate: The output must be the original room with the EXACT target door model installed."
                 )
                 
                 contents = [

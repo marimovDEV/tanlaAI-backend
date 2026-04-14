@@ -127,16 +127,16 @@ def visualize_door_in_room(product, room_image_path, result_image_path, box_1000
         except Exception as e:
             print(f"   ⚠️ GPT-4o door analysis failed (using name): {e}")
     
-    # Professional Prompt Engineering (User's Methodology)
+    # Specialized Design Preservation (User's Methodology v2)
     prompt = (
-        f"A highly realistic architectural visualization. "
-        f"CONTEXT: A real-world room with these details: {house_desc}. "
-        f"TASK: Replace the existing old door with this new double door design: {door_desc}. "
-        f"PLACEMENT: Place the door base STRICTLY ON THE FLOOR LINE. It must be flush with the floor. "
-        f"INTEGRATION: Perform seamless architectural integration into the existing wall. "
-        f"LIGHTING: Match the natural lighting and shadows of the room exactly. "
-        f"PRESERVATION: Maintain the original wall texture, floor, and room context 1:1. "
-        f"Result: Photorealistic, 8k, professional interior design photograph."
+        f"EXTREMELY PRECISE ARCHITECTURAL VISUALIZATION. "
+        f"CONTEXT: A real-world room ({house_desc}). "
+        f"TASK: Replace the existing old door with the EXACT NEW MODEL: {door_desc}. "
+        f"PREREQUISITE 1: Maintain the exact intricate glass panel pattern and original lower panel carvings of the target door. "
+        f"PREREQUISITE 2: DO NOT create a full glass door. Keep all solid parts and structural design 1:1. "
+        f"PREREQUISITE 3: Place the door base FLUSH WITH THE FLOOR and integrate into the wall. "
+        f"MAINTENANCE: Keep the rug, curtains, and all furniture 100% UNCHANGED. "
+        f"Photorealistic, 8k, professional interior catalog style."
     )
     
     print(f"   Prompt: {prompt[:150]}...")

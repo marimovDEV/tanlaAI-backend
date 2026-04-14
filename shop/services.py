@@ -595,18 +595,20 @@ def default_door_box(image_width, image_height, expected_aspect_ratio):
 def normalize_door_opening_box(pixel_box, image_width, image_height, expected_aspect_ratio):
     left, top, right, bottom = sanitize_pixel_box(pixel_box, image_width, image_height)
 
-    # Trust the detector. Just make sure the box is at least a minimum viable size.
+    # Trust the detector, but widen obvious "inner leaf" detections to the full frame width.
     width = right - left
     height = bottom - top
 
-    min_width = int(image_width * 0.15)
+    min_width = int(image_width * 0.18)
     min_height = int(image_height * 0.30)
+    frame_aspect_ratio = min(0.95, max(0.24, expected_aspect_ratio * 1.12))
+    width_ratio = width / float(max(1, height))
 
-    if width < min_width or height < min_height:
-        # Box too small — fall back to center-based default
-        box_height = int(round(image_height * 0.65))
-        box_width = int(round(box_height * expected_aspect_ratio))
-        box_width = max(min_width, min(box_width, int(image_width * 0.55)))
+    if width < min_width or height < min_height or width_ratio < (frame_aspect_ratio * 0.88):
+        # Box is too narrow or too small — widen it toward a realistic full-frame opening.
+        box_height = max(height, int(round(image_height * 0.68)))
+        box_width = int(round(box_height * frame_aspect_ratio))
+        box_width = max(min_width, min(box_width, int(image_width * 0.58)))
         center_x = (left + right) / 2.0
         left = int(round(center_x - box_width / 2.0))
         right = left + box_width
@@ -615,7 +617,7 @@ def normalize_door_opening_box(pixel_box, image_width, image_height, expected_as
     # Expand slightly to cover the outer frame (nalichnik) of the old door
     final_width = right - left
     final_height = bottom - top
-    pad_w = int(final_width * 0.04)
+    pad_w = int(final_width * 0.05)
     pad_h = int(final_height * 0.04)
     
     left = max(0, left - pad_w)
@@ -1001,6 +1003,133 @@ def overlay_door_into_room(room_bgr, door_rgba, pixel_box, add_shadow=True, wall
     return composite
 
 
+def sample_room_ambient_bgr(room_bgr, pixel_box):
+    import numpy as np
+
+    image_height, image_width = room_bgr.shape[:2]
+    left, top, right, bottom = sanitize_pixel_box(pixel_box, image_width, image_height)
+    box_width = max(1, right - left)
+    box_height = max(1, bottom - top)
+
+    side_band = max(4, int(round(box_width * 0.10)))
+    top_band = max(4, int(round(box_height * 0.12)))
+
+    samples = []
+    if top > 0:
+        samples.append(
+            room_bgr[
+                max(0, top - top_band):top,
+                max(0, left - side_band):min(image_width, right + side_band),
+            ]
+        )
+    if left > 0:
+        samples.append(room_bgr[top:bottom, max(0, left - side_band):left])
+    if right < image_width:
+        samples.append(room_bgr[top:bottom, right:min(image_width, right + side_band)])
+
+    sample_pixels = [region.reshape(-1, 3) for region in samples if region.size]
+    if not sample_pixels:
+        return room_bgr.reshape(-1, 3).mean(axis=0).astype(np.float32)
+
+    ambient = np.concatenate(sample_pixels, axis=0).mean(axis=0)
+    scene_mean = room_bgr.reshape(-1, 3).mean(axis=0)
+    return ((ambient * 0.75) + (scene_mean * 0.25)).astype(np.float32)
+
+
+def match_door_lighting_to_room(door_rgba, room_bgr, pixel_box):
+    import cv2
+    import numpy as np
+
+    if door_rgba is None:
+        return None
+
+    matched = door_rgba.copy()
+    if matched.ndim != 3 or matched.shape[2] < 4:
+        return matched
+
+    alpha_mask = matched[:, :, 3] > 12
+    if not np.any(alpha_mask):
+        return matched
+
+    ambient_bgr = sample_room_ambient_bgr(room_bgr, pixel_box)
+    door_rgb = matched[:, :, :3].astype(np.float32)
+    door_mean = door_rgb[alpha_mask].mean(axis=0)
+
+    luminance_gain = np.clip(
+        float(np.mean(ambient_bgr)) / float(max(1.0, np.mean(door_mean))),
+        0.88,
+        1.14,
+    )
+    chroma_gain = np.clip(ambient_bgr / np.maximum(door_mean, 1.0), 0.85, 1.15)
+    chroma_gain = 1.0 + ((chroma_gain - 1.0) * 0.35)
+    total_gain = np.clip(chroma_gain * luminance_gain, 0.82, 1.18)
+
+    matched[:, :, :3] = np.clip(door_rgb * total_gain, 0, 255).astype(np.uint8)
+
+    softened_alpha = cv2.GaussianBlur(matched[:, :, 3], (5, 5), 0)
+    matched[:, :, 3] = np.maximum(matched[:, :, 3], (softened_alpha.astype(np.float32) * 0.85).astype(np.uint8))
+    return matched
+
+
+def add_floor_contact_shadow(room_bgr, pixel_box, strength=0.24):
+    import numpy as np
+
+    image_height, image_width = room_bgr.shape[:2]
+    left, top, right, bottom = sanitize_pixel_box(pixel_box, image_width, image_height)
+    box_width = max(1, right - left)
+    box_height = max(1, bottom - top)
+
+    shadow_height = max(4, int(round(box_height * 0.025)))
+    shadow_y_start = min(bottom, image_height - 1)
+    shadow_y_end = min(image_height, shadow_y_start + shadow_height)
+    inset = max(1, int(round(box_width * 0.02)))
+
+    if shadow_y_start >= shadow_y_end:
+        return room_bgr
+
+    shaded = room_bgr.copy().astype(np.float32)
+    shadow_left = min(right, max(left, left + inset))
+    shadow_right = max(shadow_left + 1, max(left + 1, right - inset))
+
+    for shadow_y in range(shadow_y_start, shadow_y_end):
+        fade = 1.0 - ((shadow_y - shadow_y_start) / float(max(1, shadow_height)))
+        shaded[shadow_y, shadow_left:shadow_right] *= (1.0 - (strength * fade))
+
+    return np.clip(shaded, 0, 255).astype(np.uint8)
+
+
+def validate_locked_scene_candidate(candidate_bgr, baseline_bgr, pixel_box):
+    import numpy as np
+
+    if candidate_bgr is None or baseline_bgr is None or candidate_bgr.shape != baseline_bgr.shape:
+        return False, {'reason': 'shape_mismatch'}
+
+    image_height, image_width = baseline_bgr.shape[:2]
+    validation_mask = build_box_mask(
+        image_height,
+        image_width,
+        pixel_box,
+        pad_x_ratio=0.05,
+        pad_y_ratio=0.05,
+    )
+    outside_mask = validation_mask == 0
+    if not np.any(outside_mask):
+        return False, {'reason': 'empty_outside_region'}
+
+    baseline_pixels = baseline_bgr[outside_mask].astype(np.float32)
+    candidate_pixels = candidate_bgr[outside_mask].astype(np.float32)
+    diff = np.abs(candidate_pixels - baseline_pixels)
+
+    mse = float(np.mean((candidate_pixels - baseline_pixels) ** 2))
+    changed_ratio = float(np.mean(np.max(diff, axis=1) > 16.0))
+
+    is_valid = mse <= 12.0 and changed_ratio <= 0.015
+    return is_valid, {
+        'mse': round(mse, 3),
+        'changed_ratio': round(changed_ratio, 5),
+    }
+
+
 class AIService:
     """Service layer for all AI operations — background removal and room visualization."""
     
@@ -1355,18 +1484,25 @@ class AIService:
     @staticmethod
     def generate_room_preview(product, room_image_path, result_image_path):
         """
-        Production-level door visualization pipeline.
-        
-        Step 1: Detect door area → create MASK
-        Step 2: Create rough composite (OpenCV — room 100% preserved)
-        Step 3: Send composite to AI for EDGE REFINEMENT ONLY
-        Step 4: Validate result (pixels outside mask must match original)
-        Step 5: Fallback to raw composite if AI fails validation
+        Locked-scene hybrid pipeline.
+
+        1. Detect the opening geometrically
+        2. Remove the old door locally with OpenCV inpainting
+        3. Place the exact door asset deterministically
+        4. Optionally let AI refine only masked edge/shadow realism
+        5. Reject AI output unless the room outside the door stays effectively identical
         """
         import cv2
-        import numpy as np
+        from .ai_utils import save_visualization_metadata
 
         print(f"DEBUG: [Pipeline] Starting production pipeline for product {product.id}...")
+        preview_metadata = {
+            'pipeline': {
+                'mode': 'locked_scene_hybrid_v2',
+                'used_ai_refine': False,
+                'final_result': 'opencv_composite',
+            }
+        }
 
         # --- Load room ---
         room_bgr = cv2.imread(room_image_path, cv2.IMREAD_COLOR)
@@ -1375,127 +1511,67 @@ class AIService:
         h, w = room_bgr.shape[:2]
 
         # --- Load door ---
-        door_path = None
-        if hasattr(product, 'image_no_bg') and product.image_no_bg and product.image_no_bg.name and os.path.exists(product.image_no_bg.path):
-            door_path = product.image_no_bg.path
-        elif hasattr(product, 'image') and product.image and product.image.name and os.path.exists(product.image.path):
-            door_path = product.image.path
-        elif hasattr(product, 'original_image') and product.original_image and product.original_image.name and os.path.exists(product.original_image.path):
-            door_path = product.original_image.path
-        if not door_path:
-            raise ValueError("No valid door image found")
-
-        door_rgba = cv2.imread(door_path, cv2.IMREAD_UNCHANGED)
-        if door_rgba is None:
-            raise ValueError("Door image could not be loaded")
-        if door_rgba.ndim == 2:
-            door_rgba = cv2.cvtColor(door_rgba, cv2.COLOR_GRAY2BGRA)
-        elif door_rgba.shape[2] == 3:
-            alpha = np.full(door_rgba.shape[:2] + (1,), 255, dtype=np.uint8)
-            door_rgba = np.concatenate([door_rgba, alpha], axis=2)
+        door_rgba = load_best_door_rgba(product)
+        preview_metadata['pipeline']['door_asset_size'] = [int(door_rgba.shape[1]), int(door_rgba.shape[0])]
 
         # === STEP 1: DETECT DOOR AREA + CREATE MASK ===
         print(f"DEBUG: [Pipeline] Step 1: Detecting door area...")
         expected_aspect_ratio = get_expected_door_aspect_ratio(product, door_rgba=door_rgba)
         detected_box, detection_method = detect_door_opening_box(room_bgr, expected_aspect_ratio)
-        x1, y1, x2, y2 = detected_box
+        placement_box = expand_pixel_box(detected_box, w, h, pad_x_ratio=0.06, pad_y_ratio=0.04)
+        x1, y1, x2, y2 = placement_box
         print(f"DEBUG: [Pipeline]   Door detected at ({x1},{y1})-({x2},{y2}) via {detection_method}")
 
-        # Create binary mask (white = door + frame area, black = preserve)
-        mask = np.zeros((h, w), dtype=np.uint8)
-        # Expand mask 10% beyond detected box to cover frame + threshold
-        expand_x = int((x2 - x1) * 0.10)
-        expand_y = int((y2 - y1) * 0.05)
-        mx1 = max(0, x1 - expand_x)
-        my1 = max(0, y1 - expand_y)
-        mx2 = min(w, x2 + expand_x)
-        my2 = min(h, y2 + expand_y)
-        mask[my1:my2, mx1:mx2] = 255
+        preview_metadata['pipeline']['expected_aspect_ratio'] = round(float(expected_aspect_ratio), 4)
+        preview_metadata['pipeline']['detection_method'] = detection_method
+        preview_metadata['pipeline']['detected_box'] = [int(value) for value in detected_box]
+        preview_metadata['pipeline']['placement_box'] = [x1, y1, x2, y2]
 
-        # Dilate mask further to catch frame edges (critical fix)
-        kernel = np.ones((20, 20), np.uint8)
-        mask = cv2.dilate(mask, kernel, iterations=1)
+        mask = build_box_mask(h, w, placement_box, pad_x_ratio=0.0, pad_y_ratio=0.0)
 
         # === STEP 2: REMOVE OLD DOOR (INPAINTING) ===
         print(f"DEBUG: [Pipeline] Step 2: Removing old door (inpainting)...")
-        cleaned_room = remove_door_from_room_locally(room_bgr, detected_box)
+        cleaned_room = remove_door_from_room_locally(room_bgr, placement_box)
+        preview_metadata['pipeline']['old_door_removal'] = 'opencv_inpaint'
         print(f"DEBUG: [Pipeline]   Old door removed, wall filled with texture")
 
         # === STEP 3: INSERT NEW DOOR (on clean wall) ===
         print(f"DEBUG: [Pipeline] Step 3: Placing new door on clean wall...")
-        composite = cleaned_room.copy()
-
-        # Resize door to fit detected box
-        box_w = x2 - x1
-        box_h = y2 - y1
-        door_resized = cv2.resize(door_rgba, (box_w, box_h), interpolation=cv2.INTER_LANCZOS4)
-
-        # Separate channels
-        door_bgr = door_resized[:, :, :3]
-        if door_resized.shape[2] == 4:
-            door_alpha = door_resized[:, :, 3].astype(np.float32) / 255.0
-        else:
-            door_alpha = np.ones((box_h, box_w), dtype=np.float32)
-
-        # Color-match door to room's ambient lighting
-        room_region = room_bgr[y1:y2, x1:x2]
-        room_mean = np.mean(room_region, axis=(0, 1))
-        door_mean = np.mean(door_bgr, axis=(0, 1))
-        color_ratio = room_mean / (door_mean + 1e-6)
-        color_ratio = np.clip(color_ratio, 0.7, 1.3)  # Limit adjustment
-        door_bgr_matched = np.clip(door_bgr.astype(np.float32) * color_ratio, 0, 255).astype(np.uint8)
-
-        # Feathered edge blending (soft mask border)
-        feather_mask = cv2.GaussianBlur(
-            (door_alpha * 255).astype(np.uint8), (15, 15), 0
-        ).astype(np.float32) / 255.0
-
-        # Alpha-blend NEW door into CLEANED room (not original!)
-        for c in range(3):
-            composite[y1:y2, x1:x2, c] = (
-                door_bgr_matched[:, :, c] * feather_mask +
-                cleaned_room[y1:y2, x1:x2, c] * (1.0 - feather_mask)
-            ).astype(np.uint8)
-
-        # Add shadow beneath door
-        shadow_height = max(3, int(box_h * 0.02))
-        shadow_y_start = min(y2, h - 1)
-        shadow_y_end = min(y2 + shadow_height, h)
-        if shadow_y_start < shadow_y_end:
-            for sy in range(shadow_y_start, shadow_y_end):
-                fade = 1.0 - ((sy - shadow_y_start) / float(shadow_height))
-                composite[sy, x1:x2] = np.clip(
-                    composite[sy, x1:x2].astype(np.float32) * (1.0 - 0.3 * fade), 0, 255
-                ).astype(np.uint8)
-
+        lit_door_rgba = match_door_lighting_to_room(door_rgba, room_bgr, placement_box)
+        composite = overlay_door_into_room(cleaned_room, lit_door_rgba, placement_box, add_shadow=True)
+        composite = add_floor_contact_shadow(composite, placement_box)
         print(f"DEBUG: [Pipeline]   Composite created (room preserved, old door removed)")
 
         # Save OpenCV result as SAFE fallback
         cv2.imwrite(result_image_path, composite)
 
-        # === STEP 4: AI POLISH (lighting/shadow only — structure locked) ===
+        # === STEP 4: AI MASKED REFINE (edge + contact shadow only) ===
         try:
-            print(f"DEBUG: [Pipeline] Step 4: AI polish (lighting/shadows only)...")
-            polished = AIService.ai_polish_only(composite, result_image_path)
-            if polished and os.path.exists(polished):
-                # VALIDATE: AI must not change structure
-                polished_img = cv2.imread(polished, cv2.IMREAD_COLOR)
-                if polished_img is not None and polished_img.shape == room_bgr.shape:
-                    # Compare pixels OUTSIDE door area
-                    outside_mask = (mask == 0)
-                    orig_pixels = room_bgr[outside_mask].astype(np.float32)
-                    pol_pixels = polished_img[outside_mask].astype(np.float32)
-                    mse = np.mean((orig_pixels - pol_pixels) ** 2)
-                    print(f"DEBUG: [Pipeline]   Polish validation MSE: {mse:.1f}")
+            print(f"DEBUG: [Pipeline] Step 4: AI masked refine...")
+            refined_path = AIService.refine_door_edges_with_ai(composite, mask, room_image_path, result_image_path)
+            if refined_path and os.path.exists(refined_path):
+                refined_img = cv2.imread(refined_path, cv2.IMREAD_COLOR)
+                is_valid, validation = validate_locked_scene_candidate(refined_img, composite, placement_box)
+                preview_metadata['pipeline']['ai_validation'] = validation
+                print(
+                    "DEBUG: [Pipeline]   Refine validation "
+                    f"(mse={validation.get('mse')}, changed_ratio={validation.get('changed_ratio')})"
+                )
 
-                    if mse < 15:  # Very strict — almost identical
-                        print(f"DEBUG: [Pipeline]   ✅ AI polish PASSED — using polished result")
-                        return polished
-                    else:
-                        print(f"DEBUG: [Pipeline]   ❌ AI polish changed too much — using OpenCV result")
+                if is_valid:
+                    preview_metadata['pipeline']['used_ai_refine'] = True
+                    preview_metadata['pipeline']['final_result'] = 'ai_masked_refine'
+                    save_visualization_metadata(result_image_path, preview_metadata)
+                    print(f"DEBUG: [Pipeline]   ✅ AI refine PASSED — using refined result")
+                    return refined_path
+
+                print(f"DEBUG: [Pipeline]   ❌ AI refine changed locked scene — reverting to OpenCV result")
+                cv2.imwrite(result_image_path, composite)
         except Exception as e:
-            print(f"WARNING: [Pipeline] AI polish failed (using OpenCV): {e}")
+            preview_metadata['pipeline']['ai_refine_error'] = str(e)[:300]
+            print(f"WARNING: [Pipeline] AI refine failed (using OpenCV): {e}")
 
+        save_visualization_metadata(result_image_path, preview_metadata)
         print(f"DEBUG: [Pipeline] ✅ DONE (OpenCV): {result_image_path}")
         return result_image_path
 
@@ -1610,13 +1686,14 @@ class AIService:
         prompt_text = (
             "This image already has a new door placed in it using digital editing.\n"
             "The second image is a MASK showing the door area (white = door).\n\n"
-            "YOUR ONLY JOB: Fix the edges around the door to make the placement look natural.\n\n"
+            "YOUR ONLY JOB: make the placement look naturally installed without changing the room.\n\n"
             "STRICT RULES:\n"
             "- Do NOT change ANYTHING outside the white mask area\n"
             "- Do NOT change walls, floor, furniture, curtains\n"
             "- Do NOT redesign the room\n"
             "- Do NOT add any new objects\n"
-            "- ONLY smooth the transition between the door edges and the wall\n"
+            "- Do NOT move, resize, recolor, or redesign the new door\n"
+            "- ONLY improve edge blending, contact shadow, and local light integration near the door\n"
             "- Make the door look naturally installed\n"
             "- Keep the exact same room, exact same lighting\n"
             "- Return ONLY the refined image"

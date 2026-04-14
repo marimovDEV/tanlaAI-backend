@@ -1355,9 +1355,30 @@ class AIService:
         TIER 1: Gemini AI holistic generation (best quality, like gemini.google.com)
         TIER 2: Surgical OpenCV overlay (fallback, keeps room 1=1)
         """
-         # === TIER 1: SURGICAL OVERLAY (Primary: Keeps room 1:1) ===
+        # === TIER 1: AI HOLISTIC GENERATION (Primary: Gemini with Extreme Preservation) ===
         try:
-            print(f"DEBUG: [AI Service] TIER 1: Attempting 1:1 Surgical Overlay for product {product.id}...")
+            print(f"DEBUG: [AI Service] TIER 1: Attempting Gemini holistic generation with extreme preservation...")
+            result = AIService.generate_holistic_room_view(product, room_image_path, result_image_path)
+            if result and os.path.exists(result):
+                print(f"DEBUG: [AI Service] TIER 1 SUCCESS: Gemini holistic complete")
+                return result
+        except Exception as holistic_err:
+            print(f"WARNING: [AI Service] TIER 1 failed (Gemini): {holistic_err}")
+
+        # === TIER 2: AI HOLISTIC GENERATION (DALL-E 3 fallback) ===
+        try:
+            from .ai_utils import visualize_door_in_room
+            print(f"DEBUG: [AI Service] TIER 2: Attempting DALL-E 3 fallback...")
+            result = visualize_door_in_room(product, room_image_path, result_image_path)
+            if result and os.path.exists(result) and os.path.getsize(result) > 1000:
+                print(f"DEBUG: [AI Service] TIER 2 SUCCESS: DALL-E 3 complete")
+                return result
+        except Exception as dalle_err:
+            print(f"WARNING: [AI Service] TIER 2 failed (DALL-E 3): {dalle_err}")
+
+        # === TIER 3: SURGICAL OVERLAY (Last resort: Safety net) ===
+        try:
+            print(f"DEBUG: [AI Service] TIER 3: Falling back to 1:1 surgical overlay safety net...")
             import cv2
             import numpy as np
 
@@ -1422,32 +1443,12 @@ class AIService:
             if not cv2.imwrite(result_image_path, final_room):
                 raise ValueError("Failed to save final room visualization")
 
-            print(f"DEBUG: [AI Service] TIER 1 SUCCESS: 1:1 Surgical overlay ready: {result_image_path}")
+            print(f"DEBUG: [AI Service] TIER 3 SUCCESS: 1:1 Surgical overlay ready: {result_image_path}")
             return result_image_path
 
         except Exception as surgical_err:
-            print(f"WARNING: [AI Service] TIER 1 failed (Surgical): {surgical_err}")
-
-        # === TIER 2: AI HOLISTIC GENERATION (Fallback only) ===
-        try:
-            print(f"DEBUG: [AI Service] TIER 2: Attempting Gemini holistic generation for product {product.id}...")
-            result = AIService.generate_holistic_room_view(product, room_image_path, result_image_path)
-            if result and os.path.exists(result):
-                print(f"DEBUG: [AI Service] TIER 2 SUCCESS: Gemini holistic generation complete")
-                return result
-        except Exception as holistic_err:
-            print(f"WARNING: [AI Service] TIER 2 failed (Gemini holistic): {holistic_err}")
-
-        # === TIER 3: DALL-E 3 (Last resort) ===
-        try:
-            from .ai_utils import visualize_door_in_room
-            print(f"DEBUG: [AI Service] TIER 3: Attempting DALL-E 3 fallback for product {product.id}...")
-            result = visualize_door_in_room(product, room_image_path, result_image_path)
-            if result and os.path.exists(result) and os.path.getsize(result) > 1000:
-                print(f"DEBUG: [AI Service] TIER 3 SUCCESS: DALL-E 3 complete")
-                return result
-        except Exception as dalle_err:
-            print(f"WARNING: [AI Service] TIER 3 failed (DALL-E 3): {dalle_err}")
+            print(f"ERROR: [AI Service] All tiers failed: {surgical_err}")
+            raise
         except Exception as error:
             print(f"ERROR: [AI Service] Room preview generation failed: {error}")
             raise

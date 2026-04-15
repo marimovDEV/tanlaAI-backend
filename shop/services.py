@@ -1269,6 +1269,230 @@ class AIService:
         raise ValueError("GEMINI_API_KEY yoki google-cloud-key.json topilmadi.")
 
     @staticmethod
+    def get_visualization_provider(default='hybrid'):
+        try:
+            from .models import SystemSettings
+
+            provider = str(getattr(SystemSettings.get_solo(), 'ai_provider', default) or default).strip().lower()
+            if provider in {'gemini', 'openai', 'hybrid'}:
+                return provider
+        except Exception as e:
+            print(f"DEBUG: [AI Service] Visualization provider lookup failed, using {default}: {e}")
+        return default
+
+    @staticmethod
+    def get_gemini_api_keys():
+        api_keys_str = getattr(settings, 'GEMINI_API_KEYS', '')
+        api_keys = [key.strip() for key in api_keys_str.split(',') if key.strip()]
+        if api_keys:
+            return api_keys
+
+        single_key = getattr(settings, 'GEMINI_API_KEY', '')
+        if isinstance(single_key, str) and single_key.strip():
+            return [single_key.strip()]
+        return []
+
+    @staticmethod
+    def build_gemini_full_scene_prompt(product, pixel_box, image_width, image_height):
+        left, top, right, bottom = sanitize_pixel_box(pixel_box, image_width, image_height)
+        box_1000 = pixels_to_box_1000((left, top, right, bottom), image_width, image_height)
+        door_name = getattr(product, 'name', 'door')
+
+        return (
+            "You are a professional architectural image editor.\n"
+            "Reference image 1 is the original room photo.\n"
+            "Reference image 2 is a binary mask where white marks the ONLY area you may edit.\n"
+            "Reference image 3 is the exact new door design that must be installed.\n\n"
+            "TASK:\n"
+            f"Replace the existing door/opening with the exact reference door '{door_name}'.\n"
+            "This is an image editing task, not scene generation.\n\n"
+            "STRICT RULES:\n"
+            "- Keep the room exactly the same outside the white mask\n"
+            "- Do not redesign, restyle, upscale, or beautify the room\n"
+            "- Do not change walls, floor, carpet, curtains, furniture, trim, or lighting outside the mask\n"
+            "- Preserve the exact door design, glass pattern, frame details, and proportions from the reference door\n"
+            "- Do not invent a new door design\n"
+            "- Do not add extra molding, handles, windows, decor, or architectural elements\n\n"
+            "PLACEMENT RULES:\n"
+            f"- Install the door inside this bounding box in pixels: left={left}, top={top}, right={right}, bottom={bottom}\n"
+            f"- The same box in 0-1000 normalized coordinates is: top={box_1000[0]}, left={box_1000[1]}, bottom={box_1000[2]}, right={box_1000[3]}\n"
+            "- Keep the door bottom aligned to the floor line\n"
+            "- Keep the top of the door below the ceiling line and naturally inside the opening\n"
+            "- Fit the door proportionally inside the opening; do not stretch it\n"
+            "- Center the door naturally within the opening\n\n"
+            "REALISM:\n"
+            "- Match perspective, local lighting, edge blending, and contact shadow naturally\n"
+            "- The door must look physically installed into the wall\n"
+            "- Return one edited image only"
+        )
+
+    @staticmethod
+    def decode_gemini_image_bytes(image_bytes, image_width, image_height):
+        import cv2
+        import numpy as np
+
+        decoded = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+        if decoded is None:
+            raise ValueError("Gemini image output could not be decoded")
+
+        if decoded.shape[:2] != (image_height, image_width):
+            decoded = cv2.resize(decoded, (image_width, image_height), interpolation=cv2.INTER_LINEAR)
+        return decoded
+
+    @staticmethod
+    def generate_room_preview_with_gemini(product, room_image_path, result_image_path):
+        import cv2
+        from google import genai
+        from google.genai import types
+        from .ai_utils import save_visualization_metadata
+
+        room_bgr = cv2.imread(room_image_path, cv2.IMREAD_COLOR)
+        if room_bgr is None:
+            raise ValueError("Room image could not be loaded")
+        image_height, image_width = room_bgr.shape[:2]
+
+        door_rgba = load_best_door_rgba(product)
+        expected_aspect_ratio = get_expected_door_aspect_ratio(product, door_rgba=door_rgba)
+        detected_box, detection_method = detect_door_opening_box(room_bgr, expected_aspect_ratio)
+        master_box = expand_pixel_box(detected_box, image_width, image_height, pad_x_ratio=0.06, pad_y_ratio=0.04)
+        mask = build_box_mask(image_height, image_width, master_box, pad_x_ratio=0.0, pad_y_ratio=0.0)
+
+        ok_room, room_buf = cv2.imencode('.png', room_bgr)
+        ok_mask, mask_buf = cv2.imencode('.png', mask)
+        ok_door, door_buf = cv2.imencode('.png', door_rgba)
+        if not (ok_room and ok_mask and ok_door):
+            raise ValueError("Failed to encode Gemini edit inputs")
+
+        prompt_text = AIService.build_gemini_full_scene_prompt(product, master_box, image_width, image_height)
+        normalized_box = pixels_to_box_1000(master_box, image_width, image_height)
+        preview_metadata = {
+            'generation_prompt': prompt_text,
+            'generation_meta': {
+                'bounding_box_px': [int(value) for value in master_box],
+                'bounding_box_1000': normalized_box,
+                'detection_method': detection_method,
+            },
+            'pipeline': {
+                'mode': 'gemini_full_scene_edit_v1',
+                'image_edit_engine': 'Gemini',
+                'final_result': 'gemini_full_edit',
+                'used_ai_refine': False,
+                'expected_aspect_ratio': round(float(expected_aspect_ratio), 4),
+                'detection_method': detection_method,
+                'detected_box': [int(value) for value in detected_box],
+                'opening_box': [int(value) for value in master_box],
+                'door_asset_size': [int(door_rgba.shape[1]), int(door_rgba.shape[0])],
+            },
+        }
+
+        api_keys = AIService.get_gemini_api_keys()
+        clients = []
+        if api_keys:
+            clients.extend(('api_key', genai.Client(api_key=key)) for key in api_keys)
+        else:
+            clients.append(('auto', AIService.get_gemini_client(prefer_vertex=True)))
+
+        room_reference = types.RawReferenceImage(
+            reference_image=types.Image(image_bytes=room_buf.tobytes()),
+            reference_id=0,
+        )
+        mask_reference = types.RawReferenceImage(
+            reference_image=types.Image(image_bytes=mask_buf.tobytes()),
+            reference_id=1,
+        )
+        door_reference = types.RawReferenceImage(
+            reference_image=types.Image(image_bytes=door_buf.tobytes()),
+            reference_id=2,
+        )
+
+        last_error = None
+        imagen_edit_modes = (
+            'EDIT_MODE_INPAINT_INSERTION',
+            'INPAINT_EDIT',
+        )
+
+        for _, client in clients:
+            for edit_mode in imagen_edit_modes:
+                try:
+                    print(f"DEBUG: [Gemini Preview] Trying Imagen full edit ({edit_mode})...")
+                    response = client.models.edit_image(
+                        model='imagen-3.0-capability-001',
+                        prompt=prompt_text,
+                        reference_images=[room_reference, mask_reference, door_reference],
+                        config=types.EditImageConfig(
+                            edit_mode=edit_mode,
+                            mask_reference_id=1,
+                            number_of_images=1,
+                            output_mime_type='image/png',
+                        ),
+                    )
+                    if not response.generated_images:
+                        raise ValueError("No image generated by Imagen full edit")
+
+                    edited_bgr = AIService.decode_gemini_image_bytes(
+                        response.generated_images[0].image.image_bytes,
+                        image_width,
+                        image_height,
+                    )
+                    _, validation = validate_locked_scene_candidate(edited_bgr, room_bgr, master_box)
+                    preview_metadata['pipeline']['scene_lock_validation'] = validation
+                    preview_metadata['pipeline']['image_edit_engine'] = 'Imagen 3'
+                    preview_metadata['pipeline']['model'] = 'imagen-3.0-capability-001'
+                    preview_metadata['pipeline']['edit_mode'] = edit_mode
+                    cv2.imwrite(result_image_path, edited_bgr)
+                    save_visualization_metadata(result_image_path, preview_metadata)
+                    return result_image_path
+                except Exception as e:
+                    last_error = e
+                    print(f"WARNING: [Gemini Preview] Imagen full edit failed ({edit_mode}): {e}")
+
+        gemini_models = [
+            'gemini-2.0-flash-exp',
+            'gemini-2.5-flash-preview-04-17',
+            'gemini-2.0-flash',
+        ]
+        contents = [
+            types.Part.from_bytes(data=room_buf.tobytes(), mime_type='image/png'),
+            types.Part.from_bytes(data=mask_buf.tobytes(), mime_type='image/png'),
+            types.Part.from_bytes(data=door_buf.tobytes(), mime_type='image/png'),
+            prompt_text,
+        ]
+
+        for _, client in clients:
+            for model_name in gemini_models:
+                try:
+                    print(f"DEBUG: [Gemini Preview] Trying generate_content full edit ({model_name})...")
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            response_modalities=["IMAGE", "TEXT"],
+                        ),
+                    )
+                    if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                        for part in response.candidates[0].content.parts:
+                            if part.inline_data is not None:
+                                edited_bgr = AIService.decode_gemini_image_bytes(
+                                    part.inline_data.data,
+                                    image_width,
+                                    image_height,
+                                )
+                                _, validation = validate_locked_scene_candidate(edited_bgr, room_bgr, master_box)
+                                preview_metadata['pipeline']['scene_lock_validation'] = validation
+                                preview_metadata['pipeline']['image_edit_engine'] = 'Gemini'
+                                preview_metadata['pipeline']['model'] = model_name
+                                preview_metadata['pipeline']['edit_mode'] = 'generate_content_image'
+                                cv2.imwrite(result_image_path, edited_bgr)
+                                save_visualization_metadata(result_image_path, preview_metadata)
+                                return result_image_path
+                    raise ValueError("No inline image returned by Gemini full edit")
+                except Exception as e:
+                    last_error = e
+                    print(f"WARNING: [Gemini Preview] generate_content full edit failed ({model_name}): {e}")
+
+        raise ValueError(f"Gemini full-scene edit failed: {last_error}")
+
+    @staticmethod
     def photoroom_segmentation(image_bytes):
         """High-quality background removal via Photoroom API."""
         import requests
@@ -1564,10 +1788,16 @@ class AIService:
         import cv2
         from .ai_utils import save_visualization_metadata
 
+        provider = AIService.get_visualization_provider(default='hybrid')
+        if provider == 'gemini':
+            print(f"DEBUG: [Pipeline] Using Gemini full-scene editor for product {product.id}...")
+            return AIService.generate_room_preview_with_gemini(product, room_image_path, result_image_path)
+
         print(f"DEBUG: [Pipeline] Starting production pipeline for product {product.id}...")
         preview_metadata = {
             'pipeline': {
                 'mode': 'locked_scene_hybrid_v2',
+                'image_edit_engine': 'OpenCV',
                 'used_ai_refine': False,
                 'final_result': 'opencv_composite',
             }

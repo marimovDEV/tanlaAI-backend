@@ -134,6 +134,31 @@ class RoomPreviewPipelineTests(SimpleTestCase):
         self.assertIn(method, {'opencv-lines', 'opencv', 'default'})
         self.assertGreater(compute_iou(detected_box, expected_box), 0.55)
 
+    def test_generate_room_preview_routes_to_gemini_provider(self):
+        room = np.full((200, 140, 3), 220, dtype=np.uint8)
+
+        class DummyProduct:
+            id = 77
+            width = 80
+            height = 200
+            name = 'Gemini Door'
+
+        product = DummyProduct()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            room_path = str(Path(tmpdir) / 'room.png')
+            result_path = str(Path(tmpdir) / 'result.png')
+            self.assertTrue(cv2.imwrite(room_path, room))
+
+            with (
+                patch.object(AIService, 'get_visualization_provider', return_value='gemini'),
+                patch.object(AIService, 'generate_room_preview_with_gemini', return_value=result_path) as gemini_preview,
+            ):
+                output_path = AIService.generate_room_preview(product, room_path, result_path)
+
+            self.assertEqual(output_path, result_path)
+            gemini_preview.assert_called_once_with(product, room_path, result_path)
+
     def test_generate_room_preview_regression_does_not_raise_name_error(self):
         room = np.full((260, 180, 3), 228, dtype=np.uint8)
         room[40:228, 62:118] = (55, 55, 55)

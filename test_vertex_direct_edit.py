@@ -19,6 +19,8 @@ def test_vertex_direct():
         print(f"❌ Key path not found: {KEY_PATH}")
         return
 
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = KEY_PATH
+    
     with open(KEY_PATH, 'r') as f:
         info = json.load(f)
     
@@ -33,8 +35,8 @@ def test_vertex_direct():
     with open(DOOR, "rb") as f:
         door_bytes = f.read()
 
-    # The model ID from the list
-    model_name = "gemini-3.1-flash-image-preview"
+    # The model ID from the list (must include publishers/google/models/ for Vertex)
+    model_name = "publishers/google/models/gemini-3.1-flash-image-preview"
 
     prompt = (
         "Birinchi rasm — xona fotosuratidir. Ikkinchi rasm — yangi eshik dizaynidir.\n\n"

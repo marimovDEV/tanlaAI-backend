@@ -1698,28 +1698,27 @@ class AIService:
     @staticmethod
     def generate_with_gemini_direct(product, room_image_path, result_image_path):
         """
-        TO'G'RIDAN-TO'G'RI GEMINI PIPELINE:
-        1. Xona rasmini o'qi
-        2. Eshik rasmini mahsulotdan ol
-        3. Gemini gemini-2.0-flash-exp modeliga ikkalasini yuborib: "shu xonaga shu eshikni o'rnat"
-        4. Natijani saqla
-
-        Bu eng sodda va ishonchli pipeline - Gemini o'zi hamma narsani qiladi.
+        🚀 Nano Banana v2: Gemini Direct Edit (Photorealistic)
+        Uses 2 images (Room + Door) + Prompt to generate a photorealistic result.
         """
+        import time
+        from io import BytesIO
+
         import cv2
-        from google import genai
+        import numpy as np
         from google.genai import types
+        from PIL import Image
 
         from .ai_utils import save_visualization_metadata
 
-        # Room rasmini o'qi
+        # Load images
         room_bgr = cv2.imread(room_image_path, cv2.IMREAD_COLOR)
         if room_bgr is None:
             raise ValueError("Xona rasmi yuklanmadi")
+        h_orig, w_orig = room_bgr.shape[:2]
 
-        # Eshik rasmini ol
         door_image_path = None
-        for attr in ("image_no_bg", "original_image", "image"):
+        for attr in ("original_image", "image_no_bg", "image"):
             field = getattr(product, attr, None)
             if field and field.name:
                 try:
@@ -1729,7 +1728,6 @@ class AIService:
                         break
                 except Exception:
                     pass
-
         if not door_image_path:
             raise ValueError("Mahsulot rasmi topilmadi")
 
@@ -1737,105 +1735,90 @@ class AIService:
         if door_img is None:
             raise ValueError("Eshik rasmi yuklanmadi")
 
-        # PNG formatda encode qilish
+        # Encode to bytes
         _, room_buf = cv2.imencode(".jpg", room_bgr, [cv2.IMWRITE_JPEG_QUALITY, 90])
         _, door_buf = cv2.imencode(".png", door_img)
-
         room_bytes = room_buf.tobytes()
         door_bytes = door_buf.tobytes()
 
-        door_name = getattr(product, "name", "eshik")
-
-        prompt = (
-            f"Bu xona rasmiga '{door_name}' eshigini o'rnat. "
-            "Mavjud eshikni yoki eshik o'rniga bu yangi eshikni qo'y. "
-            "Xonaning qolgan qismini (devor, pol, gilam, shiftlar, mebel, pardalar) o'zgartirma. "
-            "Faqat eshik o'zgarsin. "
-            "Eshikning rangi, naqshi, ramkasi va dizayni reference rasmdan aynan olinsin. "
-            "Natija fotosuratga o'xshash, real ko'rinishi kerak."
-        )
-
         clients = AIService.build_gemini_visual_clients()
-
-        models_to_try = [
-            "gemini-2.0-flash-exp",
-            "gemini-2.0-flash",
-            "gemini-2.5-flash-preview-04-17",
+        
+        # 2026 Models optimized for high-quality instruction-based editing
+        gemini_models = [
+            "gemini-3.1-flash-image-preview",
+            "gemini-3-pro-image-preview",
+            "gemini-2.5-flash-image",
         ]
 
+        door_name = getattr(product, "name", "eshik")
+        prompt = (
+            f"First image is the original room photo. Second image is the new door design '{door_name}'.\n\n"
+            "TASK: Replace the existing door or empty doorway in the room with this new door design.\n\n"
+            "STRICT RULES:\n"
+            "- Keep the room exactly as it is outside the doorway area\n"
+            "- Match the perspective, local lighting, and architectural shadows perfectly\n"
+            "- The door must look physically installed into the wall\n"
+            "- Return ONLY the edited room image as a response"
+        )
+
         last_error = None
-
         for client_label, client in clients:
-            for model_name in models_to_try:
-                try:
-                    print(
-                        f"DEBUG: [Gemini Direct] Trying {model_name} ({client_label})..."
-                    )
-
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=[
-                            types.Part.from_bytes(
-                                data=room_bytes, mime_type="image/jpeg"
-                            ),
-                            types.Part.from_bytes(
-                                data=door_bytes, mime_type="image/png"
-                            ),
+            for model_name in gemini_models:
+                for attempt in range(3):
+                    try:
+                        print(f"DEBUG: [Gemini Direct] Trying {model_name} (Client: {client_label}, Attempt {attempt+1})...")
+                        
+                        contents = [
+                            types.Part.from_bytes(data=room_bytes, mime_type="image/jpeg"),
+                            types.Part.from_bytes(data=door_bytes, mime_type="image/png"),
                             prompt,
-                        ],
-                        config=types.GenerateContentConfig(
-                            response_modalities=["IMAGE", "TEXT"],
-                        ),
-                    )
+                        ]
+                        
+                        response = client.models.generate_content(
+                            model=model_name,
+                            contents=contents,
+                            config=types.GenerateContentConfig(
+                                response_modalities=["IMAGE", "TEXT"],
+                            ),
+                        )
 
-                    if response.candidates and response.candidates[0].content:
-                        for part in response.candidates[0].content.parts:
-                            if part.inline_data is not None:
-                                # Natijani decode qil
-                                import numpy as np
-
-                                result_array = np.frombuffer(
-                                    part.inline_data.data, np.uint8
-                                )
-                                result_img = cv2.imdecode(
-                                    result_array, cv2.IMREAD_COLOR
-                                )
-
-                                if result_img is not None:
-                                    cv2.imwrite(result_image_path, result_img)
-
+                        if response.candidates and response.candidates[0].content:
+                            for part in response.candidates[0].content.parts:
+                                if part.inline_data:
+                                    img = Image.open(BytesIO(part.inline_data.data))
+                                    # Ensure original resolution is maintained
+                                    if img.size != (w_orig, h_orig):
+                                        img = img.resize((w_orig, h_orig), Image.LANCZOS)
+                                    img.save(result_image_path, format="PNG")
+                                    
                                     metadata = {
                                         "generation_prompt": prompt,
                                         "generation_meta": {
                                             "engine": "Gemini Direct",
                                             "model": model_name,
-                                            "mode": "direct_image_generation",
                                         },
                                         "pipeline": {
-                                            "mode": "gemini_direct_v1",
+                                            "mode": "gemini_direct_v2",
                                             "image_edit_engine": "Gemini",
                                             "model": model_name,
                                             "client": client_label,
                                         },
                                     }
-                                    save_visualization_metadata(
-                                        result_image_path, metadata
-                                    )
-                                    print(
-                                        f"DEBUG: [Gemini Direct] SUCCESS with {model_name} ({client_label})"
-                                    )
+                                    save_visualization_metadata(result_image_path, metadata)
+                                    print(f"DEBUG: [Gemini Direct] SUCCESS logic with {model_name} ({client_label})")
                                     return result_image_path
+                        
+                        last_error = "No image data in response"
+                    except Exception as e:
+                        last_error = str(e)
+                        if "429" in last_error or "RESOURCE_EXHAUSTED" in last_error:
+                            print(f"WARNING: [Gemini Direct] Rate limit hit, waiting 5s...")
+                            time.sleep(5)
+                            continue
+                        print(f"DEBUG: [Gemini Direct] {model_name} failed: {last_error}")
+                        break # Try next model
 
-                    last_error = ValueError(f"Model {model_name} rasm qaytarmadi")
-                    print(f"WARNING: [Gemini Direct] {model_name} rasm qaytarmadi")
-
-                except Exception as e:
-                    last_error = e
-                    print(
-                        f"WARNING: [Gemini Direct] {model_name} ({client_label}) xatolik: {e}"
-                    )
-
-        raise ValueError(f"Gemini Direct pipeline ishlamadi: {last_error}")
+        raise ValueError(f"Gemini Direct editing failed: {last_error}")
 
     @staticmethod
     def generate_room_preview_with_gemini(

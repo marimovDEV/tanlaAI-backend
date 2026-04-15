@@ -1865,14 +1865,17 @@ class AIService:
 
         door_name = getattr(product, "name", "eshik")
 
-        # Minimal, direct prompt — closest to what works in Gemini chat UI.
-        # Overly-long constraint lists cause models to reply with text instead
-        # of generating an image.  Keep it short and imperative.
+        # Proven working prompt format — matches the exact template that produced
+        # high-quality results in production (screenshot-confirmed).
         prompt = (
-            f"Replace the existing door in the room photo with the new door shown in the second image ('{door_name}'). "
-            "Keep the entire room exactly the same — walls, floor, carpet, curtains, furniture. "
-            "The new door must be in the exact same location, size, and perspective as the original door. "
-            "Output only the edited room photo."
+            f"First image is the original room photo. "
+            f"Second image is the new door design '{door_name}'.\n"
+            "TASK: Replace the existing door or empty doorway in the room with this new door design.\n"
+            "STRICT RULES:\n"
+            "- Keep the room exactly as it is outside the doorway area\n"
+            "- Match the perspective, local lighting, and architectural shadows perfectly\n"
+            "- The door must look physically installed into the wall\n"
+            "- Return ONLY the edited room image as a response"
         )
 
         clients = AIService.build_gemini_visual_clients()

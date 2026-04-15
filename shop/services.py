@@ -1924,10 +1924,21 @@ class AIService:
             raise ValueError("Xona rasmi yuklanmadi")
         h_orig, w_orig = room_bgr.shape[:2]
         
+        GEMINI_MAX = 1024
+        long_side = max(w_orig, h_orig)
+        if long_side > GEMINI_MAX:
+            scale = GEMINI_MAX / long_side
+            new_w = max(1, int(w_orig * scale))
+            new_h = max(1, int(h_orig * scale))
+            room_bgr = cv2.resize(room_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            
+        h_send, w_send = room_bgr.shape[:2]
+
+        
         ok, room_buf = cv2.imencode(".png", room_bgr)
         room_bytes = room_buf.tobytes()
 
-        print(f"DEBUG: [Gemini Direct / Nano Banana] Original room size: {w_orig}×{h_orig}")
+        print(f"DEBUG: [Gemini Direct / Nano Banana] Original size: {w_orig}×{h_orig}, Send size: {w_send}×{h_send}")
 
         # ── Find door image ───────────────────────────────────────────────────
         door_image_path = None
@@ -1990,10 +2001,10 @@ The door should fit naturally on the wall."""
                     ymax = int(coords.get('ymax', 800))
                     xmax = int(coords.get('xmax', 700))
                     
-                    py_ymin = int(ymin * h_orig / 1000)
-                    py_xmin = int(xmin * w_orig / 1000)
-                    py_ymax = int(ymax * h_orig / 1000)
-                    py_xmax = int(xmax * w_orig / 1000)
+                    py_ymin = int(ymin * h_send / 1000)
+                    py_xmin = int(xmin * w_send / 1000)
+                    py_ymax = int(ymax * h_send / 1000)
+                    py_xmax = int(xmax * w_send / 1000)
                     
                     box_coords = (py_xmin, py_ymin, py_xmax, py_ymax)
                     det_model_used = model_name
@@ -2004,10 +2015,10 @@ The door should fit naturally on the wall."""
         
         if not box_coords:
             print("  ⚠️ All detections failed, using center fallback")
-            fx = int(w_orig * 0.25)
-            fy = int(h_orig * 0.15)
-            fw = int(w_orig * 0.5)
-            fh = int(h_orig * 0.75)
+            fx = int(w_send * 0.25)
+            fy = int(h_send * 0.15)
+            fw = int(w_send * 0.5)
+            fh = int(h_send * 0.75)
             box_coords = (fx, fy, fx + fw, fy + fh)
             det_model_used = 'fallback-center'
 
@@ -2017,7 +2028,7 @@ The door should fit naturally on the wall."""
         # Phase 2: Auto Masking
         # ═══════════════════════════════════════
         print("\n🎨 2-BOSQICH: Maskani chizyapman...")
-        mask = PILImage.new('L', (w_orig, h_orig), 0)
+        mask = PILImage.new('L', (w_send, h_send), 0)
         draw = ImageDraw.Draw(mask)
         draw.rectangle([py_xmin, py_ymin, py_xmax, py_ymax], fill=255)
         mask_buf = BytesIO()
@@ -2077,6 +2088,7 @@ RULES:
         if not final_img:
             raise ValueError("Barcha modellar muvaffaqiyatsiz bo'ldi. Rasmni generatsiya qilib bo'lmadi.")
             
+        final_img = final_img.resize((w_orig, h_orig), PILImage.Resampling.LANCZOS)
         final_img.save(result_image_path, format="PNG")
         
         save_visualization_metadata(result_image_path, {

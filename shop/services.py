@@ -1778,6 +1778,7 @@ class AIService:
         if room_bgr is None:
             raise ValueError("Xona rasmi yuklanmadi")
         h_orig, w_orig = room_bgr.shape[:2]
+        print(f"DEBUG: [Gemini Direct v4] Original room size: {w_orig}×{h_orig}")
 
         # ── Find the best available door image (no-bg > original > main) ─────
         door_image_path = None
@@ -1794,14 +1795,40 @@ class AIService:
         if not door_image_path:
             raise ValueError("Mahsulot rasmi topilmadi")
 
-        # ── Read raw bytes (preserve original quality, no re-encode) ─────────
-        with open(room_image_path, "rb") as f:
-            room_bytes = f.read()
+        # ── Prepare room bytes for Gemini at a capped resolution ─────────────
+        # Gemini works best at ≤1024px on the long side.  We send a downscaled
+        # copy so the model processes the full framing without internal cropping,
+        # then we upscale the result back to the original dimensions afterwards.
+        # This is the key fix for the "zoom / crop artifact" problem:
+        #   - Original 1080×1920 → send 576×1024 to Gemini
+        #   - Gemini returns ~1024×1024 or 1024×1365 (same ratio we sent)
+        #   - We upscale back to 1080×1920 — 1:1 framing preserved
+        GEMINI_MAX_LONG_SIDE = 1024
+        long_side = max(w_orig, h_orig)
+        if long_side > GEMINI_MAX_LONG_SIDE:
+            scale = GEMINI_MAX_LONG_SIDE / long_side
+            send_w = max(1, int(round(w_orig * scale)))
+            send_h = max(1, int(round(h_orig * scale)))
+            room_send = cv2.resize(
+                room_bgr, (send_w, send_h), interpolation=cv2.INTER_AREA
+            )
+            print(
+                f"DEBUG: [Gemini Direct v4] Downscaled room for Gemini: {send_w}×{send_h}"
+            )
+        else:
+            room_send = room_bgr
+            send_w, send_h = w_orig, h_orig
+
+        # Encode downscaled room as JPEG bytes
+        ok, room_buf = cv2.imencode(".jpg", room_send, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        if not ok or room_buf is None:
+            raise ValueError("Xona rasmini encode qilishda xatolik")
+        room_bytes = room_buf.tobytes()
+        room_mime = "image/jpeg"
+
+        # Door image — read raw bytes as-is (PNG transparency preserved)
         with open(door_image_path, "rb") as f:
             door_bytes = f.read()
-
-        room_ext = os.path.splitext(room_image_path)[1].lower()
-        room_mime = "image/png" if room_ext == ".png" else "image/jpeg"
         door_ext = os.path.splitext(door_image_path)[1].lower()
         door_mime = "image/png" if door_ext == ".png" else "image/jpeg"
 
@@ -1867,39 +1894,50 @@ class AIService:
                             for part in response.candidates[0].content.parts:
                                 if part.inline_data and part.inline_data.data:
                                     img = PILImage.open(BytesIO(part.inline_data.data))
+                                    gem_w, gem_h = img.size
+                                    print(
+                                        f"DEBUG: [Gemini Direct v4] Gemini returned: {gem_w}×{gem_h}"
+                                    )
 
-                                    # ── Smart aspect-ratio preservation ───────
-                                    # Input:  any size/ratio (9:16, 16:9, square…)
-                                    # Output: always the exact same W×H as the
-                                    #         uploaded room photo — no distortion.
-                                    #
-                                    # If Gemini returns a different aspect ratio,
-                                    # center-crop to match before final resize so
-                                    # we never squish/stretch the result.
-                                    src_w, src_h = img.size
-                                    if (src_w, src_h) != (w_orig, h_orig):
-                                        tgt_ratio = w_orig / h_orig
-                                        src_ratio = src_w / src_h
-                                        # Center-crop only when ratios differ >8%
-                                        if (
-                                            abs(tgt_ratio - src_ratio)
-                                            / max(tgt_ratio, src_ratio)
-                                            > 0.08
-                                        ):
-                                            if src_ratio > tgt_ratio:
-                                                # Too wide → crop sides
-                                                new_w = int(src_h * tgt_ratio)
-                                                left = (src_w - new_w) // 2
-                                                img = img.crop(
-                                                    (left, 0, left + new_w, src_h)
+                                    # ── Restore original room dimensions ──────
+                                    # We sent Gemini a downscaled room (send_w×send_h).
+                                    # Gemini returns something close to that ratio.
+                                    # Step 1: center-crop Gemini output to exactly
+                                    #         the same aspect ratio as what we sent
+                                    #         (removes any slight ratio drift).
+                                    # Step 2: upscale to the original room dimensions
+                                    #         (w_orig × h_orig) — full resolution back.
+                                    send_ratio = send_w / send_h
+                                    gem_ratio = gem_w / gem_h
+
+                                    if (
+                                        abs(send_ratio - gem_ratio)
+                                        / max(send_ratio, gem_ratio)
+                                        > 0.04
+                                    ):
+                                        # Ratios differ enough to need a crop
+                                        if gem_ratio > send_ratio:
+                                            # Gemini output too wide → crop sides
+                                            crop_w = int(gem_h * send_ratio)
+                                            crop_left = (gem_w - crop_w) // 2
+                                            img = img.crop(
+                                                (
+                                                    crop_left,
+                                                    0,
+                                                    crop_left + crop_w,
+                                                    gem_h,
                                                 )
-                                            else:
-                                                # Too tall → crop top/bottom
-                                                new_h = int(src_w / tgt_ratio)
-                                                top = (src_h - new_h) // 2
-                                                img = img.crop(
-                                                    (0, top, src_w, top + new_h)
-                                                )
+                                            )
+                                        else:
+                                            # Gemini output too tall → crop top/bottom
+                                            crop_h = int(gem_w / send_ratio)
+                                            crop_top = (gem_h - crop_h) // 2
+                                            img = img.crop(
+                                                (0, crop_top, gem_w, crop_top + crop_h)
+                                            )
+
+                                    # Final upscale to exact original resolution
+                                    if img.size != (w_orig, h_orig):
                                         img = img.resize(
                                             (w_orig, h_orig),
                                             PILImage.Resampling.LANCZOS,

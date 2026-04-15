@@ -1956,19 +1956,13 @@ class AIService:
             raise ValueError("Mahsulot rasmi topilmadi")
 
         door_ext = os.path.splitext(door_image_path)[1].lower()
-        
-        print(f"DEBUG: [Pipeline] Loading door image: {door_image_path}")
-        door_pil = PILImage.open(door_image_path).convert("RGBA")
-        door_w, door_h = door_pil.size
-        if max(door_w, door_h) > 1024:
-            scale = 1024 / max(door_w, door_h)
-            new_dw, new_dh = max(1, int(door_w * scale)), max(1, int(door_h * scale))
-            door_pil = door_pil.resize((new_dw, new_dh), PILImage.Resampling.LANCZOS)
-            
-        door_buf = BytesIO()
-        door_pil.save(door_buf, format="PNG")
-        door_bytes = door_buf.getvalue()
-        door_mime = "image/png"
+        if door_ext == ".png": door_mime = "image/png"
+        elif door_ext in (".jpg", ".jpeg"): door_mime = "image/jpeg"
+        elif door_ext == ".webp": door_mime = "image/webp"
+        else: door_mime = "image/png"
+
+        with open(door_image_path, "rb") as f:
+            door_bytes = f.read()
 
         clients = AIService.build_gemini_visual_clients()
         if not clients:

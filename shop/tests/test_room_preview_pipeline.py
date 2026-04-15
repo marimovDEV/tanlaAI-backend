@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 import cv2
 
+from shop.ai_utils import load_visualization_metadata
 from shop.services import (
     AIService,
     add_floor_contact_shadow,
@@ -158,6 +159,45 @@ class RoomPreviewPipelineTests(SimpleTestCase):
 
             self.assertEqual(output_path, result_path)
             gemini_preview.assert_called_once_with(product, room_path, result_path)
+
+    def test_generate_room_preview_falls_back_when_gemini_full_edit_fails(self):
+        room = np.full((260, 180, 3), 228, dtype=np.uint8)
+        room[40:228, 62:118] = (55, 55, 55)
+        room[228:260, :] = (190, 190, 190)
+
+        door_rgba = np.zeros((180, 70, 4), dtype=np.uint8)
+        door_rgba[:, :, :3] = (235, 235, 235)
+        door_rgba[:, :, 3] = 255
+
+        class DummyProduct:
+            id = 78
+            width = 80
+            height = 200
+            name = 'Fallback Door'
+
+        product = DummyProduct()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            room_path = str(Path(tmpdir) / 'room.png')
+            result_path = str(Path(tmpdir) / 'result.png')
+            self.assertTrue(cv2.imwrite(room_path, room))
+
+            with (
+                patch.object(AIService, 'get_visualization_provider', return_value='gemini'),
+                patch.object(AIService, 'generate_room_preview_with_gemini', side_effect=ValueError('Publisher Model was not found')),
+                patch('shop.services.load_best_door_rgba', return_value=door_rgba),
+                patch('shop.services.detect_door_opening_box', return_value=((58, 36, 122, 230), 'mock')),
+                patch.object(AIService, 'refine_door_edges_with_ai', side_effect=ValueError('skip ai')),
+            ):
+                output_path = AIService.generate_room_preview(product, room_path, result_path)
+
+            metadata = load_visualization_metadata(result_path)
+
+            self.assertEqual(output_path, result_path)
+            self.assertTrue(Path(result_path).exists())
+            self.assertEqual(metadata['pipeline']['provider_requested'], 'gemini')
+            self.assertEqual(metadata['pipeline']['provider_fallback'], 'hybrid')
+            self.assertIn('Publisher Model was not found', metadata['pipeline']['gemini_full_edit_error'])
 
     def test_generate_room_preview_regression_does_not_raise_name_error(self):
         room = np.full((260, 180, 3), 228, dtype=np.uint8)

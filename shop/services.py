@@ -1789,9 +1789,14 @@ class AIService:
         from .ai_utils import save_visualization_metadata
 
         provider = AIService.get_visualization_provider(default='hybrid')
+        gemini_full_edit_error = None
         if provider == 'gemini':
             print(f"DEBUG: [Pipeline] Using Gemini full-scene editor for product {product.id}...")
-            return AIService.generate_room_preview_with_gemini(product, room_image_path, result_image_path)
+            try:
+                return AIService.generate_room_preview_with_gemini(product, room_image_path, result_image_path)
+            except Exception as e:
+                gemini_full_edit_error = str(e)[:500]
+                print(f"WARNING: [Pipeline] Gemini full-scene edit unavailable, falling back to locked-scene pipeline: {e}")
 
         print(f"DEBUG: [Pipeline] Starting production pipeline for product {product.id}...")
         preview_metadata = {
@@ -1800,8 +1805,12 @@ class AIService:
                 'image_edit_engine': 'OpenCV',
                 'used_ai_refine': False,
                 'final_result': 'opencv_composite',
+                'provider_requested': provider,
             }
         }
+        if gemini_full_edit_error:
+            preview_metadata['pipeline']['provider_fallback'] = 'hybrid'
+            preview_metadata['pipeline']['gemini_full_edit_error'] = gemini_full_edit_error
 
         # --- Load room ---
         room_bgr = cv2.imread(room_image_path, cv2.IMREAD_COLOR)

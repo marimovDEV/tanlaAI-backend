@@ -1203,63 +1203,73 @@ class AIService:
     """Service layer for all AI operations — background removal and room visualization."""
     
     @staticmethod
+    def get_gemini_api_client(api_key=None):
+        from google import genai
+
+        if api_key is None:
+            api_key = getattr(settings, 'GEMINI_API_KEY', None)
+        if isinstance(api_key, str):
+            api_key = api_key.strip()
+        if not api_key:
+            return None
+
+        print("DEBUG: [AI Service] Initializing client with API KEY...")
+        return genai.Client(api_key=api_key)
+
+    @staticmethod
+    def get_gemini_vertex_client():
+        import json
+        from google import genai
+
+        key_path = getattr(settings, 'GOOGLE_APPLICATION_CREDENTIALS', None)
+        if not (key_path and os.path.exists(key_path)):
+            return None
+        try:
+            from google.oauth2 import service_account
+            print("DEBUG: [AI Service] Trying Service Account fallback...")
+            
+            with open(key_path, 'r', encoding='utf-8') as f:
+                info = json.load(f)
+
+            project = info.get('project_id') or getattr(settings, 'VERTEX_AI_PROJECT', '')
+            location = getattr(settings, 'VERTEX_AI_LOCATION', 'us-central1')
+
+            # PEM normalization (fix corrupted \n in private_key)
+            import re
+            pk = info.get('private_key', '')
+            match = re.search(r'-----BEGIN PRIVATE KEY-----(.*)-----END PRIVATE KEY-----', pk, re.DOTALL)
+            if match:
+                body = "".join(re.findall(r'[A-Za-z0-9+/=]', match.group(1)))
+                formatted = "\n".join(body[i:i+64] for i in range(0, len(body), 64))
+                info['private_key'] = f"-----BEGIN PRIVATE KEY-----\n{formatted}\n-----END PRIVATE KEY-----\n"
+                print("DEBUG: [AI Service] PEM key normalized successfully")
+
+            credentials = service_account.Credentials.from_service_account_info(
+                info, 
+                scopes=['https://www.googleapis.com/auth/cloud-platform']
+            )
+            
+            return genai.Client(
+                vertexai=True,
+                project=project,
+                location=location,
+                credentials=credentials
+            )
+        except Exception as e:
+            print(f"WARNING: [AI Service] Service Account failed: {e}")
+            return None
+
+    @staticmethod
     def get_gemini_client(prefer_vertex=False):
         """
         Initialize Gemini client.
         By default uses API key first, but image-generation flows can prefer Vertex AI.
         """
-        import json
-        from google import genai
-
-        def _build_api_client():
-            api_key = getattr(settings, 'GEMINI_API_KEY', None)
-            if isinstance(api_key, str):
-                api_key = api_key.strip()
-            if not api_key:
-                return None
-            print("DEBUG: [AI Service] Initializing client with API KEY...")
-            return genai.Client(api_key=api_key)
-
-        def _build_vertex_client():
-            key_path = getattr(settings, 'GOOGLE_APPLICATION_CREDENTIALS', None)
-            if not (key_path and os.path.exists(key_path)):
-                return None
-            try:
-                from google.oauth2 import service_account
-                print("DEBUG: [AI Service] Trying Service Account fallback...")
-                
-                with open(key_path, 'r', encoding='utf-8') as f:
-                    info = json.load(f)
-
-                project = info.get('project_id') or getattr(settings, 'VERTEX_AI_PROJECT', '')
-                location = getattr(settings, 'VERTEX_AI_LOCATION', 'us-central1')
-
-                # PEM normalization (fix corrupted \n in private_key)
-                import re
-                pk = info.get('private_key', '')
-                match = re.search(r'-----BEGIN PRIVATE KEY-----(.*)-----END PRIVATE KEY-----', pk, re.DOTALL)
-                if match:
-                    body = "".join(re.findall(r'[A-Za-z0-9+/=]', match.group(1)))
-                    formatted = "\n".join(body[i:i+64] for i in range(0, len(body), 64))
-                    info['private_key'] = f"-----BEGIN PRIVATE KEY-----\n{formatted}\n-----END PRIVATE KEY-----\n"
-                    print("DEBUG: [AI Service] PEM key normalized successfully")
-
-                credentials = service_account.Credentials.from_service_account_info(
-                    info, 
-                    scopes=['https://www.googleapis.com/auth/cloud-platform']
-                )
-                
-                return genai.Client(
-                    vertexai=True,
-                    project=project,
-                    location=location,
-                    credentials=credentials
-                )
-            except Exception as e:
-                print(f"WARNING: [AI Service] Service Account failed: {e}")
-                return None
-
-        client_builders = [_build_vertex_client, _build_api_client] if prefer_vertex else [_build_api_client, _build_vertex_client]
+        client_builders = (
+            [AIService.get_gemini_vertex_client, AIService.get_gemini_api_client]
+            if prefer_vertex else
+            [AIService.get_gemini_api_client, AIService.get_gemini_vertex_client]
+        )
 
         for builder in client_builders:
             client = builder()
@@ -1291,6 +1301,58 @@ class AIService:
         if isinstance(single_key, str) and single_key.strip():
             return [single_key.strip()]
         return []
+
+    @staticmethod
+    def build_gemini_visual_clients():
+        clients = []
+
+        vertex_client = AIService.get_gemini_vertex_client()
+        if vertex_client is not None:
+            clients.append(('vertex', vertex_client))
+
+        for index, api_key in enumerate(AIService.get_gemini_api_keys(), start=1):
+            try:
+                api_client = AIService.get_gemini_api_client(api_key)
+                if api_client is not None:
+                    clients.append((f'api_key_{index}', api_client))
+            except Exception as e:
+                print(f"WARNING: [AI Service] API key client init failed ({index}): {e}")
+
+        if not clients:
+            clients.append(('auto', AIService.get_gemini_client(prefer_vertex=True)))
+        return clients
+
+    @staticmethod
+    def accept_gemini_visual_candidate(edited_bgr, baseline_bgr, master_box, preview_metadata, result_image_path, engine_label, model_name, edit_mode, client_label):
+        import cv2
+        from .ai_utils import save_visualization_metadata
+
+        is_valid, validation = validate_locked_scene_candidate(edited_bgr, baseline_bgr, master_box)
+        candidate_info = {
+            'engine': engine_label,
+            'model': model_name,
+            'edit_mode': edit_mode,
+            'client': client_label,
+            'accepted': bool(is_valid),
+            'validation': validation,
+        }
+        preview_metadata['pipeline'].setdefault('candidate_validations', []).append(candidate_info)
+
+        if not is_valid:
+            print(
+                "WARNING: [Gemini Preview] Rejected candidate because locked scene changed too much "
+                f"(mse={validation.get('mse')}, changed_ratio={validation.get('changed_ratio')})"
+            )
+            return False
+
+        preview_metadata['pipeline']['scene_lock_validation'] = validation
+        preview_metadata['pipeline']['image_edit_engine'] = engine_label
+        preview_metadata['pipeline']['model'] = model_name
+        preview_metadata['pipeline']['edit_mode'] = edit_mode
+        preview_metadata['pipeline']['client_mode'] = client_label
+        cv2.imwrite(result_image_path, edited_bgr)
+        save_visualization_metadata(result_image_path, preview_metadata)
+        return True
 
     @staticmethod
     def build_gemini_full_scene_prompt(product, pixel_box, image_width, image_height):
@@ -1385,12 +1447,7 @@ class AIService:
             },
         }
 
-        api_keys = AIService.get_gemini_api_keys()
-        clients = []
-        if api_keys:
-            clients.extend(('api_key', genai.Client(api_key=key)) for key in api_keys)
-        else:
-            clients.append(('auto', AIService.get_gemini_client(prefer_vertex=True)))
+        clients = AIService.build_gemini_visual_clients()
 
         room_reference = types.RawReferenceImage(
             reference_image=types.Image(image_bytes=room_buf.tobytes()),
@@ -1411,10 +1468,10 @@ class AIService:
             'INPAINT_EDIT',
         )
 
-        for _, client in clients:
+        for client_label, client in clients:
             for edit_mode in imagen_edit_modes:
                 try:
-                    print(f"DEBUG: [Gemini Preview] Trying Imagen full edit ({edit_mode})...")
+                    print(f"DEBUG: [Gemini Preview] Trying Imagen full edit ({edit_mode}, {client_label})...")
                     response = client.models.edit_image(
                         model='imagen-3.0-capability-001',
                         prompt=prompt_text,
@@ -1434,14 +1491,19 @@ class AIService:
                         image_width,
                         image_height,
                     )
-                    _, validation = validate_locked_scene_candidate(edited_bgr, room_bgr, master_box)
-                    preview_metadata['pipeline']['scene_lock_validation'] = validation
-                    preview_metadata['pipeline']['image_edit_engine'] = 'Imagen 3'
-                    preview_metadata['pipeline']['model'] = 'imagen-3.0-capability-001'
-                    preview_metadata['pipeline']['edit_mode'] = edit_mode
-                    cv2.imwrite(result_image_path, edited_bgr)
-                    save_visualization_metadata(result_image_path, preview_metadata)
-                    return result_image_path
+                    if AIService.accept_gemini_visual_candidate(
+                        edited_bgr,
+                        room_bgr,
+                        master_box,
+                        preview_metadata,
+                        result_image_path,
+                        'Imagen 3',
+                        'imagen-3.0-capability-001',
+                        edit_mode,
+                        client_label,
+                    ):
+                        return result_image_path
+                    last_error = ValueError("Imagen full edit changed the locked scene too much")
                 except Exception as e:
                     last_error = e
                     print(f"WARNING: [Gemini Preview] Imagen full edit failed ({edit_mode}): {e}")
@@ -1458,10 +1520,10 @@ class AIService:
             prompt_text,
         ]
 
-        for _, client in clients:
+        for client_label, client in clients:
             for model_name in gemini_models:
                 try:
-                    print(f"DEBUG: [Gemini Preview] Trying generate_content full edit ({model_name})...")
+                    print(f"DEBUG: [Gemini Preview] Trying generate_content full edit ({model_name}, {client_label})...")
                     response = client.models.generate_content(
                         model=model_name,
                         contents=contents,
@@ -1477,14 +1539,19 @@ class AIService:
                                     image_width,
                                     image_height,
                                 )
-                                _, validation = validate_locked_scene_candidate(edited_bgr, room_bgr, master_box)
-                                preview_metadata['pipeline']['scene_lock_validation'] = validation
-                                preview_metadata['pipeline']['image_edit_engine'] = 'Gemini'
-                                preview_metadata['pipeline']['model'] = model_name
-                                preview_metadata['pipeline']['edit_mode'] = 'generate_content_image'
-                                cv2.imwrite(result_image_path, edited_bgr)
-                                save_visualization_metadata(result_image_path, preview_metadata)
-                                return result_image_path
+                                if AIService.accept_gemini_visual_candidate(
+                                    edited_bgr,
+                                    room_bgr,
+                                    master_box,
+                                    preview_metadata,
+                                    result_image_path,
+                                    'Gemini',
+                                    model_name,
+                                    'generate_content_image',
+                                    client_label,
+                                ):
+                                    return result_image_path
+                                last_error = ValueError("Gemini generate_content image changed the locked scene too much")
                     raise ValueError("No inline image returned by Gemini full edit")
                 except Exception as e:
                     last_error = e

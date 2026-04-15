@@ -108,6 +108,43 @@ class RoomPreviewPipelineTests(SimpleTestCase):
         self.assertLess(float(shaded[204, 90].mean()), 215.0)
         self.assertEqual(float(shaded[230, 20].mean()), 215.0)
 
+    def test_build_gemini_visual_clients_prefers_vertex_then_api_keys(self):
+        vertex_client = object()
+        api_client_a = object()
+        api_client_b = object()
+
+        with (
+            patch.object(AIService, 'get_gemini_vertex_client', return_value=vertex_client),
+            patch.object(AIService, 'get_gemini_api_keys', return_value=['k1', 'k2']),
+            patch.object(AIService, 'get_gemini_api_client', side_effect=[api_client_a, api_client_b]),
+        ):
+            clients = AIService.build_gemini_visual_clients()
+
+        self.assertEqual(clients[0], ('vertex', vertex_client))
+        self.assertEqual(clients[1], ('api_key_1', api_client_a))
+        self.assertEqual(clients[2], ('api_key_2', api_client_b))
+
+    def test_accept_gemini_visual_candidate_rejects_scene_change(self):
+        baseline = np.full((120, 100, 3), 220, dtype=np.uint8)
+        edited = np.zeros((120, 100, 3), dtype=np.uint8)
+        metadata = {'pipeline': {}}
+
+        accepted = AIService.accept_gemini_visual_candidate(
+            edited,
+            baseline,
+            (30, 20, 70, 100),
+            metadata,
+            '/tmp/unused.png',
+            'Gemini',
+            'gemini-test',
+            'generate_content_image',
+            'vertex',
+        )
+
+        self.assertFalse(accepted)
+        self.assertEqual(len(metadata['pipeline']['candidate_validations']), 1)
+        self.assertFalse(metadata['pipeline']['candidate_validations'][0]['accepted'])
+
     def test_build_box_mask_marks_detected_area(self):
         mask = build_box_mask(100, 80, (20, 10, 50, 80), pad_x_ratio=0.0, pad_y_ratio=0.0)
 

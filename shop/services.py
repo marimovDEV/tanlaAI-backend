@@ -1978,11 +1978,13 @@ class AIService:
         # Phase 1: AI Detection
         # ═══════════════════════════════════════
         print("\n🔍 1-BOSQICH: Devorni analiz qilyapman...")
-        detection_prompt = """Analyze this room image. I want to install a new door.
-Return ONLY a JSON object with the bounding box for the door placement.
-Format: {"ymin": 0-1000, "xmin": 0-1000, "ymax": 0-1000, "xmax": 0-1000}
-Use normalized coordinates (0 to 1000).
-The door should fit naturally on the wall."""
+        detection_prompt = (
+            "Analyze this room image for a door installation.\n"
+            "Return ONLY a JSON object with the bounding box where a new door should be placed.\n"
+            "Focus on finding an empty wall or replacing an existing door.\n\n"
+            'Format: {"ymin": 0-1000, "xmin": 0-1000, "ymax": 0-1000, "xmax": 0-1000}\n'
+            "Use normalized coordinates (0 to 1000)."
+        )
         DETECTION_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro']
         
         box_coords = None
@@ -2005,15 +2007,24 @@ The door should fit naturally on the wall."""
                     json_match = re.search(r'\{[^}]+\}', text)
                     if json_match: text = json_match.group(0)
                     coords = json.loads(text)
-                    ymin = int(coords.get('ymin', 200))
-                    xmin = int(coords.get('xmin', 300))
-                    ymax = int(coords.get('ymax', 800))
-                    xmax = int(coords.get('xmax', 700))
+                    ymin = float(coords.get('ymin', 200))
+                    xmin = float(coords.get('xmin', 300))
+                    ymax = float(coords.get('ymax', 800))
+                    xmax = float(coords.get('xmax', 700))
                     
+                    if max(ymin, xmin, ymax, xmax) <= 1.5:
+                        ymin *= 1000
+                        xmin *= 1000
+                        ymax *= 1000
+                        xmax *= 1000
+                        
                     py_ymin = int(ymin * h_send / 1000)
                     py_xmin = int(xmin * w_send / 1000)
                     py_ymax = int(ymax * h_send / 1000)
                     py_xmax = int(xmax * w_send / 1000)
+                    
+                    if py_xmax <= py_xmin or py_ymax <= py_ymin:
+                        raise ValueError("Invalid bounding box detected.")
                     
                     box_coords = (py_xmin, py_ymin, py_xmax, py_ymax)
                     det_model_used = model_name

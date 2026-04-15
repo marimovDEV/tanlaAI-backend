@@ -1919,14 +1919,14 @@ class AIService:
         from .ai_utils import save_visualization_metadata
 
         # ── Load original room ────────────────────────────────────────────────
-        try:
-            with open(room_image_path, "rb") as f:
-                room_bytes = f.read()
-            room_pil = PILImage.open(BytesIO(room_bytes))
-            w_orig, h_orig = room_pil.size
-        except Exception:
+        room_bgr = cv2.imread(room_image_path, cv2.IMREAD_COLOR)
+        if room_bgr is None:
             raise ValueError("Xona rasmi yuklanmadi")
-            
+        h_orig, w_orig = room_bgr.shape[:2]
+        
+        ok, room_buf = cv2.imencode(".png", room_bgr)
+        room_bytes = room_buf.tobytes()
+
         print(f"DEBUG: [Gemini Direct / Nano Banana] Original room size: {w_orig}×{h_orig}")
 
         # ── Find door image ───────────────────────────────────────────────────
@@ -1943,6 +1943,9 @@ class AIService:
                     pass
         if not door_image_path:
             raise ValueError("Mahsulot rasmi topilmadi")
+
+        door_ext = os.path.splitext(door_image_path)[1].lower()
+        door_mime = "image/png" if door_ext == ".png" else "image/jpeg"
 
         with open(door_image_path, "rb") as f:
             door_bytes = f.read()
@@ -2052,7 +2055,7 @@ RULES:
                         contents=[
                             types.Part.from_bytes(data=room_bytes, mime_type='image/png'),
                             types.Part.from_bytes(data=mask_bytes, mime_type='image/png'),
-                            types.Part.from_bytes(data=door_bytes, mime_type='image/png'),
+                            types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
                             edit_prompt
                         ],
                         config=types.GenerateContentConfig(response_modalities=["IMAGE", "TEXT"])

@@ -218,6 +218,37 @@ def expand_pixel_box(pixel_box, width, height, pad_x_ratio=0.06, pad_y_ratio=0.0
     )
 
 
+def expand_pixel_box_top_heavy(
+    pixel_box,
+    width,
+    height,
+    pad_x_ratio=0.08,
+    pad_top_ratio=0.28,
+    pad_bottom_ratio=0.02,
+):
+    """
+    Asymmetric expansion — adds much more padding at the TOP than the bottom.
+
+    Used for door replacement in rooms that have decorative arches / cornices
+    above the door frame.  The extra top padding ensures the old arch is fully
+    covered during inpainting and that the new door overlay hides it completely.
+
+        pad_top_ratio  = 0.28  →  adds 28 % of door height above the box
+        pad_bottom_ratio = 0.02 →  adds  2 % below  (door stays on floor)
+    """
+    left, top, right, bottom = sanitize_pixel_box(pixel_box, width, height)
+    box_w = max(1, right - left)
+    box_h = max(1, bottom - top)
+    pad_x = int(round(box_w * pad_x_ratio))
+    pad_top = int(round(box_h * pad_top_ratio))
+    pad_bot = int(round(box_h * pad_bottom_ratio))
+    return sanitize_pixel_box(
+        (left - pad_x, top - pad_top, right + pad_x, bottom + pad_bot),
+        width,
+        height,
+    )
+
+
 def build_box_mask(height, width, pixel_box, pad_x_ratio=0.06, pad_y_ratio=0.04):
     import cv2
     import numpy as np
@@ -1834,32 +1865,26 @@ class AIService:
 
         door_name = getattr(product, "name", "eshik")
 
+        # Minimal, direct prompt — closest to what works in Gemini chat UI.
+        # Overly-long constraint lists cause models to reply with text instead
+        # of generating an image.  Keep it short and imperative.
         prompt = (
-            f"Image 1 is a room photo. Image 2 is a door product ('{door_name}').\n\n"
-            "TASK: REPLACE the existing door in the room (Image 1) with the new door (Image 2).\n\n"
-            "STEP BY STEP:\n"
-            "1. Find the existing door in the room photo — it is the door currently installed in the wall\n"
-            "2. Remove the existing door completely\n"
-            "3. Place the new door (from Image 2) in the EXACT same position, size, and perspective\n"
-            "4. The new door must sit on the floor at the same height as the original door\n"
-            "5. Match the lighting, shadows, and perspective of the room naturally\n\n"
-            "STRICT RULES — do NOT violate:\n"
-            "- ONLY change the door — replace nothing else\n"
-            "- Walls, floor, carpet, curtains, furniture, ceiling: keep 100% unchanged\n"
-            "- The new door must be the exact same proportions and size as the original door in the room\n"
-            "- Preserve every detail of the new door design from Image 2: glass, frame, panels, handles\n"
-            "- Do NOT crop, zoom, or change the room composition\n"
-            "- Output image must be the same dimensions as the input room photo"
+            f"Replace the existing door in the room photo with the new door shown in the second image ('{door_name}'). "
+            "Keep the entire room exactly the same — walls, floor, carpet, curtains, furniture. "
+            "The new door must be in the exact same location, size, and perspective as the original door. "
+            "Output only the edited room photo."
         )
 
         clients = AIService.build_gemini_visual_clients()
+        print(f"DEBUG: [Gemini Direct v4] Available clients: {[c[0] for c in clients]}")
 
-        # Gemini models that support image output (generation/editing) — 2025
+        # Models known to support response_modalities=["IMAGE"] via Gemini API (2025).
+        # Ordered from most to least likely to support image generation output.
         gemini_models = [
-            "gemini-2.0-flash-preview-image-generation",
             "gemini-2.0-flash-exp",
+            "gemini-2.0-flash-preview-image-generation",
             "gemini-2.5-flash-preview-05-20",
-            "gemini-2.0-flash",
+            "gemini-2.0-flash-exp-image-generation",
         ]
 
         last_error = None
@@ -1885,7 +1910,6 @@ class AIService:
                             ],
                             config=types.GenerateContentConfig(
                                 response_modalities=["IMAGE", "TEXT"],
-                                temperature=1.0,
                             ),
                         )
 
@@ -1982,6 +2006,10 @@ class AIService:
 
                     except Exception as e:
                         last_error = str(e)
+                        print(
+                            f"DEBUG: [Gemini Direct v4] {model_name} exception "
+                            f"({client_label}): {last_error[:300]}"
+                        )
                         if (
                             "429" in last_error
                             or "RESOURCE_EXHAUSTED" in last_error
@@ -1993,14 +2021,33 @@ class AIService:
                             )
                             time.sleep(5)
                             continue
-                        print(
-                            f"DEBUG: [Gemini Direct v4] {model_name} failed: "
-                            f"{last_error[:200]}"
-                        )
+                        # For model-not-found or unsupported-modality errors,
+                        # skip immediately to the next model without retrying.
+                        if any(
+                            kw in last_error.lower()
+                            for kw in (
+                                "not found",
+                                "does not exist",
+                                "unsupported",
+                                "invalid",
+                                "not supported",
+                            )
+                        ):
+                            print(
+                                f"DEBUG: [Gemini Direct v4] Skipping {model_name} "
+                                f"(not available / unsupported)"
+                            )
+                            break
                         break  # Try next model
 
         # All Gemini attempts failed — caller (generate_room_preview) will
         # catch this and continue to the OpenCV fallback pipeline.
+        print(
+            f"ERROR: [Gemini Direct v4] All models/clients failed. "
+            f"Last error: {last_error}. "
+            f"Clients tried: {[c[0] for c in clients]}. "
+            f"Models tried: {gemini_models}"
+        )
         raise ValueError(f"Gemini Direct editing failed: {last_error}")
 
     @staticmethod
@@ -2632,10 +2679,16 @@ class AIService:
         detected_box, detection_method = detect_door_opening_box(
             room_bgr, expected_aspect_ratio
         )
-        # Expand box aggressively once to ensure it covers ALL old frame components.
+        # Expand box with extra TOP padding to cover decorative arches / cornices
+        # that sit above the door panel.  The bottom stays close to the floor.
         # This is our Master Box for both Removal and Insertion.
-        master_box = expand_pixel_box(
-            detected_box, w, h, pad_x_ratio=0.08, pad_y_ratio=0.06
+        master_box = expand_pixel_box_top_heavy(
+            detected_box,
+            w,
+            h,
+            pad_x_ratio=0.08,
+            pad_top_ratio=0.28,
+            pad_bottom_ratio=0.02,
         )
         x1, y1, x2, y2 = master_box
         print(
@@ -2658,8 +2711,14 @@ class AIService:
         print(f"DEBUG: [Pipeline] Step 2: Removing old door (inpainting)...")
         # To perfectly hide inpainting, the inpaint mask should be slightly SMALLER than the door area.
         # So we inpaint based on detected_box + small padding, then overlay based on master_box.
-        inpaint_box = expand_pixel_box(
-            detected_box, w, h, pad_x_ratio=0.05, pad_y_ratio=0.04
+        # Inpaint box also needs the extra top to erase the arch during wall fill.
+        inpaint_box = expand_pixel_box_top_heavy(
+            detected_box,
+            w,
+            h,
+            pad_x_ratio=0.05,
+            pad_top_ratio=0.25,
+            pad_bottom_ratio=0.02,
         )
         cleaned_room = remove_door_from_room_locally(room_bgr, inpaint_box)
         preview_metadata["pipeline"]["old_door_removal"] = "opencv_inpaint"

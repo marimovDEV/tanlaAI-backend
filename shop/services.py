@@ -1918,11 +1918,11 @@ class AIService:
         import os
         from .ai_utils import save_visualization_metadata
 
+        from PIL import ImageOps
         # ── Load original room ────────────────────────────────────────────────
-        room_bgr = cv2.imread(room_image_path, cv2.IMREAD_COLOR)
-        if room_bgr is None:
-            raise ValueError("Xona rasmi yuklanmadi")
-        h_orig, w_orig = room_bgr.shape[:2]
+        room_pil = PILImage.open(room_image_path)
+        room_pil = ImageOps.exif_transpose(room_pil).convert("RGB")
+        w_orig, h_orig = room_pil.size
         
         GEMINI_MAX = 1024
         long_side = max(w_orig, h_orig)
@@ -1930,13 +1930,13 @@ class AIService:
             scale = GEMINI_MAX / long_side
             new_w = max(1, int(w_orig * scale))
             new_h = max(1, int(h_orig * scale))
-            room_bgr = cv2.resize(room_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            room_pil = room_pil.resize((new_w, new_h), PILImage.Resampling.LANCZOS)
             
-        h_send, w_send = room_bgr.shape[:2]
-
+        w_send, h_send = room_pil.size
         
-        ok, room_buf = cv2.imencode(".png", room_bgr)
-        room_bytes = room_buf.tobytes()
+        room_buf = BytesIO()
+        room_pil.save(room_buf, format="PNG")
+        room_bytes = room_buf.getvalue()
 
         print(f"DEBUG: [Gemini Direct / Nano Banana] Original size: {w_orig}×{h_orig}, Send size: {w_send}×{h_send}")
 

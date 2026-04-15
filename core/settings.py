@@ -208,6 +208,15 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# Cache - FileBasedCache so all gunicorn workers share state
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.filebased.FileBasedCache',
+        'LOCATION': BASE_DIR / 'cache',
+        'TIMEOUT': 3600,
+    }
+}
+
 # Authentication and Session Security
 LOGIN_URL = 'login'
 LOGIN_REDIRECT_URL = 'admin_dashboard'

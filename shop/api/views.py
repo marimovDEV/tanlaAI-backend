@@ -128,9 +128,9 @@ def run_api_ai_background(
         session[session_data_key] = data
         
         # Web App Cache fallback for broken sessions
-        if request_id:
+        if tg_user_id and request_id:
             from django.core.cache import cache
-            cache.set(f"ai_job_{request_id}", {"status": "done", "ai_result_id": ai_result.id if ai_result else None}, timeout=3600)
+            cache.set(f"ai_job_user_{tg_user_id}_req_{request_id}", {"status": "done", "ai_result_id": ai_result.id if ai_result else None}, timeout=3600)
             
         logger.info(
             f"DEBUG: [AI Service] Background task COMPLETED for product {product_id}"
@@ -159,9 +159,9 @@ def run_api_ai_background(
         data["error_msg"] = format_generation_error(error)
         session[session_data_key] = data
         
-        if request_id:
+        if tg_user_id and request_id:
             from django.core.cache import cache
-            cache.set(f"ai_job_{request_id}", {"status": "error", "error_msg": format_generation_error(error)}, timeout=3600)
+            cache.set(f"ai_job_user_{tg_user_id}_req_{request_id}", {"status": "error", "error_msg": format_generation_error(error)}, timeout=3600)
             
         logger.error(
             f"DEBUG: API AI generation error for product {product_id}: {error}"
@@ -583,7 +583,7 @@ class ProductViewSet(viewsets.ModelViewSet):
         request.session.save()
         
         from django.core.cache import cache
-        cache.set(f"ai_job_{request_id}", {"status": "running"}, timeout=3600)
+        cache.set(f"ai_job_user_{tg_user.id}_req_{request_id}", {"status": "running"}, timeout=3600)
 
         print(
             f"DEBUG: [AI Service] Submitting background task for product {product.id}"
@@ -615,28 +615,37 @@ class ProductViewSet(viewsets.ModelViewSet):
         session_data = request.session.get(session_key_data, {})
         request_id = str(request.query_params.get("request_id", "")).strip()
 
+        # Build response strictly to avoid client-side caching
+        def no_store(res):
+            res["Cache-Control"] = "no-store, max-age=0, must-revalidate"
+            res["Pragma"] = "no-cache"
+            return res
+
         # Reliable check for telegram webview cross-site blocking
-        if request_id:
+        if tg_user and request_id:
             from django.core.cache import cache
-            job_data = cache.get(f"ai_job_{request_id}")
+            job_data = cache.get(f"ai_job_user_{tg_user.id}_req_{request_id}")
             if job_data:
                 jstatus = job_data.get("status")
                 if jstatus == "done":
+                    # Clear it so subsequent totally fresh entries don't instantly resolve
+                    cache.delete(f"ai_job_user_{tg_user.id}_req_{request_id}")
                     ai_res_id = job_data.get("ai_result_id")
                     if ai_res_id:
                         ai_res = AIResult.objects.filter(id=ai_res_id).first()
                         if ai_res:
-                            return Response(build_ai_result_payload(request, ai_res))
-                    return Response({"status": "done"})
+                            return no_store(Response(build_ai_result_payload(request, ai_res)))
+                    return no_store(Response({"status": "done"}))
                 elif jstatus == "error":
-                    return Response({"status": "error", "message": job_data.get("error_msg", "Generatsiya bekor qilindi")})
+                    cache.delete(f"ai_job_user_{tg_user.id}_req_{request_id}")
+                    return no_store(Response({"status": "error", "message": job_data.get("error_msg", "Generatsiya bekor qilindi")}))
                 elif jstatus in ("running", "processing"):
-                    return Response({"status": "processing"})
+                    return no_store(Response({"status": "processing"}))
 
         if session_data:
             current_request_id = str(session_data.get("request_id", "")).strip()
             if request_id and current_request_id and request_id != current_request_id:
-                return Response({"status": "processing"})
+                return no_store(Response({"status": "processing"}))
 
             session_status = session_data.get("status")
             if session_status == "done":
@@ -644,39 +653,50 @@ class ProductViewSet(viewsets.ModelViewSet):
                 if ai_result_id:
                     ai_result = AIResult.objects.filter(id=ai_result_id).first()
                     if ai_result:
-                        return Response(build_ai_result_payload(request, ai_result))
-                return Response({"status": "done"})
+                        return no_store(Response(build_ai_result_payload(request, ai_result)))
+                return no_store(Response({"status": "done"}))
 
-            if session_status == "error":
-                return Response(
+            elif session_status == "error":
+                return no_store(Response(
                     {
                         "status": "error",
                         "message": session_data.get("error_msg")
                         or "AI generation failed.",
                     }
-                )
+                ))
 
-            if session_status in {"running", "processing", "pending"}:
-                return Response({"status": "processing"})
+            elif session_status in {"running", "processing", "pending"}:
+                return no_store(Response({"status": "processing"}))
 
+        # Fallback: check DB for latest result BUT only if no job is currently running
         if tg_user:
-            latest_result = (
-                AIResult.objects.filter(product=product, user=tg_user)
-                .order_by("-created_at")
-                .first()
-            )
-            if latest_result:
-                return Response(build_ai_result_payload(request, latest_result))
+            from django.core.cache import cache as _cache
+            # Check if ANY job is currently running for this user+product
+            # by scanning for any active cache key pattern
+            has_running_job = False
+            if request_id:
+                job_check = _cache.get(f"ai_job_user_{tg_user.id}_req_{request_id}")
+                if job_check and job_check.get("status") in ("running", "processing"):
+                    has_running_job = True
+
+            if not has_running_job:
+                latest_result = (
+                    AIResult.objects.filter(product=product, user=tg_user)
+                    .order_by("-created_at")
+                    .first()
+                )
+                if latest_result:
+                    return no_store(Response(build_ai_result_payload(request, latest_result)))
 
         if product.ai_status == "error":
-            return Response(
+            return no_store(Response(
                 {
                     "status": "error",
                     "message": format_generation_error(product.ai_error),
                 }
-            )
+            ))
 
-        return Response({"status": "processing"})
+        return no_store(Response({"status": "processing"}))
 
 
 class CompanyViewSet(viewsets.ModelViewSet):

@@ -10,3 +10,4 @@ static/*
 !static/react/**
 google-cloud-key.json
 models/
+cache/

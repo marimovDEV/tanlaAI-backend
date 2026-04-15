@@ -7,10 +7,12 @@ import cv2
 
 from shop.services import (
     AIService,
+    add_floor_contact_shadow,
     build_box_mask,
     compute_floor_aligned_door_box,
     detect_door_opening_box,
     detect_door_box_with_opencv,
+    match_door_lighting_to_room,
     normalize_door_opening_box,
     overlay_door_into_room,
     remove_door_from_room_locally,
@@ -83,6 +85,27 @@ class RoomPreviewPipelineTests(SimpleTestCase):
         self.assertEqual(placed[3], box[3])
         self.assertGreaterEqual(placed[1], 30)
         self.assertLess(placed[2] - placed[0], box[2] - box[0])
+
+    def test_match_door_lighting_to_room_tints_and_softens_edges(self):
+        room = np.full((220, 180, 3), (90, 120, 150), dtype=np.uint8)
+        door = np.zeros((160, 80, 4), dtype=np.uint8)
+        door[:, :, :3] = 245
+        door[4:-4, 4:-4, 3] = 255
+
+        matched = match_door_lighting_to_room(door, room, (50, 30, 130, 190))
+
+        self.assertLess(int(matched[4, 40, 3]), int(matched[20, 40, 3]))
+        self.assertLess(int(matched[4, 40, 0]), int(matched[20, 40, 0]))
+        self.assertLess(int(matched[4, 40, 1]), int(matched[20, 40, 1]))
+        self.assertLess(int(matched[4, 40, 2]), int(matched[20, 40, 2]))
+
+    def test_add_floor_contact_shadow_darkens_floor_near_door_base(self):
+        room = np.full((240, 180, 3), 215, dtype=np.uint8)
+        shaded = add_floor_contact_shadow(room, (60, 40, 120, 200), strength=0.35)
+
+        self.assertLess(float(shaded[200, 90].mean()), 215.0)
+        self.assertLess(float(shaded[204, 90].mean()), 215.0)
+        self.assertEqual(float(shaded[230, 20].mean()), 215.0)
 
     def test_build_box_mask_marks_detected_area(self):
         mask = build_box_mask(100, 80, (20, 10, 50, 80), pad_x_ratio=0.0, pad_y_ratio=0.0)

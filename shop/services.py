@@ -1019,14 +1019,29 @@ def overlay_door_into_room(room_bgr, door_rgba, pixel_box, add_shadow=True, wall
             flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0)
         )
 
-    alpha = resized_door[:, :, 3].astype(np.float32) / 255.0
     composite = room_bgr.copy()
 
     if add_shadow:
         composite = apply_soft_shadow(composite, resized_door[:, :, 3], placed_left, placed_top)
 
+    alpha_channel = resized_door[:, :, 3]
+    alpha_kernel = max(3, ((min(target_width, target_height) // 28) | 1))
+    erode_kernel = np.ones((3, 3), dtype=np.uint8)
+    tightened_alpha = cv2.erode(alpha_channel, erode_kernel, iterations=1)
+    feathered_alpha = cv2.GaussianBlur(tightened_alpha, (alpha_kernel, alpha_kernel), 0)
+    alpha = np.clip(feathered_alpha.astype(np.float32) / 255.0, 0.0, 1.0)
+
     region = composite[placed_top:placed_bottom, placed_left:placed_right].astype(np.float32)
     door_rgb = resized_door[:, :, :3].astype(np.float32)
+    ambient_bgr = sample_room_ambient_bgr(room_bgr, pixel_box).astype(np.float32)
+
+    edge_band = np.clip((0.92 - alpha) / 0.92, 0.0, 1.0)
+    edge_band *= (alpha > 0.0).astype(np.float32)
+    edge_band = cv2.GaussianBlur(edge_band, (alpha_kernel, alpha_kernel), 0)
+    if np.any(edge_band > 0.0):
+        edge_mix = np.clip(edge_band[..., None] * 0.32, 0.0, 0.32)
+        door_rgb = (door_rgb * (1.0 - edge_mix)) + (ambient_bgr.reshape(1, 1, 3) * edge_mix)
+
     blended = (alpha[..., None] * door_rgb) + ((1.0 - alpha[..., None]) * region)
     composite[placed_top:placed_bottom, placed_left:placed_right] = np.clip(blended, 0, 255).astype(np.uint8)
     return composite
@@ -1093,14 +1108,28 @@ def match_door_lighting_to_room(door_rgba, room_bgr, pixel_box):
     chroma_gain = 1.0 + ((chroma_gain - 1.0) * 0.35)
     total_gain = np.clip(chroma_gain * luminance_gain, 0.82, 1.18)
 
-    matched[:, :, :3] = np.clip(door_rgb * total_gain, 0, 255).astype(np.uint8)
+    vertical_gradient = np.linspace(1.02, 0.95, matched.shape[0], dtype=np.float32).reshape(-1, 1, 1)
+    adjusted_rgb = door_rgb * total_gain * vertical_gradient
 
-    softened_alpha = cv2.GaussianBlur(matched[:, :, 3], (5, 5), 0)
-    matched[:, :, 3] = np.maximum(matched[:, :, 3], (softened_alpha.astype(np.float32) * 0.85).astype(np.uint8))
+    alpha_channel = matched[:, :, 3]
+    alpha_kernel = max(5, ((min(matched.shape[0], matched.shape[1]) // 30) | 1))
+    tightened_alpha = cv2.erode(alpha_channel, np.ones((3, 3), dtype=np.uint8), iterations=1)
+    feathered_alpha = cv2.GaussianBlur(tightened_alpha, (alpha_kernel, alpha_kernel), 0)
+    alpha_float = np.clip(feathered_alpha.astype(np.float32) / 255.0, 0.0, 1.0)
+
+    edge_band = np.clip((0.88 - alpha_float) / 0.88, 0.0, 1.0)
+    edge_band *= (alpha_float > 0.0).astype(np.float32)
+    if np.any(edge_band > 0.0):
+        edge_mix = np.clip(edge_band[..., None] * 0.40, 0.0, 0.40)
+        adjusted_rgb = (adjusted_rgb * (1.0 - edge_mix)) + (ambient_bgr.reshape(1, 1, 3) * edge_mix)
+
+    matched[:, :, :3] = np.clip(adjusted_rgb, 0, 255).astype(np.uint8)
+    matched[:, :, 3] = feathered_alpha
     return matched
 
 
 def add_floor_contact_shadow(room_bgr, pixel_box, strength=0.24):
+    import cv2
     import numpy as np
 
     image_height, image_width = room_bgr.shape[:2]
@@ -1109,21 +1138,32 @@ def add_floor_contact_shadow(room_bgr, pixel_box, strength=0.24):
     box_height = max(1, bottom - top)
 
     shadow_height = max(4, int(round(box_height * 0.025)))
-    shadow_y_start = min(bottom, image_height - 1)
-    shadow_y_end = min(image_height, shadow_y_start + shadow_height)
     inset = max(1, int(round(box_width * 0.02)))
-
-    if shadow_y_start >= shadow_y_end:
-        return room_bgr
-
-    shaded = room_bgr.copy().astype(np.float32)
     shadow_left = min(right, max(left, left + inset))
     shadow_right = max(shadow_left + 1, max(left + 1, right - inset))
+    contact_overlap = max(2, int(round(box_height * 0.012)))
+    shadow_y_start = max(0, bottom - contact_overlap)
+    shadow_y_end = min(image_height, bottom + shadow_height)
 
-    for shadow_y in range(shadow_y_start, shadow_y_end):
-        fade = 1.0 - ((shadow_y - shadow_y_start) / float(max(1, shadow_height)))
-        shaded[shadow_y, shadow_left:shadow_right] *= (1.0 - (strength * fade))
+    if shadow_y_start >= shadow_y_end or shadow_right <= shadow_left:
+        return room_bgr
 
+    shadow_mask = np.zeros((image_height, image_width), dtype=np.float32)
+    shadow_mask[shadow_y_start:shadow_y_end, shadow_left:shadow_right] = 1.0
+
+    blur_x = max(9, ((max(3, shadow_right - shadow_left) // 5) | 1))
+    blur_y = max(7, (((shadow_y_end - shadow_y_start) * 2) | 1))
+    shadow_mask = cv2.GaussianBlur(shadow_mask, (blur_x, blur_y), 0)
+
+    vertical_fade = np.ones((image_height, 1), dtype=np.float32)
+    below_bottom = min(image_height, bottom + shadow_height)
+    if bottom < below_bottom:
+        fade = np.linspace(1.0, 0.0, below_bottom - bottom, dtype=np.float32)
+        vertical_fade[bottom:below_bottom, 0] = fade
+    shadow_mask *= vertical_fade
+
+    shaded = room_bgr.copy().astype(np.float32)
+    shaded *= (1.0 - (shadow_mask[..., None] * strength))
     return np.clip(shaded, 0, 255).astype(np.uint8)
 
 

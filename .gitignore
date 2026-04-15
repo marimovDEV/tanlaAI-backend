@@ -4,6 +4,9 @@ db.sqlite3
 .env
 .pytest_cache/
 media/
-static/
+# static/ papkasini ignore qilamiz, lekin static/react/ ni tracklaymiz (frontend build)
+static/*
+!static/react/
+!static/react/**
 google-cloud-key.json
 models/

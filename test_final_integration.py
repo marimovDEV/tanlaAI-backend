@@ -32,6 +32,15 @@ def test_integration():
     
     # We need to temporarily "hack" candidate_product_image_paths or just calling the direct method
     print(f"Testing integration for Mock product: {product.name}")
+    
+    # Mock image field
+    class MockField:
+        def __init__(self, path):
+            self.name = "mock_img.png"
+            self.path = path
+            
+    product.image = MockField(door_path)
+    
     try:
         # We call the method directly to verify its internal logic works with real service account/keys
         result = AIService.generate_with_gemini_direct(product, room_path, result_path)

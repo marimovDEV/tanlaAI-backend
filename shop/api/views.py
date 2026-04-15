@@ -67,10 +67,33 @@ def run_api_ai_background(
     session = SessionStore(session_key=session_key)
     try:
         product = Product.objects.get(pk=product_id)
-        # Use the new high-fidelity SAM + Perspective pipeline
+        from ..models import SystemSettings
         from ..services import AIService
 
+        provider = (
+            str(getattr(SystemSettings.get_solo(), "ai_provider", "hybrid") or "hybrid")
+            .strip()
+            .lower()
+        )
+        print(f"DEBUG: [AI Service] Provider = '{provider}' for product {product_id}")
+        print(f"DEBUG: [AI Service] Room path: {room_path}")
+        print(f"DEBUG: [AI Service] Result path: {result_path}")
+
+        import os
+
+        if not os.path.exists(room_path):
+            raise FileNotFoundError(f"Room image not found: {room_path}")
+        room_size = os.path.getsize(room_path)
+        print(f"DEBUG: [AI Service] Room image size: {room_size} bytes")
+
         AIService.generate_room_preview(product, room_path, result_path)
+
+        if not os.path.exists(result_path):
+            raise FileNotFoundError(f"Result image was NOT created: {result_path}")
+        result_size = os.path.getsize(result_path)
+        print(
+            f"DEBUG: [AI Service] ✅ Result created: {result_path} ({result_size} bytes)"
+        )
 
         ai_result = None
         if tg_user_id:
@@ -108,6 +131,22 @@ def run_api_ai_background(
         )
     except Exception as error:
         error_msg = traceback.format_exc()
+        print(f"ERROR: [AI Service] Background task FAILED for product {product_id}")
+        print(f"ERROR: [AI Service] Exception type: {type(error).__name__}")
+        print(f"ERROR: [AI Service] Message: {str(error)[:500]}")
+        print(f"ERROR: [AI Service] Traceback:\n{error_msg}")
+        # Write to dedicated debug log for easy tailing
+        try:
+            import time
+
+            with open("ai_debug.log", "a") as _f:
+                _f.write(
+                    f"\n--- ERROR product={product_id} [{time.ctime()}] ---\n"
+                    f"provider attempted: see DEBUG lines above\n"
+                    f"{error_msg}\n"
+                )
+        except Exception:
+            pass
         Product.objects.filter(pk=product_id).update(ai_error=error_msg[:1000])
         data = session.get(session_data_key, {})
         data["status"] = "error"

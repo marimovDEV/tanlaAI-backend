@@ -1808,24 +1808,31 @@ class AIService:
         door_name = getattr(product, "name", "eshik")
 
         prompt = (
-            f"First image is the room photo. Second image is the door product named '{door_name}'.\n\n"
-            "TASK: Install this exact door into the room photo.\n\n"
-            "STRICT RULES:\n"
-            "- Place the door where the existing door or opening is in the room\n"
-            "- The door bottom MUST touch the floor\n"
-            "- Match the room perspective and lighting exactly\n"
-            "- Keep the room EXACTLY as-is: walls, floor, carpet, curtains, furniture — do NOT change anything outside the door area\n"
-            "- The door must look physically installed into the wall\n"
-            "- Preserve the door design, glass pattern, and frame details exactly as in the reference image"
+            f"Image 1 is a room photo. Image 2 is a door product ('{door_name}').\n\n"
+            "TASK: REPLACE the existing door in the room (Image 1) with the new door (Image 2).\n\n"
+            "STEP BY STEP:\n"
+            "1. Find the existing door in the room photo — it is the door currently installed in the wall\n"
+            "2. Remove the existing door completely\n"
+            "3. Place the new door (from Image 2) in the EXACT same position, size, and perspective\n"
+            "4. The new door must sit on the floor at the same height as the original door\n"
+            "5. Match the lighting, shadows, and perspective of the room naturally\n\n"
+            "STRICT RULES — do NOT violate:\n"
+            "- ONLY change the door — replace nothing else\n"
+            "- Walls, floor, carpet, curtains, furniture, ceiling: keep 100% unchanged\n"
+            "- The new door must be the exact same proportions and size as the original door in the room\n"
+            "- Preserve every detail of the new door design from Image 2: glass, frame, panels, handles\n"
+            "- Do NOT crop, zoom, or change the room composition\n"
+            "- Output image must be the same dimensions as the input room photo"
         )
 
         clients = AIService.build_gemini_visual_clients()
 
-        # Correct Gemini model names that support image generation output (2025)
+        # Gemini models that support image output (generation/editing) — 2025
         gemini_models = [
             "gemini-2.0-flash-preview-image-generation",
             "gemini-2.0-flash-exp",
             "gemini-2.5-flash-preview-05-20",
+            "gemini-2.0-flash",
         ]
 
         last_error = None
@@ -1851,21 +1858,48 @@ class AIService:
                             ],
                             config=types.GenerateContentConfig(
                                 response_modalities=["IMAGE", "TEXT"],
+                                temperature=1.0,
                             ),
                         )
 
                         if response.candidates and response.candidates[0].content:
+                            text_parts = []
                             for part in response.candidates[0].content.parts:
                                 if part.inline_data and part.inline_data.data:
                                     img = PILImage.open(BytesIO(part.inline_data.data))
 
-                                    # ── Aspect ratio / dimension preservation ──
-                                    # Always output at exactly the same width × height
-                                    # as the uploaded room photo, regardless of what
-                                    # Gemini outputs internally:
-                                    #   9:16 portrait  →  9:16 portrait
-                                    #   16:9 landscape →  16:9 landscape
-                                    if img.size != (w_orig, h_orig):
+                                    # ── Smart aspect-ratio preservation ───────
+                                    # Input:  any size/ratio (9:16, 16:9, square…)
+                                    # Output: always the exact same W×H as the
+                                    #         uploaded room photo — no distortion.
+                                    #
+                                    # If Gemini returns a different aspect ratio,
+                                    # center-crop to match before final resize so
+                                    # we never squish/stretch the result.
+                                    src_w, src_h = img.size
+                                    if (src_w, src_h) != (w_orig, h_orig):
+                                        tgt_ratio = w_orig / h_orig
+                                        src_ratio = src_w / src_h
+                                        # Center-crop only when ratios differ >8%
+                                        if (
+                                            abs(tgt_ratio - src_ratio)
+                                            / max(tgt_ratio, src_ratio)
+                                            > 0.08
+                                        ):
+                                            if src_ratio > tgt_ratio:
+                                                # Too wide → crop sides
+                                                new_w = int(src_h * tgt_ratio)
+                                                left = (src_w - new_w) // 2
+                                                img = img.crop(
+                                                    (left, 0, left + new_w, src_h)
+                                                )
+                                            else:
+                                                # Too tall → crop top/bottom
+                                                new_h = int(src_w / tgt_ratio)
+                                                top = (src_h - new_h) // 2
+                                                img = img.crop(
+                                                    (0, top, src_w, top + new_h)
+                                                )
                                         img = img.resize(
                                             (w_orig, h_orig),
                                             PILImage.Resampling.LANCZOS,
@@ -1897,7 +1931,16 @@ class AIService:
                                     )
                                     return result_image_path
 
-                        last_error = "No image data in response"
+                                elif hasattr(part, "text") and part.text:
+                                    text_parts.append(part.text)
+
+                            if text_parts:
+                                last_error = f"Text-only response (no image): {' '.join(text_parts)[:300]}"
+                                print(
+                                    f"DEBUG: [Gemini Direct v4] {model_name} returned text only: {last_error}"
+                                )
+                            else:
+                                last_error = "No image data in response"
 
                     except Exception as e:
                         last_error = str(e)

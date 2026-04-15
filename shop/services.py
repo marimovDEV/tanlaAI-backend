@@ -1956,7 +1956,10 @@ class AIService:
             raise ValueError("Mahsulot rasmi topilmadi")
 
         door_ext = os.path.splitext(door_image_path)[1].lower()
-        door_mime = "image/png" if door_ext == ".png" else "image/jpeg"
+        if door_ext == ".png": door_mime = "image/png"
+        elif door_ext in (".jpg", ".jpeg"): door_mime = "image/jpeg"
+        elif door_ext == ".webp": door_mime = "image/webp"
+        else: door_mime = "image/png"
 
         with open(door_image_path, "rb") as f:
             door_bytes = f.read()
@@ -2056,6 +2059,7 @@ RULES:
         final_img = None
         inp_model_used = None
         
+        last_inpaint_error = "Noma'lum xato"
         for client_label, client in clients:
             if final_img: break
             for model_name in INPAINT_MODELS:
@@ -2081,12 +2085,13 @@ RULES:
                                 break
                     if final_img: break
                 except Exception as e:
+                    last_inpaint_error = str(e)
                     print(f"  ❌ {model_name}: {str(e)[:200]}")
                     if "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
                         time.sleep(2)
                         
         if not final_img:
-            raise ValueError("Barcha modellar muvaffaqiyatsiz bo'ldi. Rasmni generatsiya qilib bo'lmadi.")
+            raise ValueError(f"Barcha inpainting modellar muvaffaqiyatsiz bo'ldi. Oxirgi xato: {last_inpaint_error}")
             
         final_img = final_img.resize((w_orig, h_orig), PILImage.Resampling.LANCZOS)
         final_img.save(result_image_path, format="PNG")
@@ -2662,13 +2667,9 @@ RULES:
 
         if provider in ("gemini_direct", "gemini"):
             print(f"DEBUG: [Pipeline] Using Gemini Direct for product {product.id}...")
-            try:
-                return AIService.generate_with_gemini_direct(
-                    product, room_image_path, result_image_path
-                )
-            except Exception as e:
-                gemini_full_edit_error = str(e)[:500]
-                print(f"WARNING: [Pipeline] Gemini Direct failed, falling back: {e}")
+            return AIService.generate_with_gemini_direct(
+                product, room_image_path, result_image_path
+            )
 
         if provider == "nano_banana":
             print(

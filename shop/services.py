@@ -1753,92 +1753,174 @@ class AIService:
     @staticmethod
     def generate_with_gemini_direct(product, room_image_path, result_image_path):
         """
-        Correct two-phase architecture:
+        Gemini Direct Image Editing — sends room photo + door product image to Gemini
+        for photorealistic door placement.
 
-        Phase 1 — OpenCV (deterministic, pixel-perfect):
-            1. Detect the door opening geometrically
-            2. Remove the old door with inpainting
-            3. Place the new door with perspective & lighting match
+        Output is always resized to exactly match input image dimensions:
+            9:16 portrait input  →  9:16 portrait output
+            16:9 landscape input →  16:9 landscape output
+            any custom size      →  same size out
 
-        Phase 2 — Gemini (realism micro-polish only):
-            4. Send the composite + mask to Gemini
-            5. Gemini ONLY blends edges, adds contact shadow, and fixes light integration
-            6. Validate: room outside door area must be effectively unchanged
-            7. Fallback to the OpenCV composite if Gemini changes too much
+        Raises ValueError if all Gemini models/keys fail so that
+        generate_room_preview can fall through to the OpenCV pipeline.
         """
+        import time
+        from io import BytesIO
+
         import cv2
+        from google.genai import types
+        from PIL import Image as PILImage
 
         from .ai_utils import save_visualization_metadata
 
-        # ── Load room ────────────────────────────────────────────────────────
+        # ── Record original room dimensions for aspect-ratio preservation ────
         room_bgr = cv2.imread(room_image_path, cv2.IMREAD_COLOR)
         if room_bgr is None:
             raise ValueError("Xona rasmi yuklanmadi")
-        h, w = room_bgr.shape[:2]
+        h_orig, w_orig = room_bgr.shape[:2]
 
-        # ── Load door asset ──────────────────────────────────────────────────
-        door_rgba = load_best_door_rgba(product)
-        expected_aspect_ratio = get_expected_door_aspect_ratio(
-            product, door_rgba=door_rgba
+        # ── Find the best available door image (no-bg > original > main) ─────
+        door_image_path = None
+        for attr in ("image_no_bg", "original_image", "image"):
+            field = getattr(product, attr, None)
+            if field and field.name:
+                try:
+                    p = field.path
+                    if os.path.exists(p):
+                        door_image_path = p
+                        break
+                except Exception:
+                    pass
+        if not door_image_path:
+            raise ValueError("Mahsulot rasmi topilmadi")
+
+        # ── Read raw bytes (preserve original quality, no re-encode) ─────────
+        with open(room_image_path, "rb") as f:
+            room_bytes = f.read()
+        with open(door_image_path, "rb") as f:
+            door_bytes = f.read()
+
+        room_ext = os.path.splitext(room_image_path)[1].lower()
+        room_mime = "image/png" if room_ext == ".png" else "image/jpeg"
+        door_ext = os.path.splitext(door_image_path)[1].lower()
+        door_mime = "image/png" if door_ext == ".png" else "image/jpeg"
+
+        door_name = getattr(product, "name", "eshik")
+
+        prompt = (
+            f"First image is the room photo. Second image is the door product named '{door_name}'.\n\n"
+            "TASK: Install this exact door into the room photo.\n\n"
+            "STRICT RULES:\n"
+            "- Place the door where the existing door or opening is in the room\n"
+            "- The door bottom MUST touch the floor\n"
+            "- Match the room perspective and lighting exactly\n"
+            "- Keep the room EXACTLY as-is: walls, floor, carpet, curtains, furniture — do NOT change anything outside the door area\n"
+            "- The door must look physically installed into the wall\n"
+            "- Preserve the door design, glass pattern, and frame details exactly as in the reference image"
         )
 
-        metadata = {
-            "pipeline": {
-                "version": "gemini_direct_v3",
-                "mode": "opencv_placement_plus_gemini_polish",
-                "image_edit_engine": "OpenCV",
-                "final_result": "opencv_composite",
-                "used_gemini_polish": False,
-            }
-        }
+        clients = AIService.build_gemini_visual_clients()
 
-        # ── PHASE 1: OPENCV EXACT PLACEMENT ─────────────────────────────────
-        print(
-            f"DEBUG: [Gemini Direct v3] Phase 1 — OpenCV exact placement for product {product.id}..."
-        )
+        # Correct Gemini model names that support image generation output (2025)
+        gemini_models = [
+            "gemini-2.0-flash-preview-image-generation",
+            "gemini-2.0-flash-exp",
+            "gemini-2.5-flash-preview-05-20",
+        ]
 
-        # Step 1: Detect door opening
-        detected_box, detection_method = detect_door_opening_box(
-            room_bgr, expected_aspect_ratio
-        )
-        master_box = expand_pixel_box(
-            detected_box, w, h, pad_x_ratio=0.08, pad_y_ratio=0.06
-        )
-        x1, y1, x2, y2 = master_box
+        last_error = None
+        for client_label, client in clients:
+            for model_name in gemini_models:
+                for attempt in range(2):
+                    try:
+                        print(
+                            f"DEBUG: [Gemini Direct v4] Trying {model_name} "
+                            f"({client_label}, attempt {attempt + 1})..."
+                        )
 
-        metadata["pipeline"]["detection_method"] = detection_method
-        metadata["pipeline"]["detected_box"] = [int(v) for v in detected_box]
-        metadata["pipeline"]["master_box"] = [x1, y1, x2, y2]
-        print(
-            f"DEBUG: [Gemini Direct v3]   Door opening: ({x1},{y1})-({x2},{y2}) "
-            f"via {detection_method}"
-        )
+                        response = client.models.generate_content(
+                            model=model_name,
+                            contents=[
+                                types.Part.from_bytes(
+                                    data=room_bytes, mime_type=room_mime
+                                ),
+                                types.Part.from_bytes(
+                                    data=door_bytes, mime_type=door_mime
+                                ),
+                                prompt,
+                            ],
+                            config=types.GenerateContentConfig(
+                                response_modalities=["IMAGE", "TEXT"],
+                            ),
+                        )
 
-        # Step 2: Remove old door with inpainting
-        inpaint_box = expand_pixel_box(
-            detected_box, w, h, pad_x_ratio=0.05, pad_y_ratio=0.04
-        )
-        cleaned_room = remove_door_from_room_locally(room_bgr, inpaint_box)
+                        if response.candidates and response.candidates[0].content:
+                            for part in response.candidates[0].content.parts:
+                                if part.inline_data and part.inline_data.data:
+                                    img = PILImage.open(BytesIO(part.inline_data.data))
 
-        # Step 3: Place new door with lighting match
-        lit_door_rgba = match_door_lighting_to_room(door_rgba, room_bgr, master_box)
-        placed_box = compute_floor_aligned_door_box(master_box, lit_door_rgba, w, h)
-        composite = overlay_door_into_room(
-            cleaned_room, lit_door_rgba, master_box, add_shadow=True
-        )
-        composite = add_floor_contact_shadow(composite, placed_box)
+                                    # ── Aspect ratio / dimension preservation ──
+                                    # Always output at exactly the same width × height
+                                    # as the uploaded room photo, regardless of what
+                                    # Gemini outputs internally:
+                                    #   9:16 portrait  →  9:16 portrait
+                                    #   16:9 landscape →  16:9 landscape
+                                    if img.size != (w_orig, h_orig):
+                                        img = img.resize(
+                                            (w_orig, h_orig),
+                                            PILImage.Resampling.LANCZOS,
+                                        )
 
-        # Persist the OpenCV result immediately as a safe fallback
-        cv2.imwrite(result_image_path, composite)
-        print(
-            "DEBUG: [Gemini Direct v3]   ✅ OpenCV composite saved — door correctly placed"
-        )
+                                    img.save(result_image_path, format="PNG")
+                                    save_visualization_metadata(
+                                        result_image_path,
+                                        {
+                                            "generation_prompt": prompt,
+                                            "generation_meta": {
+                                                "engine": "Gemini Direct",
+                                                "model": model_name,
+                                            },
+                                            "pipeline": {
+                                                "version": "gemini_direct_v4",
+                                                "mode": "gemini_direct_edit",
+                                                "image_edit_engine": "Gemini",
+                                                "model": model_name,
+                                                "client": client_label,
+                                                "input_size": [w_orig, h_orig],
+                                                "output_size": [w_orig, h_orig],
+                                            },
+                                        },
+                                    )
+                                    print(
+                                        f"DEBUG: [Gemini Direct v4] ✅ SUCCESS — "
+                                        f"{model_name} ({w_orig}×{h_orig})"
+                                    )
+                                    return result_image_path
 
-        save_visualization_metadata(result_image_path, metadata)
-        print(
-            f"DEBUG: [Gemini Direct v3] ✅ DONE — pure OpenCV composite: {result_image_path}"
-        )
-        return result_image_path
+                        last_error = "No image data in response"
+
+                    except Exception as e:
+                        last_error = str(e)
+                        if (
+                            "429" in last_error
+                            or "RESOURCE_EXHAUSTED" in last_error
+                            or "quota" in last_error.lower()
+                        ):
+                            print(
+                                f"WARNING: [Gemini Direct v4] Rate limit on "
+                                f"{model_name}, waiting 5s..."
+                            )
+                            time.sleep(5)
+                            continue
+                        print(
+                            f"DEBUG: [Gemini Direct v4] {model_name} failed: "
+                            f"{last_error[:200]}"
+                        )
+                        break  # Try next model
+
+        # All Gemini attempts failed — caller (generate_room_preview) will
+        # catch this and continue to the OpenCV fallback pipeline.
+        raise ValueError(f"Gemini Direct editing failed: {last_error}")
 
     @staticmethod
     def generate_room_preview_with_gemini(

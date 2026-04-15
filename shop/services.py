@@ -1111,7 +1111,6 @@ def overlay_door_into_room(
     target_width = max(1, placed_right - placed_left)
     target_height = max(1, placed_bottom - placed_top)
 
-    # Scale door to sit within the detected opening with a realistic top gap.
     resized_door = cv2.resize(
         door_rgba, (target_width, target_height), interpolation=cv2.INTER_LANCZOS4
     )
@@ -1164,31 +1163,67 @@ def overlay_door_into_room(
         )
 
     alpha_channel = resized_door[:, :, 3]
-    alpha_kernel = max(3, ((min(target_width, target_height) // 28) | 1))
+    # Slightly wider feather kernel for smoother edge integration
+    alpha_kernel = max(3, ((min(target_width, target_height) // 22) | 1))
     erode_kernel = np.ones((3, 3), dtype=np.uint8)
     tightened_alpha = cv2.erode(alpha_channel, erode_kernel, iterations=1)
     feathered_alpha = cv2.GaussianBlur(tightened_alpha, (alpha_kernel, alpha_kernel), 0)
     alpha = np.clip(feathered_alpha.astype(np.float32) / 255.0, 0.0, 1.0)
 
+    # Wall region BEFORE shadow — used for wall-texture-aware edge blending
+    wall_region_clean = room_bgr[
+        placed_top:placed_bottom, placed_left:placed_right
+    ].astype(np.float32)
+
     region = composite[placed_top:placed_bottom, placed_left:placed_right].astype(
         np.float32
     )
     door_rgb = resized_door[:, :, :3].astype(np.float32)
-    ambient_bgr = sample_room_ambient_bgr(room_bgr, pixel_box).astype(np.float32)
 
+    # ── Edge blending: use ACTUAL wall texture pixels at the door boundary ──
+    # This blends the door edge with the real wall texture at each position,
+    # not a single ambient average — preserves wall texture for natural integration.
     edge_band = np.clip((0.92 - alpha) / 0.92, 0.0, 1.0)
     edge_band *= (alpha > 0.0).astype(np.float32)
     edge_band = cv2.GaussianBlur(edge_band, (alpha_kernel, alpha_kernel), 0)
     if np.any(edge_band > 0.0):
-        edge_mix = np.clip(edge_band[..., None] * 0.32, 0.0, 0.32)
-        door_rgb = (door_rgb * (1.0 - edge_mix)) + (
-            ambient_bgr.reshape(1, 1, 3) * edge_mix
-        )
+        edge_mix = np.clip(edge_band[..., None] * 0.40, 0.0, 0.40)
+        # wall_region_clean provides per-pixel wall texture at every edge position
+        door_rgb = (door_rgb * (1.0 - edge_mix)) + (wall_region_clean * edge_mix)
 
     blended = (alpha[..., None] * door_rgb) + ((1.0 - alpha[..., None]) * region)
     composite[placed_top:placed_bottom, placed_left:placed_right] = np.clip(
         blended, 0, 255
     ).astype(np.uint8)
+
+    # ── Door frame shadow line ───────────────────────────────────────────────
+    # Simulates the physical gap/shadow at the door-wall junction (architrave effect).
+    # A narrow darkened border around the door perimeter makes the placement look
+    # physically installed rather than digitally composited.
+    try:
+        frame_alpha_f = (alpha > 0.25).astype(np.float32)
+        frame_kernel = max(3, ((min(target_width, target_height) // 45) | 1))
+        # The frame border = full door mask minus slightly eroded interior
+        erode_px = max(2, min(target_width, target_height) // 50)
+        erode_kern = np.ones((erode_px * 2 + 1, erode_px * 2 + 1), np.float32)
+        interior = cv2.erode(frame_alpha_f, erode_kern)
+        frame_border = np.clip(frame_alpha_f - interior, 0.0, 1.0)
+        # Soften slightly so it's not a hard line
+        frame_border = cv2.GaussianBlur(frame_border, (frame_kernel, frame_kernel), 0)
+
+        if np.any(frame_border > 0.0):
+            frame_region = composite[
+                placed_top:placed_bottom, placed_left:placed_right
+            ].astype(np.float32)
+            # 40% darkening at the frame border — subtle but visible
+            darken = 1.0 - (frame_border[..., None] * 0.40)
+            frame_region = frame_region * darken
+            composite[placed_top:placed_bottom, placed_left:placed_right] = np.clip(
+                frame_region, 0, 255
+            ).astype(np.uint8)
+    except Exception:
+        pass  # Frame line is optional — never fail the whole composite
+
     return composite
 
 
@@ -1770,7 +1805,6 @@ class AIService:
             detected_box, w, h, pad_x_ratio=0.08, pad_y_ratio=0.06
         )
         x1, y1, x2, y2 = master_box
-        mask = build_box_mask(h, w, master_box, pad_x_ratio=0.0, pad_y_ratio=0.0)
 
         metadata["pipeline"]["detection_method"] = detection_method
         metadata["pipeline"]["detected_box"] = [int(v) for v in detected_box]
@@ -1800,59 +1834,9 @@ class AIService:
             "DEBUG: [Gemini Direct v3]   ✅ OpenCV composite saved — door correctly placed"
         )
 
-        # ── PHASE 2: GEMINI MICRO-POLISH ────────────────────────────────────
-        print("DEBUG: [Gemini Direct v3] Phase 2 — Gemini micro-polish...")
-        try:
-            refined_path = AIService.refine_door_edges_with_ai(
-                composite, mask, room_image_path, result_image_path
-            )
-            if refined_path and os.path.exists(refined_path):
-                refined_img = cv2.imread(refined_path, cv2.IMREAD_COLOR)
-                # Use more lenient thresholds for polish validation:
-                # Gemini may do subtle ambient-light adjustments right at the door frame.
-                # The strict defaults (mse≤12, ratio≤1.5%) are for full-scene edits;
-                # here we allow up to mse≤25 and ratio≤4% outside the mask.
-                is_valid, validation = validate_locked_scene_candidate(
-                    refined_img,
-                    composite,
-                    master_box,
-                    mse_threshold=25.0,
-                    ratio_threshold=0.04,
-                )
-                metadata["pipeline"]["gemini_polish_validation"] = validation
-                print(
-                    f"DEBUG: [Gemini Direct v3]   Polish validation — "
-                    f"mse={validation.get('mse')}, "
-                    f"changed_ratio={validation.get('changed_ratio')}"
-                )
-
-                if is_valid:
-                    metadata["pipeline"]["used_gemini_polish"] = True
-                    metadata["pipeline"]["image_edit_engine"] = "OpenCV + Gemini"
-                    metadata["pipeline"]["final_result"] = "gemini_polished"
-                    save_visualization_metadata(result_image_path, metadata)
-                    print(
-                        "DEBUG: [Gemini Direct v3]   ✅ Gemini polish ACCEPTED — "
-                        "using polished result"
-                    )
-                    return refined_path
-
-                # Gemini changed too much outside the door area — revert to safe composite
-                print(
-                    "DEBUG: [Gemini Direct v3]   ❌ Gemini polish REJECTED (room changed "
-                    f"outside door) — reverting to OpenCV composite"
-                )
-                cv2.imwrite(result_image_path, composite)
-
-        except Exception as exc:
-            metadata["pipeline"]["gemini_polish_error"] = str(exc)[:300]
-            print(f"WARNING: [Gemini Direct v3] Gemini polish failed: {exc}")
-            # Ensure the safe OpenCV result is still on disk
-            cv2.imwrite(result_image_path, composite)
-
         save_visualization_metadata(result_image_path, metadata)
         print(
-            f"DEBUG: [Gemini Direct v3] ✅ DONE (OpenCV composite): {result_image_path}"
+            f"DEBUG: [Gemini Direct v3] ✅ DONE — pure OpenCV composite: {result_image_path}"
         )
         return result_image_path
 

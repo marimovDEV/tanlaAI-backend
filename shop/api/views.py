@@ -668,27 +668,19 @@ class ProductViewSet(viewsets.ModelViewSet):
             elif session_status in {"running", "processing", "pending"}:
                 return no_store(Response({"status": "processing"}))
 
-        # Fallback: check DB for latest result BUT only if no job is currently running
-        if tg_user:
-            from django.core.cache import cache as _cache
-            # Check if ANY job is currently running for this user+product
-            # by scanning for any active cache key pattern
-            has_running_job = False
-            if request_id:
-                job_check = _cache.get(f"ai_job_user_{tg_user.id}_req_{request_id}")
-                if job_check and job_check.get("status") in ("running", "processing"):
-                    has_running_job = True
+        # DB Fallback: ONLY when there's no request_id (page reload after result was ready)
+        # When request_id IS present, we're actively polling for a specific upload — 
+        # never return old results, just keep saying "processing"
+        if not request_id and tg_user:
+            latest_result = (
+                AIResult.objects.filter(product=product, user=tg_user)
+                .order_by("-created_at")
+                .first()
+            )
+            if latest_result:
+                return no_store(Response(build_ai_result_payload(request, latest_result)))
 
-            if not has_running_job:
-                latest_result = (
-                    AIResult.objects.filter(product=product, user=tg_user)
-                    .order_by("-created_at")
-                    .first()
-                )
-                if latest_result:
-                    return no_store(Response(build_ai_result_payload(request, latest_result)))
-
-        if product.ai_status == "error":
+        if not request_id and product.ai_status == "error":
             return no_store(Response(
                 {
                     "status": "error",

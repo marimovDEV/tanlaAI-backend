@@ -59,7 +59,7 @@ def format_generation_error(error):
 
 
 def run_api_ai_background(
-    session_key, session_data_key, product_id, room_path, result_path, tg_user_id
+    session_key, session_data_key, product_id, room_path, result_path, tg_user_id, request_id=""
 ):
     print(f"DEBUG: [AI Service] Background task STARTED for product {product_id}")
     from django.contrib.sessions.backends.db import SessionStore
@@ -126,6 +126,12 @@ def run_api_ai_background(
         if ai_result:
             data["ai_result_id"] = ai_result.id
         session[session_data_key] = data
+        
+        # Web App Cache fallback for broken sessions
+        if request_id:
+            from django.core.cache import cache
+            cache.set(f"ai_job_{request_id}", {"status": "done", "ai_result_id": ai_result.id if ai_result else None}, timeout=3600)
+            
         logger.info(
             f"DEBUG: [AI Service] Background task COMPLETED for product {product_id}"
         )
@@ -152,6 +158,11 @@ def run_api_ai_background(
         data["status"] = "error"
         data["error_msg"] = format_generation_error(error)
         session[session_data_key] = data
+        
+        if request_id:
+            from django.core.cache import cache
+            cache.set(f"ai_job_{request_id}", {"status": "error", "error_msg": format_generation_error(error)}, timeout=3600)
+            
         logger.error(
             f"DEBUG: API AI generation error for product {product_id}: {error}"
         )
@@ -570,6 +581,9 @@ class ProductViewSet(viewsets.ModelViewSet):
         }
         request.session.modified = True
         request.session.save()
+        
+        from django.core.cache import cache
+        cache.set(f"ai_job_{request_id}", {"status": "running"}, timeout=3600)
 
         print(
             f"DEBUG: [AI Service] Submitting background task for product {product.id}"
@@ -582,6 +596,7 @@ class ProductViewSet(viewsets.ModelViewSet):
             room_path,
             result_path,
             tg_user.id,
+            request_id,
         )
         print(f"DEBUG: [AI Service] Task submitted successfully")
 
@@ -599,6 +614,24 @@ class ProductViewSet(viewsets.ModelViewSet):
         session_key_data = f"ai_gen_{product.id}"
         session_data = request.session.get(session_key_data, {})
         request_id = str(request.query_params.get("request_id", "")).strip()
+
+        # Reliable check for telegram webview cross-site blocking
+        if request_id:
+            from django.core.cache import cache
+            job_data = cache.get(f"ai_job_{request_id}")
+            if job_data:
+                jstatus = job_data.get("status")
+                if jstatus == "done":
+                    ai_res_id = job_data.get("ai_result_id")
+                    if ai_res_id:
+                        ai_res = AIResult.objects.filter(id=ai_res_id).first()
+                        if ai_res:
+                            return Response(build_ai_result_payload(request, ai_res))
+                    return Response({"status": "done"})
+                elif jstatus == "error":
+                    return Response({"status": "error", "message": job_data.get("error_msg", "Generatsiya bekor qilindi")})
+                elif jstatus in ("running", "processing"):
+                    return Response({"status": "processing"})
 
         if session_data:
             current_request_id = str(session_data.get("request_id", "")).strip()

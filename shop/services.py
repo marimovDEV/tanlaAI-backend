@@ -945,14 +945,45 @@ def perspective_warp_door_to_corners(door_rgba, corners_px, target_w, target_h):
     return warped
 
 
+def compute_floor_aligned_door_box(pixel_box, door_rgba, image_width, image_height, fill_ratio=0.90, top_margin_ratio=0.05):
+    left, top, right, bottom = sanitize_pixel_box(pixel_box, image_width, image_height)
+    box_width = max(1, right - left)
+    box_height = max(1, bottom - top)
+
+    if door_rgba is None or door_rgba.ndim < 2:
+        return left, top, right, bottom
+
+    door_height, door_width = door_rgba.shape[:2]
+    if door_height <= 0 or door_width <= 0:
+        return left, top, right, bottom
+
+    usable_width = max(1.0, box_width * float(fill_ratio))
+    usable_height = max(1.0, box_height * float(1.0 - top_margin_ratio))
+    scale = min(usable_width / float(door_width), usable_height / float(door_height))
+
+    target_width = max(1, min(box_width, int(round(door_width * scale))))
+    target_height = max(1, min(box_height, int(round(door_height * scale))))
+
+    door_x = left + max(0, (box_width - target_width) // 2)
+    door_y = bottom - target_height
+
+    min_top = top + int(round(box_height * top_margin_ratio))
+    if door_y < min_top:
+        door_y = min_top
+
+    return sanitize_pixel_box(
+        (door_x, door_y, door_x + target_width, door_y + target_height),
+        image_width,
+        image_height,
+    )
+
+
 def overlay_door_into_room(room_bgr, door_rgba, pixel_box, add_shadow=True, wall_angle=0):
     import cv2
     import numpy as np
 
     image_height, image_width = room_bgr.shape[:2]
     left, top, right, bottom = sanitize_pixel_box(pixel_box, image_width, image_height)
-    target_width = max(1, right - left)
-    target_height = max(1, bottom - top)
 
     if door_rgba.ndim != 3 or door_rgba.shape[2] < 4:
         if door_rgba.ndim == 2:
@@ -961,7 +992,16 @@ def overlay_door_into_room(room_bgr, door_rgba, pixel_box, add_shadow=True, wall
             alpha = np.full(door_rgba.shape[:2] + (1,), 255, dtype=np.uint8)
             door_rgba = np.concatenate([door_rgba[:, :, :3], alpha], axis=2)
 
-    # Scale door to FILL the detected box exactly — no floating
+    placed_left, placed_top, placed_right, placed_bottom = compute_floor_aligned_door_box(
+        (left, top, right, bottom),
+        door_rgba,
+        image_width,
+        image_height,
+    )
+    target_width = max(1, placed_right - placed_left)
+    target_height = max(1, placed_bottom - placed_top)
+
+    # Scale door to sit within the detected opening with a realistic top gap.
     resized_door = cv2.resize(door_rgba, (target_width, target_height), interpolation=cv2.INTER_LANCZOS4)
 
     # Apply optional 3D perspective warp based on wall angle
@@ -983,12 +1023,12 @@ def overlay_door_into_room(room_bgr, door_rgba, pixel_box, add_shadow=True, wall
     composite = room_bgr.copy()
 
     if add_shadow:
-        composite = apply_soft_shadow(composite, resized_door[:, :, 3], left, top)
+        composite = apply_soft_shadow(composite, resized_door[:, :, 3], placed_left, placed_top)
 
-    region = composite[top:bottom, left:right].astype(np.float32)
+    region = composite[placed_top:placed_bottom, placed_left:placed_right].astype(np.float32)
     door_rgb = resized_door[:, :, :3].astype(np.float32)
     blended = (alpha[..., None] * door_rgb) + ((1.0 - alpha[..., None]) * region)
-    composite[top:bottom, left:right] = np.clip(blended, 0, 255).astype(np.uint8)
+    composite[placed_top:placed_bottom, placed_left:placed_right] = np.clip(blended, 0, 255).astype(np.uint8)
     return composite
 
 
@@ -1516,7 +1556,7 @@ class AIService:
         preview_metadata['pipeline']['expected_aspect_ratio'] = round(float(expected_aspect_ratio), 4)
         preview_metadata['pipeline']['detection_method'] = detection_method
         preview_metadata['pipeline']['detected_box'] = [int(value) for value in detected_box]
-        preview_metadata['pipeline']['placement_box'] = [x1, y1, x2, y2]
+        preview_metadata['pipeline']['opening_box'] = [x1, y1, x2, y2]
 
         # Use the exact Master Box for everything
         mask = build_box_mask(h, w, master_box, pad_x_ratio=0.0, pad_y_ratio=0.0)
@@ -1534,8 +1574,10 @@ class AIService:
         print(f"DEBUG: [Pipeline] Step 3: Placing new door on clean wall...")
         # Note: overlay uses the larger Master Box to perfectly cover the inpaint blur.
         lit_door_rgba = match_door_lighting_to_room(door_rgba, room_bgr, master_box)
+        placed_box = compute_floor_aligned_door_box(master_box, lit_door_rgba, w, h)
+        preview_metadata['pipeline']['placement_box'] = [int(value) for value in placed_box]
         composite = overlay_door_into_room(cleaned_room, lit_door_rgba, master_box, add_shadow=True)
-        composite = add_floor_contact_shadow(composite, master_box)
+        composite = add_floor_contact_shadow(composite, placed_box)
         print(f"DEBUG: [Pipeline]   Composite created (room preserved, old door removed)")
 
         # Save OpenCV result as SAFE fallback

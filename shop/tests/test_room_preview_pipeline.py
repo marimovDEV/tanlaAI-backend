@@ -8,6 +8,7 @@ import cv2
 from shop.services import (
     AIService,
     build_box_mask,
+    compute_floor_aligned_door_box,
     detect_door_opening_box,
     detect_door_box_with_opencv,
     normalize_door_opening_box,
@@ -72,6 +73,16 @@ class RoomPreviewPipelineTests(SimpleTestCase):
 
         self.assertTrue(np.array_equal(combined[10, 10], np.array([200, 200, 200], dtype=np.uint8)))
         self.assertTrue(np.array_equal(combined[120, 90], np.array([40, 90, 160], dtype=np.uint8)))
+
+    def test_compute_floor_aligned_door_box_keeps_top_gap_and_bottom_anchor(self):
+        door = np.zeros((200, 80, 4), dtype=np.uint8)
+        box = (40, 20, 120, 220)
+
+        placed = compute_floor_aligned_door_box(box, door, image_width=180, image_height=260)
+
+        self.assertEqual(placed[3], box[3])
+        self.assertGreaterEqual(placed[1], 30)
+        self.assertLess(placed[2] - placed[0], box[2] - box[0])
 
     def test_build_box_mask_marks_detected_area(self):
         mask = build_box_mask(100, 80, (20, 10, 50, 80), pad_x_ratio=0.0, pad_y_ratio=0.0)

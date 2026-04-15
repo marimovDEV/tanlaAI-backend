@@ -814,6 +814,8 @@ def detect_door_frame_box_with_lines(room_bgr, expected_aspect_ratio, seed_box=N
 
 def detect_door_opening_box(room_bgr, expected_aspect_ratio):
     try:
+        import numpy as np
+
         from .sam_utils import SAMService
 
         print("DEBUG: [AI Service] Attempting structural search with SAM...")
@@ -917,9 +919,12 @@ def remove_door_from_room_with_ai(room_bgr, pixel_box, client):
         reference_image=types.Image(image_bytes=room_buf.tobytes()),
         reference_id=0,
     )
-    mask_reference_image = types.RawReferenceImage(
+    mask_reference_image = types.MaskReferenceImage(
         reference_image=types.Image(image_bytes=mask_buf.tobytes()),
         reference_id=1,
+        config=types.MaskReferenceConfig(
+            mask_mode=types.MaskReferenceMode.MASK_MODE_USER_PROVIDED
+        ),
     )
     prompt = (
         "Completely remove the door frame and internal void from ONLY the masked area. "
@@ -929,7 +934,7 @@ def remove_door_from_room_with_ai(room_bgr, pixel_box, client):
     )
 
     last_error = None
-    for edit_mode in ("EDIT_MODE_INPAINT_REMOVAL", "INPAINT_EDIT"):
+    for edit_mode in (types.EditMode.EDIT_MODE_INPAINT_REMOVAL,):
         try:
             response = client.models.edit_image(
                 model="imagen-3.0-capability-001",
@@ -937,7 +942,6 @@ def remove_door_from_room_with_ai(room_bgr, pixel_box, client):
                 reference_images=[reference_image, mask_reference_image],
                 config=types.EditImageConfig(
                     edit_mode=edit_mode,
-                    mask_reference_id=1,
                     number_of_images=1,
                     output_mime_type="image/png",
                 ),
@@ -1316,7 +1320,22 @@ def add_floor_contact_shadow(room_bgr, pixel_box, strength=0.24):
     return np.clip(shaded, 0, 255).astype(np.uint8)
 
 
-def validate_locked_scene_candidate(candidate_bgr, baseline_bgr, pixel_box):
+def validate_locked_scene_candidate(
+    candidate_bgr,
+    baseline_bgr,
+    pixel_box,
+    mse_threshold: float = 12.0,
+    ratio_threshold: float = 0.015,
+):
+    """
+    Validate that the AI candidate did not change the room OUTSIDE the door area.
+
+    Parameters
+    ----------
+    mse_threshold   : Mean-squared error ceiling across outside pixels (default 12.0).
+    ratio_threshold : Max fraction of outside pixels that may change by >16 units (default 0.015).
+                      Pass looser values (e.g. 25.0 / 0.04) for the Gemini polish step.
+    """
     import numpy as np
 
     if (
@@ -1345,10 +1364,11 @@ def validate_locked_scene_candidate(candidate_bgr, baseline_bgr, pixel_box):
     mse = float(np.mean((candidate_pixels - baseline_pixels) ** 2))
     changed_ratio = float(np.mean(np.max(diff, axis=1) > 16.0))
 
-    is_valid = mse <= 12.0 and changed_ratio <= 0.015
+    is_valid = mse <= mse_threshold and changed_ratio <= ratio_threshold
     return is_valid, {
         "mse": round(mse, 3),
         "changed_ratio": round(changed_ratio, 5),
+        "thresholds": {"mse": mse_threshold, "ratio": ratio_threshold},
     }
 
 
@@ -1698,127 +1718,143 @@ class AIService:
     @staticmethod
     def generate_with_gemini_direct(product, room_image_path, result_image_path):
         """
-        🚀 Nano Banana v2: Gemini Direct Edit (Photorealistic)
-        Uses 2 images (Room + Door) + Prompt to generate a photorealistic result.
-        """
-        import time
-        from io import BytesIO
+        Correct two-phase architecture:
 
+        Phase 1 — OpenCV (deterministic, pixel-perfect):
+            1. Detect the door opening geometrically
+            2. Remove the old door with inpainting
+            3. Place the new door with perspective & lighting match
+
+        Phase 2 — Gemini (realism micro-polish only):
+            4. Send the composite + mask to Gemini
+            5. Gemini ONLY blends edges, adds contact shadow, and fixes light integration
+            6. Validate: room outside door area must be effectively unchanged
+            7. Fallback to the OpenCV composite if Gemini changes too much
+        """
         import cv2
-        import numpy as np
-        from google.genai import types
-        from PIL import Image
 
         from .ai_utils import save_visualization_metadata
 
-        # Load images
+        # ── Load room ────────────────────────────────────────────────────────
         room_bgr = cv2.imread(room_image_path, cv2.IMREAD_COLOR)
         if room_bgr is None:
             raise ValueError("Xona rasmi yuklanmadi")
-        h_orig, w_orig = room_bgr.shape[:2]
+        h, w = room_bgr.shape[:2]
 
-        door_image_path = None
-        for attr in ("original_image", "image_no_bg", "image"):
-            field = getattr(product, attr, None)
-            if field and field.name:
-                try:
-                    p = field.path
-                    if os.path.exists(p):
-                        door_image_path = p
-                        break
-                except Exception:
-                    pass
-        if not door_image_path:
-            raise ValueError("Mahsulot rasmi topilmadi")
-
-        door_img = cv2.imread(door_image_path, cv2.IMREAD_UNCHANGED)
-        if door_img is None:
-            raise ValueError("Eshik rasmi yuklanmadi")
-
-        # Encode to bytes
-        _, room_buf = cv2.imencode(".jpg", room_bgr, [cv2.IMWRITE_JPEG_QUALITY, 90])
-        _, door_buf = cv2.imencode(".png", door_img)
-        room_bytes = room_buf.tobytes()
-        door_bytes = door_buf.tobytes()
-
-        clients = AIService.build_gemini_visual_clients()
-        
-        # 2026 Models optimized for high-quality instruction-based editing
-        gemini_models = [
-            "gemini-3.1-flash-image-preview",
-            "gemini-3-pro-image-preview",
-            "gemini-2.5-flash-image",
-        ]
-
-        door_name = getattr(product, "name", "eshik")
-        prompt = (
-            f"First image is the original room photo. Second image is the new door design '{door_name}'.\n\n"
-            "TASK: Replace the existing door or empty doorway in the room with this new door design.\n\n"
-            "STRICT RULES:\n"
-            "- Keep the room exactly as it is outside the doorway area\n"
-            "- Match the perspective, local lighting, and architectural shadows perfectly\n"
-            "- The door must look physically installed into the wall\n"
-            "- Return ONLY the edited room image as a response"
+        # ── Load door asset ──────────────────────────────────────────────────
+        door_rgba = load_best_door_rgba(product)
+        expected_aspect_ratio = get_expected_door_aspect_ratio(
+            product, door_rgba=door_rgba
         )
 
-        last_error = None
-        for client_label, client in clients:
-            for model_name in gemini_models:
-                for attempt in range(3):
-                    try:
-                        print(f"DEBUG: [Gemini Direct] Trying {model_name} (Client: {client_label}, Attempt {attempt+1})...")
-                        
-                        contents = [
-                            types.Part.from_bytes(data=room_bytes, mime_type="image/jpeg"),
-                            types.Part.from_bytes(data=door_bytes, mime_type="image/png"),
-                            prompt,
-                        ]
-                        
-                        response = client.models.generate_content(
-                            model=model_name,
-                            contents=contents,
-                            config=types.GenerateContentConfig(
-                                response_modalities=["IMAGE", "TEXT"],
-                            ),
-                        )
+        metadata = {
+            "pipeline": {
+                "version": "gemini_direct_v3",
+                "mode": "opencv_placement_plus_gemini_polish",
+                "image_edit_engine": "OpenCV",
+                "final_result": "opencv_composite",
+                "used_gemini_polish": False,
+            }
+        }
 
-                        if response.candidates and response.candidates[0].content:
-                            for part in response.candidates[0].content.parts:
-                                if part.inline_data:
-                                    img = Image.open(BytesIO(part.inline_data.data))
-                                    # Ensure original resolution is maintained
-                                    if img.size != (w_orig, h_orig):
-                                        img = img.resize((w_orig, h_orig), Image.LANCZOS)
-                                    img.save(result_image_path, format="PNG")
-                                    
-                                    metadata = {
-                                        "generation_prompt": prompt,
-                                        "generation_meta": {
-                                            "engine": "Gemini Direct",
-                                            "model": model_name,
-                                        },
-                                        "pipeline": {
-                                            "mode": "gemini_direct_v2",
-                                            "image_edit_engine": "Gemini",
-                                            "model": model_name,
-                                            "client": client_label,
-                                        },
-                                    }
-                                    save_visualization_metadata(result_image_path, metadata)
-                                    print(f"DEBUG: [Gemini Direct] SUCCESS logic with {model_name} ({client_label})")
-                                    return result_image_path
-                        
-                        last_error = "No image data in response"
-                    except Exception as e:
-                        last_error = str(e)
-                        if "429" in last_error or "RESOURCE_EXHAUSTED" in last_error:
-                            print(f"WARNING: [Gemini Direct] Rate limit hit, waiting 5s...")
-                            time.sleep(5)
-                            continue
-                        print(f"DEBUG: [Gemini Direct] {model_name} failed: {last_error}")
-                        break # Try next model
+        # ── PHASE 1: OPENCV EXACT PLACEMENT ─────────────────────────────────
+        print(
+            f"DEBUG: [Gemini Direct v3] Phase 1 — OpenCV exact placement for product {product.id}..."
+        )
 
-        raise ValueError(f"Gemini Direct editing failed: {last_error}")
+        # Step 1: Detect door opening
+        detected_box, detection_method = detect_door_opening_box(
+            room_bgr, expected_aspect_ratio
+        )
+        master_box = expand_pixel_box(
+            detected_box, w, h, pad_x_ratio=0.08, pad_y_ratio=0.06
+        )
+        x1, y1, x2, y2 = master_box
+        mask = build_box_mask(h, w, master_box, pad_x_ratio=0.0, pad_y_ratio=0.0)
+
+        metadata["pipeline"]["detection_method"] = detection_method
+        metadata["pipeline"]["detected_box"] = [int(v) for v in detected_box]
+        metadata["pipeline"]["master_box"] = [x1, y1, x2, y2]
+        print(
+            f"DEBUG: [Gemini Direct v3]   Door opening: ({x1},{y1})-({x2},{y2}) "
+            f"via {detection_method}"
+        )
+
+        # Step 2: Remove old door with inpainting
+        inpaint_box = expand_pixel_box(
+            detected_box, w, h, pad_x_ratio=0.05, pad_y_ratio=0.04
+        )
+        cleaned_room = remove_door_from_room_locally(room_bgr, inpaint_box)
+
+        # Step 3: Place new door with lighting match
+        lit_door_rgba = match_door_lighting_to_room(door_rgba, room_bgr, master_box)
+        placed_box = compute_floor_aligned_door_box(master_box, lit_door_rgba, w, h)
+        composite = overlay_door_into_room(
+            cleaned_room, lit_door_rgba, master_box, add_shadow=True
+        )
+        composite = add_floor_contact_shadow(composite, placed_box)
+
+        # Persist the OpenCV result immediately as a safe fallback
+        cv2.imwrite(result_image_path, composite)
+        print(
+            "DEBUG: [Gemini Direct v3]   ✅ OpenCV composite saved — door correctly placed"
+        )
+
+        # ── PHASE 2: GEMINI MICRO-POLISH ────────────────────────────────────
+        print("DEBUG: [Gemini Direct v3] Phase 2 — Gemini micro-polish...")
+        try:
+            refined_path = AIService.refine_door_edges_with_ai(
+                composite, mask, room_image_path, result_image_path
+            )
+            if refined_path and os.path.exists(refined_path):
+                refined_img = cv2.imread(refined_path, cv2.IMREAD_COLOR)
+                # Use more lenient thresholds for polish validation:
+                # Gemini may do subtle ambient-light adjustments right at the door frame.
+                # The strict defaults (mse≤12, ratio≤1.5%) are for full-scene edits;
+                # here we allow up to mse≤25 and ratio≤4% outside the mask.
+                is_valid, validation = validate_locked_scene_candidate(
+                    refined_img,
+                    composite,
+                    master_box,
+                    mse_threshold=25.0,
+                    ratio_threshold=0.04,
+                )
+                metadata["pipeline"]["gemini_polish_validation"] = validation
+                print(
+                    f"DEBUG: [Gemini Direct v3]   Polish validation — "
+                    f"mse={validation.get('mse')}, "
+                    f"changed_ratio={validation.get('changed_ratio')}"
+                )
+
+                if is_valid:
+                    metadata["pipeline"]["used_gemini_polish"] = True
+                    metadata["pipeline"]["image_edit_engine"] = "OpenCV + Gemini"
+                    metadata["pipeline"]["final_result"] = "gemini_polished"
+                    save_visualization_metadata(result_image_path, metadata)
+                    print(
+                        "DEBUG: [Gemini Direct v3]   ✅ Gemini polish ACCEPTED — "
+                        "using polished result"
+                    )
+                    return refined_path
+
+                # Gemini changed too much outside the door area — revert to safe composite
+                print(
+                    "DEBUG: [Gemini Direct v3]   ❌ Gemini polish REJECTED (room changed "
+                    f"outside door) — reverting to OpenCV composite"
+                )
+                cv2.imwrite(result_image_path, composite)
+
+        except Exception as exc:
+            metadata["pipeline"]["gemini_polish_error"] = str(exc)[:300]
+            print(f"WARNING: [Gemini Direct v3] Gemini polish failed: {exc}")
+            # Ensure the safe OpenCV result is still on disk
+            cv2.imwrite(result_image_path, composite)
+
+        save_visualization_metadata(result_image_path, metadata)
+        print(
+            f"DEBUG: [Gemini Direct v3] ✅ DONE (OpenCV composite): {result_image_path}"
+        )
+        return result_image_path
 
     @staticmethod
     def generate_room_preview_with_gemini(
@@ -1839,6 +1875,11 @@ class AIService:
             raise ValueError("Room image could not be loaded")
         image_height, image_width = room_bgr.shape[:2]
 
+        door_rgba = load_best_door_rgba(product)
+        expected_aspect_ratio = get_expected_door_aspect_ratio(
+            product, door_rgba=door_rgba
+        )
+
         if override_master_box:
             master_box = override_master_box
             detection_method = (nano_banana_meta or {}).get(
@@ -1846,10 +1887,6 @@ class AIService:
             )
             detected_box = master_box  # Approximation
         else:
-            door_rgba = load_best_door_rgba(product)
-            expected_aspect_ratio = get_expected_door_aspect_ratio(
-                product, door_rgba=door_rgba
-            )
             detected_box, detection_method = detect_door_opening_box(
                 room_bgr, expected_aspect_ratio
             )
@@ -1903,9 +1940,12 @@ class AIService:
             reference_image=types.Image(image_bytes=room_buf.tobytes()),
             reference_id=0,
         )
-        mask_reference = types.RawReferenceImage(
+        mask_reference = types.MaskReferenceImage(
             reference_image=types.Image(image_bytes=mask_buf.tobytes()),
             reference_id=1,
+            config=types.MaskReferenceConfig(
+                mask_mode=types.MaskReferenceMode.MASK_MODE_USER_PROVIDED
+            ),
         )
         door_reference = types.RawReferenceImage(
             reference_image=types.Image(image_bytes=door_buf.tobytes()),
@@ -1913,10 +1953,7 @@ class AIService:
         )
 
         last_error = None
-        imagen_edit_modes = (
-            "EDIT_MODE_INPAINT_INSERTION",
-            "INPAINT_EDIT",
-        )
+        imagen_edit_modes = (types.EditMode.EDIT_MODE_INPAINT_INSERTION,)
 
         for client_label, client in clients:
             for edit_mode in imagen_edit_modes:
@@ -1934,7 +1971,6 @@ class AIService:
                         ],
                         config=types.EditImageConfig(
                             edit_mode=edit_mode,
-                            mask_reference_id=1,
                             number_of_images=1,
                             output_mime_type="image/png",
                         ),
@@ -2080,9 +2116,7 @@ class AIService:
                     )
                 ],
                 config=types.EditImageConfig(
-                    edit_mode="REMOVE_BACKGROUND"
-                    if hasattr(types, "REMOVE_BACKGROUND")
-                    else "INPAINT_EDIT",
+                    edit_mode=types.EditMode.EDIT_MODE_BGSWAP,
                     number_of_images=1,
                     output_mime_type="image/png",
                 ),
@@ -2563,8 +2597,10 @@ class AIService:
         if not api_keys:
             raise ValueError("No GEMINI keys configured")
 
-        _, img_bytes = cv2.imencode(".png", composite_bgr)
-        img_bytes = img_bytes.tobytes()
+        ok_img, img_buf = cv2.imencode(".png", composite_bgr)
+        if not ok_img or img_buf is None:
+            raise ValueError("Failed to encode composite image for AI polish")
+        img_bytes = img_buf.tobytes()
 
         # POLISH-ONLY prompt — no creativity allowed
         prompt_text = (
@@ -2608,7 +2644,10 @@ class AIService:
                         and response.candidates[0].content.parts
                     ):
                         for part in response.candidates[0].content.parts:
-                            if part.inline_data is not None:
+                            if (
+                                part.inline_data is not None
+                                and part.inline_data.data is not None
+                            ):
                                 img = PILImage.open(BytesIO(part.inline_data.data))
                                 img.save(result_image_path, format="PNG")
                                 print(f"DEBUG: [AI Polish] SUCCESS: {model_name}")
@@ -2652,28 +2691,38 @@ class AIService:
             raise ValueError("No GEMINI keys configured")
 
         # Encode composite as bytes
-        _, composite_bytes = cv2.imencode(".png", composite_bgr)
-        composite_bytes = composite_bytes.tobytes()
+        ok_comp, comp_buf = cv2.imencode(".png", composite_bgr)
+        if not ok_comp or comp_buf is None:
+            raise ValueError("Failed to encode composite image for AI refinement")
+        composite_bytes = comp_buf.tobytes()
 
         # Encode mask as bytes
-        _, mask_bytes = cv2.imencode(".png", mask)
-        mask_bytes = mask_bytes.tobytes()
+        ok_mask_enc, mask_buf_enc = cv2.imencode(".png", mask)
+        if not ok_mask_enc or mask_buf_enc is None:
+            raise ValueError("Failed to encode mask image for AI refinement")
+        mask_bytes = mask_buf_enc.tobytes()
 
         # Constrained prompt — AI cannot reimagine, only fix edges
         prompt_text = (
-            "This image already has a new door placed in it using digital editing.\n"
-            "The second image is a MASK showing the door area (white = door).\n\n"
-            "YOUR ONLY JOB: make the placement look naturally installed without changing the room.\n\n"
-            "STRICT RULES:\n"
-            "- Do NOT change ANYTHING outside the white mask area\n"
-            "- Do NOT change walls, floor, furniture, curtains\n"
-            "- Do NOT redesign the room\n"
-            "- Do NOT add any new objects\n"
-            "- Do NOT move, resize, recolor, or redesign the new door\n"
-            "- ONLY improve edge blending, contact shadow, and local light integration near the door\n"
-            "- Make the door look naturally installed\n"
-            "- Keep the exact same room, exact same lighting\n"
-            "- Return ONLY the refined image"
+            "You are a photo-retouching tool, NOT an image generator.\n"
+            "The room image you received already has the new door correctly placed "
+            "using precise digital compositing — do NOT move, resize, or redesign it.\n"
+            "The mask image shows the door-frame boundary zone in white.\n\n"
+            "YOUR ONLY JOB — micro-retouching strictly inside the mask boundary:\n"
+            "1. Blend the door-frame edges into the surrounding wall "
+            "(remove any hard compositing line or halo)\n"
+            "2. Add a natural contact shadow where the door bottom meets the floor\n"
+            "3. Adjust local light falloff at the door frame to match the room's "
+            "ambient lighting direction and warmth\n\n"
+            "ABSOLUTE PROHIBITIONS (any violation will cause automatic rejection):\n"
+            "- Do NOT change anything outside the white mask area\n"
+            "- Do NOT change global brightness, contrast, color balance, or saturation\n"
+            "- Do NOT change wall color, floor texture, furniture, curtains, or ceiling\n"
+            "- Do NOT move, resize, recolor, or redesign the door in any way\n"
+            "- Do NOT add or remove any objects, trim, handles, or architectural details\n"
+            "- Do NOT 'beautify', 'upscale', or 'improve' the room — only fix edge artifacts\n\n"
+            "Return ONLY the retouched image with IDENTICAL content everywhere "
+            "except the door-wall junction edges."
         )
 
         contents = [
@@ -2706,7 +2755,10 @@ class AIService:
                         and response.candidates[0].content.parts
                     ):
                         for part in response.candidates[0].content.parts:
-                            if part.inline_data is not None:
+                            if (
+                                part.inline_data is not None
+                                and part.inline_data.data is not None
+                            ):
                                 img = PILImage.open(BytesIO(part.inline_data.data))
                                 img.save(result_image_path, format="PNG")
                                 print(f"DEBUG: [AI Refine] SUCCESS: {model_name}")

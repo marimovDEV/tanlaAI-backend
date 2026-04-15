@@ -1386,6 +1386,127 @@ def add_floor_contact_shadow(room_bgr, pixel_box, strength=0.24):
     return np.clip(shaded, 0, 255).astype(np.uint8)
 
 
+def _create_door_region_annotation(room_bgr, door_box):
+    """
+    Create an annotated version of the room image highlighting the door placement area.
+    Sends a green-outlined bounding box so Gemini knows exactly where to install the door.
+    """
+    import cv2
+    import numpy as np
+
+    annotated = room_bgr.copy()
+    h, w = room_bgr.shape[:2]
+    x1, y1, x2, y2 = sanitize_pixel_box(door_box, w, h)
+
+    line_thick = max(3, min(w, h) // 100)
+    corner_len = max(20, min(x2 - x1, y2 - y1) // 7)
+
+    # Semi-transparent green fill to highlight the region
+    overlay = annotated.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 210, 50), -1)
+    cv2.addWeighted(overlay, 0.22, annotated, 0.78, 0, annotated)
+
+    # Solid green border
+    cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), line_thick)
+
+    # Corner accent marks for precision guidance
+    corners = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+    dirs = [(1, 1), (-1, 1), (-1, -1), (1, -1)]
+    for (cx, cy), (dx, dy) in zip(corners, dirs):
+        cv2.line(
+            annotated, (cx, cy), (cx + dx * corner_len, cy), (0, 255, 0), line_thick + 1
+        )
+        cv2.line(
+            annotated, (cx, cy), (cx, cy + dy * corner_len), (0, 255, 0), line_thick + 1
+        )
+
+    return annotated
+
+
+def _post_process_gemini_door_result(result_bgr, room_bgr, door_box):
+    """
+    Post-process Gemini's door placement to enhance photorealism:
+    1. Subtle color-temperature correction so the door matches room ambient light.
+    2. Edge blending — door boundary fades into the actual wall texture.
+    3. Floor contact shadow beneath the door.
+    """
+    import cv2
+    import numpy as np
+
+    if result_bgr is None or room_bgr is None:
+        return result_bgr
+
+    h, w = result_bgr.shape[:2]
+    if room_bgr.shape[:2] != (h, w):
+        return result_bgr
+
+    x1, y1, x2, y2 = sanitize_pixel_box(door_box, w, h)
+    door_h = y2 - y1
+    door_w = x2 - x1
+    if door_h < 20 or door_w < 20:
+        return result_bgr
+
+    out = result_bgr.copy().astype(np.float32)
+
+    # ── Step 1: Ambient color-temperature correction ─────────────────────────
+    margin = max(12, int(min(door_w, door_h) * 0.08))
+    ambient_samples = []
+    if x1 - margin >= 0:
+        ambient_samples.append(room_bgr[y1:y2, max(0, x1 - margin) : x1].reshape(-1, 3))
+    if x2 + margin <= w:
+        ambient_samples.append(room_bgr[y1:y2, x2 : min(w, x2 + margin)].reshape(-1, 3))
+    if y1 - margin >= 0:
+        ambient_samples.append(room_bgr[max(0, y1 - margin) : y1, x1:x2].reshape(-1, 3))
+
+    if ambient_samples:
+        ambient_pixels = np.concatenate(ambient_samples, axis=0).astype(np.float32)
+        ambient_lum = float(np.median(np.mean(ambient_pixels, axis=1)))
+    else:
+        ambient_lum = 128.0
+
+    door_region = out[y1:y2, x1:x2]
+    result_lum = float(np.mean(door_region))
+
+    if result_lum > 10:
+        lum_diff = abs(ambient_lum - result_lum)
+        if lum_diff > 20:
+            correction = np.clip(ambient_lum / max(result_lum, 1.0), 0.88, 1.12)
+            out[y1:y2, x1:x2] = door_region * correction
+
+    # ── Step 2: Edge blending with actual wall texture ────────────────────────
+    # Fade the door boundary into the original wall pixels (not ambient average).
+    band_px = max(8, int(min(door_w, door_h) * 0.045))
+    edge_mask = np.zeros((door_h, door_w), dtype=np.float32)
+
+    for i in range(band_px):
+        strength = ((band_px - i) / band_px) ** 2  # Quadratic decay → zero at center
+        blend_factor = strength * 0.45  # Max 45 % wall texture at edge
+        if i < door_w:
+            edge_mask[:, i] = np.maximum(edge_mask[:, i], blend_factor)
+            edge_mask[:, door_w - 1 - i] = np.maximum(
+                edge_mask[:, door_w - 1 - i], blend_factor
+            )
+        if i < door_h:
+            edge_mask[i, :] = np.maximum(edge_mask[i, :], blend_factor)
+            # Softer bottom blend (floor line should stay sharp)
+            bottom_blend = blend_factor * 0.25
+            edge_mask[door_h - 1 - i, :] = np.maximum(
+                edge_mask[door_h - 1 - i, :], bottom_blend
+            )
+
+    wall_region = room_bgr[y1:y2, x1:x2].astype(np.float32)
+    door_region_f = out[y1:y2, x1:x2]
+    edge_3ch = edge_mask[..., None]
+    out[y1:y2, x1:x2] = door_region_f * (1.0 - edge_3ch) + wall_region * edge_3ch
+
+    result = np.clip(out, 0, 255).astype(np.uint8)
+
+    # ── Step 3: Floor contact shadow ─────────────────────────────────────────
+    result = add_floor_contact_shadow(result, (x1, y1, x2, y2), strength=0.20)
+
+    return result
+
+
 def validate_locked_scene_candidate(
     candidate_bgr,
     baseline_bgr,
@@ -1784,34 +1905,35 @@ class AIService:
     @staticmethod
     def generate_with_gemini_direct(product, room_image_path, result_image_path):
         """
-        Gemini Direct Image Editing — sends room photo + door product image to Gemini
-        for photorealistic door placement.
+        Gemini Direct Image Editing — 3-image approach for photorealistic door placement.
 
-        Output is always resized to exactly match input image dimensions:
-            9:16 portrait input  →  9:16 portrait output
-            16:9 landscape input →  16:9 landscape output
-            any custom size      →  same size out
+        Pipeline:
+        1. Detect the door opening in the room (OpenCV/YOLO/SAM)
+        2. Create an annotated guidance image (green rectangle overlay)
+        3. Send 3 images to Gemini: room + annotated room + door product
+        4. Post-process the result for lighting, edge-blending and floor shadow
 
-        Raises ValueError if all Gemini models/keys fail so that
-        generate_room_preview can fall through to the OpenCV pipeline.
+        Output dimensions always match the original room image (1:1 framing).
+        Raises ValueError if all Gemini models/keys fail.
         """
         import time
         from io import BytesIO
 
         import cv2
+        import numpy as np
         from google.genai import types
         from PIL import Image as PILImage
 
         from .ai_utils import save_visualization_metadata
 
-        # ── Record original room dimensions for aspect-ratio preservation ────
+        # ── Load original room ────────────────────────────────────────────────
         room_bgr = cv2.imread(room_image_path, cv2.IMREAD_COLOR)
         if room_bgr is None:
             raise ValueError("Xona rasmi yuklanmadi")
         h_orig, w_orig = room_bgr.shape[:2]
-        print(f"DEBUG: [Gemini Direct v4] Original room size: {w_orig}×{h_orig}")
+        print(f"DEBUG: [Gemini Direct v5] Original room size: {w_orig}×{h_orig}")
 
-        # ── Find the best available door image (no-bg > original > main) ─────
+        # ── Find door image ───────────────────────────────────────────────────
         door_image_path = None
         for attr in ("image_no_bg", "original_image", "image"):
             field = getattr(product, attr, None)
@@ -1826,14 +1948,44 @@ class AIService:
         if not door_image_path:
             raise ValueError("Mahsulot rasmi topilmadi")
 
-        # ── Prepare room bytes for Gemini at a capped resolution ─────────────
-        # Gemini works best at ≤1024px on the long side.  We send a downscaled
-        # copy so the model processes the full framing without internal cropping,
-        # then we upscale the result back to the original dimensions afterwards.
-        # This is the key fix for the "zoom / crop artifact" problem:
-        #   - Original 1080×1920 → send 576×1024 to Gemini
-        #   - Gemini returns ~1024×1024 or 1024×1365 (same ratio we sent)
-        #   - We upscale back to 1080×1920 — 1:1 framing preserved
+        # ── Detect door opening box ───────────────────────────────────────────
+        try:
+            door_rgba_asset = load_best_door_rgba(product)
+            expected_ar = get_expected_door_aspect_ratio(
+                product, door_rgba=door_rgba_asset
+            )
+            detected_box, det_method = detect_door_opening_box(room_bgr, expected_ar)
+            # Expand with extra top padding to cover arches/cornices
+            annotation_box = expand_pixel_box_top_heavy(
+                detected_box,
+                w_orig,
+                h_orig,
+                pad_x_ratio=0.06,
+                pad_top_ratio=0.22,
+                pad_bottom_ratio=0.02,
+            )
+            print(
+                f"DEBUG: [Gemini Direct v5] Door box detected via '{det_method}': {annotation_box}"
+            )
+        except Exception as det_err:
+            print(
+                f"WARNING: [Gemini Direct v5] Door detection failed ({det_err}), using centre default"
+            )
+            # Fallback: centre-column default (works for most front-facing shots)
+            cx = w_orig // 2
+            bw = int(w_orig * 0.32)
+            bh = int(h_orig * 0.70)
+            annotation_box = (
+                max(0, cx - bw // 2),
+                max(0, h_orig - bh - int(h_orig * 0.02)),
+                min(w_orig, cx + bw // 2),
+                min(h_orig, h_orig - int(h_orig * 0.02)),
+            )
+            det_method = "default"
+
+        ax1, ay1, ax2, ay2 = annotation_box
+
+        # ── Downscale room for Gemini (long-side ≤ 1024 px) ──────────────────
         GEMINI_MAX_LONG_SIDE = 1024
         long_side = max(w_orig, h_orig)
         if long_side > GEMINI_MAX_LONG_SIDE:
@@ -1843,21 +1995,38 @@ class AIService:
             room_send = cv2.resize(
                 room_bgr, (send_w, send_h), interpolation=cv2.INTER_AREA
             )
-            print(
-                f"DEBUG: [Gemini Direct v4] Downscaled room for Gemini: {send_w}×{send_h}"
-            )
         else:
             room_send = room_bgr
             send_w, send_h = w_orig, h_orig
+        print(f"DEBUG: [Gemini Direct v5] Gemini send size: {send_w}×{send_h}")
 
-        # Encode downscaled room as JPEG bytes
+        # Scale annotation box to the downscaled image size
+        sx = send_w / w_orig
+        sy = send_h / h_orig
+        sax1 = int(ax1 * sx)
+        say1 = int(ay1 * sy)
+        sax2 = int(ax2 * sx)
+        say2 = int(ay2 * sy)
+
+        # ── Encode images for Gemini ──────────────────────────────────────────
         ok, room_buf = cv2.imencode(".jpg", room_send, [cv2.IMWRITE_JPEG_QUALITY, 92])
-        if not ok or room_buf is None:
+        if not ok:
             raise ValueError("Xona rasmini encode qilishda xatolik")
         room_bytes = room_buf.tobytes()
         room_mime = "image/jpeg"
 
-        # Door image — read raw bytes as-is (PNG transparency preserved)
+        # Annotated guidance image (green rectangle showing door region)
+        annotated_bgr = _create_door_region_annotation(
+            room_send, (sax1, say1, sax2, say2)
+        )
+        ok2, ann_buf = cv2.imencode(
+            ".jpg", annotated_bgr, [cv2.IMWRITE_JPEG_QUALITY, 92]
+        )
+        if not ok2:
+            raise ValueError("Annotatsiya rasmini encode qilishda xatolik")
+        ann_bytes = ann_buf.tobytes()
+
+        # Door product image (raw bytes, preserve PNG transparency)
         with open(door_image_path, "rb") as f:
             door_bytes = f.read()
         door_ext = os.path.splitext(door_image_path)[1].lower()
@@ -1865,24 +2034,36 @@ class AIService:
 
         door_name = getattr(product, "name", "eshik")
 
-        # Proven working prompt format — matches the exact template that produced
-        # high-quality results in production (screenshot-confirmed).
+        # ── Build photorealistic 3-image prompt ──────────────────────────────
         prompt = (
-            f"First image is the original room photo. "
-            f"Second image is the new door design '{door_name}'.\n"
-            "TASK: Replace the existing door or empty doorway in the room with this new door design.\n"
-            "STRICT RULES:\n"
-            "- Keep the room exactly as it is outside the doorway area\n"
-            "- Match the perspective, local lighting, and architectural shadows perfectly\n"
-            "- The door must look physically installed into the wall\n"
-            "- Return ONLY the edited room image as a response"
+            "Professional architectural interior photo editing task.\n\n"
+            "IMAGE 1: Original room photograph — REFERENCE for ALL room details.\n"
+            f"IMAGE 2: Same room with a GREEN RECTANGLE showing EXACTLY where to install the new door "
+            f"(pixel region x={sax1}–{sax2}, y={say1}–{say2} in the send image).\n"
+            f"IMAGE 3: New door design '{door_name}' — install this exact door.\n\n"
+            "TASK: Replace the existing door (or doorway) inside the GREEN RECTANGLE with "
+            "the new door from Image 3. The result must look like a professional real-estate photograph.\n\n"
+            "PHOTOREALISM REQUIREMENTS:\n"
+            "• PERSPECTIVE — warp the door to match the room's vanishing point and 3-D perspective exactly.\n"
+            "• LIGHTING — match the room's ambient light direction, intensity and color temperature; "
+            "add realistic highlights on door surfaces.\n"
+            "• SHADOWS — cast a natural drop-shadow from the door onto the floor and a subtle side-shadow "
+            "on the adjacent wall, matching the room's existing shadow direction.\n"
+            "• FLOOR CONTACT — door bottom must align flush with the floor with a thin contact shadow line.\n"
+            "• WALL INTEGRATION — blend the door frame edges seamlessly with the surrounding wall texture; "
+            "no hard-cut outlines or halos.\n"
+            "• DEPTH & RECESS — the door must appear physically set into the wall opening, not floating on top.\n"
+            "• COLOR HARMONY — slightly adjust door surface brightness to harmonize with the room's overall exposure.\n\n"
+            "STRICT PRESERVATION (DO NOT CHANGE):\n"
+            "• Every pixel OUTSIDE the green rectangle: walls, floor, carpet, curtains, furniture, ceiling, lighting.\n"
+            "• Room color palette, overall brightness, atmosphere, and style.\n"
+            "• All existing architectural details and decorations outside the door opening.\n\n"
+            "OUTPUT: Return ONLY the complete edited room photograph with the new door realistically installed."
         )
 
         clients = AIService.build_gemini_visual_clients()
-        print(f"DEBUG: [Gemini Direct v4] Available clients: {[c[0] for c in clients]}")
+        print(f"DEBUG: [Gemini Direct v5] Clients: {[c[0] for c in clients]}")
 
-        # Models known to support response_modalities=["IMAGE"] via Gemini API (2025).
-        # Ordered from most to least likely to support image generation output.
         gemini_models = [
             "gemini-2.0-flash-exp",
             "gemini-2.0-flash-preview-image-generation",
@@ -1891,165 +2072,157 @@ class AIService:
         ]
 
         last_error = None
+
+        def _try_generate(client, model_name, use_3_images):
+            """Helper — attempt one generation, return PIL image or None."""
+            images_parts = [
+                types.Part.from_bytes(data=room_bytes, mime_type=room_mime),
+            ]
+            if use_3_images:
+                images_parts.append(
+                    types.Part.from_bytes(data=ann_bytes, mime_type="image/jpeg")
+                )
+            images_parts.append(
+                types.Part.from_bytes(data=door_bytes, mime_type=door_mime)
+            )
+            images_parts.append(prompt)
+
+            response = client.models.generate_content(
+                model=model_name,
+                contents=images_parts,
+                config=types.GenerateContentConfig(
+                    response_modalities=["IMAGE", "TEXT"],
+                ),
+            )
+
+            if response.candidates and response.candidates[0].content:
+                for part in response.candidates[0].content.parts:
+                    if part.inline_data and part.inline_data.data:
+                        return PILImage.open(BytesIO(part.inline_data.data))
+            return None
+
         for client_label, client in clients:
             for model_name in gemini_models:
-                for attempt in range(2):
-                    try:
-                        print(
-                            f"DEBUG: [Gemini Direct v4] Trying {model_name} "
-                            f"({client_label}, attempt {attempt + 1})..."
-                        )
-
-                        response = client.models.generate_content(
-                            model=model_name,
-                            contents=[
-                                types.Part.from_bytes(
-                                    data=room_bytes, mime_type=room_mime
-                                ),
-                                types.Part.from_bytes(
-                                    data=door_bytes, mime_type=door_mime
-                                ),
-                                prompt,
-                            ],
-                            config=types.GenerateContentConfig(
-                                response_modalities=["IMAGE", "TEXT"],
-                            ),
-                        )
-
-                        if response.candidates and response.candidates[0].content:
-                            text_parts = []
-                            for part in response.candidates[0].content.parts:
-                                if part.inline_data and part.inline_data.data:
-                                    img = PILImage.open(BytesIO(part.inline_data.data))
-                                    gem_w, gem_h = img.size
-                                    print(
-                                        f"DEBUG: [Gemini Direct v4] Gemini returned: {gem_w}×{gem_h}"
-                                    )
-
-                                    # ── Restore original room dimensions ──────
-                                    # We sent Gemini a downscaled room (send_w×send_h).
-                                    # Gemini returns something close to that ratio.
-                                    # Step 1: center-crop Gemini output to exactly
-                                    #         the same aspect ratio as what we sent
-                                    #         (removes any slight ratio drift).
-                                    # Step 2: upscale to the original room dimensions
-                                    #         (w_orig × h_orig) — full resolution back.
-                                    send_ratio = send_w / send_h
-                                    gem_ratio = gem_w / gem_h
-
-                                    if (
-                                        abs(send_ratio - gem_ratio)
-                                        / max(send_ratio, gem_ratio)
-                                        > 0.04
-                                    ):
-                                        # Ratios differ enough to need a crop
-                                        if gem_ratio > send_ratio:
-                                            # Gemini output too wide → crop sides
-                                            crop_w = int(gem_h * send_ratio)
-                                            crop_left = (gem_w - crop_w) // 2
-                                            img = img.crop(
-                                                (
-                                                    crop_left,
-                                                    0,
-                                                    crop_left + crop_w,
-                                                    gem_h,
-                                                )
-                                            )
-                                        else:
-                                            # Gemini output too tall → crop top/bottom
-                                            crop_h = int(gem_w / send_ratio)
-                                            crop_top = (gem_h - crop_h) // 2
-                                            img = img.crop(
-                                                (0, crop_top, gem_w, crop_top + crop_h)
-                                            )
-
-                                    # Final upscale to exact original resolution
-                                    if img.size != (w_orig, h_orig):
-                                        img = img.resize(
-                                            (w_orig, h_orig),
-                                            PILImage.Resampling.LANCZOS,
-                                        )
-
-                                    img.save(result_image_path, format="PNG")
-                                    save_visualization_metadata(
-                                        result_image_path,
-                                        {
-                                            "generation_prompt": prompt,
-                                            "generation_meta": {
-                                                "engine": "Gemini Direct",
-                                                "model": model_name,
-                                            },
-                                            "pipeline": {
-                                                "version": "gemini_direct_v4",
-                                                "mode": "gemini_direct_edit",
-                                                "image_edit_engine": "Gemini",
-                                                "model": model_name,
-                                                "client": client_label,
-                                                "input_size": [w_orig, h_orig],
-                                                "output_size": [w_orig, h_orig],
-                                            },
-                                        },
-                                    )
-                                    print(
-                                        f"DEBUG: [Gemini Direct v4] ✅ SUCCESS — "
-                                        f"{model_name} ({w_orig}×{h_orig})"
-                                    )
-                                    return result_image_path
-
-                                elif hasattr(part, "text") and part.text:
-                                    text_parts.append(part.text)
-
-                            if text_parts:
-                                last_error = f"Text-only response (no image): {' '.join(text_parts)[:300]}"
+                # Try 3-image approach first, then fall back to 2-image
+                for use_3 in (True, False):
+                    for attempt in range(2):
+                        try:
+                            img_mode = "3-img" if use_3 else "2-img"
+                            print(
+                                f"DEBUG: [Gemini Direct v5] {model_name} "
+                                f"({client_label}, {img_mode}, attempt {attempt + 1})..."
+                            )
+                            img = _try_generate(client, model_name, use_3)
+                            if img is None:
+                                last_error = "No image in response"
                                 print(
-                                    f"DEBUG: [Gemini Direct v4] {model_name} returned text only: {last_error}"
+                                    f"DEBUG: [Gemini Direct v5] {model_name} — text-only response"
                                 )
-                            else:
-                                last_error = "No image data in response"
+                                break  # Try next mode / model
 
-                    except Exception as e:
-                        last_error = str(e)
-                        print(
-                            f"DEBUG: [Gemini Direct v4] {model_name} exception "
-                            f"({client_label}): {last_error[:300]}"
-                        )
-                        if (
-                            "429" in last_error
-                            or "RESOURCE_EXHAUSTED" in last_error
-                            or "quota" in last_error.lower()
-                        ):
+                            gem_w, gem_h = img.size
                             print(
-                                f"WARNING: [Gemini Direct v4] Rate limit on "
-                                f"{model_name}, waiting 5s..."
+                                f"DEBUG: [Gemini Direct v5] Got image {gem_w}×{gem_h}"
                             )
-                            time.sleep(5)
-                            continue
-                        # For model-not-found or unsupported-modality errors,
-                        # skip immediately to the next model without retrying.
-                        if any(
-                            kw in last_error.lower()
-                            for kw in (
-                                "not found",
-                                "does not exist",
-                                "unsupported",
-                                "invalid",
-                                "not supported",
+
+                            # ── Restore exact original dimensions ─────────────
+                            send_ratio = send_w / send_h
+                            gem_ratio = gem_w / gem_h
+                            if (
+                                abs(send_ratio - gem_ratio) / max(send_ratio, gem_ratio)
+                                > 0.04
+                            ):
+                                if gem_ratio > send_ratio:
+                                    crop_w = int(gem_h * send_ratio)
+                                    crop_l = (gem_w - crop_w) // 2
+                                    img = img.crop((crop_l, 0, crop_l + crop_w, gem_h))
+                                else:
+                                    crop_h = int(gem_w / send_ratio)
+                                    crop_t = (gem_h - crop_h) // 2
+                                    img = img.crop((0, crop_t, gem_w, crop_t + crop_h))
+
+                            if img.size != (w_orig, h_orig):
+                                img = img.resize(
+                                    (w_orig, h_orig), PILImage.Resampling.LANCZOS
+                                )
+
+                            # ── Post-process for photorealism ─────────────────
+                            result_bgr = cv2.cvtColor(
+                                np.array(img.convert("RGB")), cv2.COLOR_RGB2BGR
                             )
-                        ):
+                            result_bgr = _post_process_gemini_door_result(
+                                result_bgr, room_bgr, annotation_box
+                            )
+                            result_pil = PILImage.fromarray(
+                                cv2.cvtColor(result_bgr, cv2.COLOR_BGR2RGB)
+                            )
+                            result_pil.save(result_image_path, format="PNG")
+
+                            save_visualization_metadata(
+                                result_image_path,
+                                {
+                                    "generation_prompt": prompt,
+                                    "generation_meta": {
+                                        "engine": "Gemini Direct",
+                                        "model": model_name,
+                                        "mode": img_mode,
+                                        "detection_method": det_method,
+                                    },
+                                    "pipeline": {
+                                        "version": "gemini_direct_v5",
+                                        "mode": "gemini_direct_edit",
+                                        "image_edit_engine": "Gemini",
+                                        "model": model_name,
+                                        "client": client_label,
+                                        "input_size": [w_orig, h_orig],
+                                        "output_size": [w_orig, h_orig],
+                                        "annotation_box": list(annotation_box),
+                                        "post_processed": True,
+                                    },
+                                },
+                            )
                             print(
-                                f"DEBUG: [Gemini Direct v4] Skipping {model_name} "
-                                f"(not available / unsupported)"
+                                f"DEBUG: [Gemini Direct v5] ✅ SUCCESS — "
+                                f"{model_name} ({img_mode}) → {w_orig}×{h_orig}"
                             )
+                            return result_image_path
+
+                        except Exception as e:
+                            last_error = str(e)
+                            print(
+                                f"DEBUG: [Gemini Direct v5] {model_name} "
+                                f"({client_label}, {img_mode}) error: {last_error[:300]}"
+                            )
+                            if any(
+                                kw in last_error
+                                for kw in ("429", "RESOURCE_EXHAUSTED", "quota")
+                            ):
+                                print(
+                                    f"WARNING: Rate limit on {model_name}, waiting 5s..."
+                                )
+                                time.sleep(5)
+                                continue
+                            if any(
+                                kw in last_error.lower()
+                                for kw in (
+                                    "not found",
+                                    "does not exist",
+                                    "unsupported",
+                                    "invalid",
+                                    "not supported",
+                                )
+                            ):
+                                print(f"DEBUG: Skipping {model_name} (not available)")
+                                break  # skip to next model
                             break
-                        break  # Try next model
+                    else:
+                        continue
+                    break  # inner use_3 loop
 
-        # All Gemini attempts failed — caller (generate_room_preview) will
-        # catch this and continue to the OpenCV fallback pipeline.
         print(
-            f"ERROR: [Gemini Direct v4] All models/clients failed. "
+            f"ERROR: [Gemini Direct v5] All models/clients failed. "
             f"Last error: {last_error}. "
-            f"Clients tried: {[c[0] for c in clients]}. "
-            f"Models tried: {gemini_models}"
+            f"Clients: {[c[0] for c in clients]}. Models: {gemini_models}"
         )
         raise ValueError(f"Gemini Direct editing failed: {last_error}")
 

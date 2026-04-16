@@ -1,0 +1,19 @@
+{
+  "generation_prompt": "Image 1: Original room photo.\nImage 2: MASK — white area shows where to place the new door.\nImage 3: The NEW DOOR design to install.\n\nTASK: Replace the masked area with the new door.\nRULES:\n- Match the room's lighting and perspective\n- Blend edges perfectly (shadows, lighting)\n- Do NOT change anything outside the mask\n- Make the door look naturally installed in the wall\n- Return ONLY the edited room image",
+  "generation_meta": {
+    "engine": "Nano Banana v2",
+    "detection_model": "gemini-2.5-flash",
+    "inpaint_model": "gemini-2.5-flash-image"
+  },
+  "pipeline": {
+    "version": "nano_banana_v2",
+    "mode": "gemini_direct_edit",
+    "annotation_box": [
+      86,
+      102,
+      201,
+      409
+    ],
+    "post_processed": false
+  }
+}

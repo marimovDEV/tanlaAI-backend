@@ -1031,3 +1031,19 @@ class AdminRunActionApiView(views.APIView):
                 "output": output.strip(),
             }
         )
+
+
+from ..models import SharedDesign
+from .serializers import SharedDesignSerializer
+
+class SharedDesignViewSet(viewsets.ModelViewSet):
+    queryset = SharedDesign.objects.all()
+    serializer_class = SharedDesignSerializer
+    permission_classes = [permissions.AllowAny]
+    
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)

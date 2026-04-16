@@ -147,3 +147,13 @@ class AITestSerializer(serializers.ModelSerializer):
     class Meta:
         model = AITest
         fields = '__all__'
+
+
+class SharedDesignSerializer(serializers.ModelSerializer):
+    product_details = ProductSerializer(source='product', read_only=True)
+    image = AbsoluteImageField(required=True)
+    
+    class Meta:
+        model = SharedDesign
+        fields = '__all__'
+        read_only_fields = ['id', 'created_at']

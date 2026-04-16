@@ -341,3 +341,20 @@ class AITest(models.Model):
 
     def __str__(self):
         return f"Test #{self.id}: {self.door.name}"
+
+
+import uuid
+
+class SharedDesign(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    image = models.ImageField(upload_to="shared_designs/")
+    product = models.ForeignKey(Product, on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Shared Design"
+        verbose_name_plural = "Shared Designs"
+
+    def __str__(self):
+        return f"Shared Design: {str(self.id)[:8]}..."

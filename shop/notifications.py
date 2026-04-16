@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 
 class NotificationService:
     @staticmethod
-    def send_telegram_message(message: str, chat_id: str = None):
+    def send_telegram_message(message: str, chat_id: str = None, reply_markup: dict = None):
         """
         Sends a message to a Telegram chat. 
         Defaults to settings.ADMIN_TELEGRAM_ID if chat_id is not provided.
@@ -25,6 +25,9 @@ class NotificationService:
             "text": message,
             "parse_mode": "HTML"
         }
+        
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
 
         try:
             response = requests.post(url, json=payload, timeout=10)
@@ -60,10 +63,19 @@ class NotificationService:
             
         message += f"\n\n🚀 <a href='https://tanla-ai.ardentsoft.uz/adminka/leads'>Admin panelda ko'rish</a>"
 
+        # Build inline keyboard if phone exists
+        reply_markup = None
+        if lead.phone:
+            reply_markup = {
+                "inline_keyboard": [
+                    [{"text": "📞 Uyali aloqa / Bog'lanish", "url": f"tel:{lead.phone}"}]
+                ]
+            }
+
         # Notify Admin
-        NotificationService.send_telegram_message(message)
+        NotificationService.send_telegram_message(message, reply_markup=reply_markup)
         
         # Notify Company Owner if applicable
         if lead.company and lead.company.user and lead.company.user.telegram_id:
              message_company = message + "\n\n<i>Sizning kompaniyangizga yangi so'rov tushdi!</i>"
-             NotificationService.send_telegram_message(message_company, chat_id=str(lead.company.user.telegram_id))
+             NotificationService.send_telegram_message(message_company, chat_id=str(lead.company.user.telegram_id), reply_markup=reply_markup)

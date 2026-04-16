@@ -26,11 +26,26 @@ def trigger_ai_processing(sender, instance, created, **kwargs):
 @receiver(post_save, sender=LeadRequest)
 def notify_new_lead_signal(sender, instance, created, **kwargs):
     """
-    Sends a Telegram notification when a new lead is created.
+    Sends a Telegram notification when a new lead is created and sets a reminder.
     """
     if created:
         from .notifications import NotificationService
         
-        # Run in a separate thread to avoid blocking the request
+        # 1. Immediate Notification
         thread = threading.Thread(target=NotificationService.notify_new_lead, args=(instance,))
         thread.start()
+
+        # 2. 10-Minute Reminder (Auto-Followup)
+        def send_reminder():
+            # Fresh fetch to check current status
+            lead_id = instance.id
+            try:
+                from .models import LeadRequest
+                current_lead = LeadRequest.objects.get(id=lead_id)
+                if current_lead.status == 'new':
+                    NotificationService.notify_lead_reminder(current_lead)
+            except LeadRequest.DoesNotExist:
+                pass
+
+        reminder_timer = threading.Timer(600, send_reminder) # 600 seconds = 10 minutes
+        reminder_timer.start()

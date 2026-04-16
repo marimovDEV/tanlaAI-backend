@@ -112,6 +112,14 @@ class AdminDashboardApiView(views.APIView):
                     Q(sale_end_date__gt=now) | Q(sale_end_date__isnull=True)
                 ).count(),
             },
+            'today_performance': {
+                'leads': LeadRequest.objects.filter(created_at__date=timezone.now().date()).count(),
+                'converted': LeadRequest.objects.filter(created_at__date=timezone.now().date(), status='converted').count(),
+                'conversion_rate': round(
+                    (LeadRequest.objects.filter(created_at__date=timezone.now().date(), status='converted').count() / 
+                     max(LeadRequest.objects.filter(created_at__date=timezone.now().date()).count(), 1) * 100), 1
+                )
+            },
             'ai_status': ai_breakdown,
             'ai_performance': {
                 'success_rate': success_rate,

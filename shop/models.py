@@ -225,6 +225,7 @@ class LeadRequest(models.Model):
     shared_id = models.UUIDField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     is_processed = models.BooleanField(default=False)  # Keep for compatibility
+    is_paid = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["-created_at"]
@@ -350,6 +351,7 @@ import uuid
 class SharedDesign(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     image = models.ImageField(upload_to="shared_designs/")
+    original_image = models.ImageField(upload_to="shared_designs/originals/", null=True, blank=True)
     product = models.ForeignKey(Product, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     

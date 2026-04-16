@@ -81,3 +81,34 @@ class NotificationService:
         if lead.company and lead.company.user and lead.company.user.telegram_id:
              message_company = message + "\n\n<i>Sizning kompaniyangizga yangi so'rov tushdi!</i>"
              NotificationService.send_telegram_message(message_company, chat_id=str(lead.company.user.telegram_id), reply_markup=reply_markup)
+
+    @staticmethod
+    def notify_lead_reminder(lead):
+        """
+        Sends a reminder to the admin/company if the lead is still new after 10 minutes.
+        """
+        user_name = f"{lead.user.first_name} {lead.user.last_name or ''}".strip()
+        phone = lead.phone or "Ko'rsatilmagan"
+        
+        message = (
+            f"⏰ <b>Eslatma!</b>\n\n"
+            f"👤 <b>Mijoz:</b> {user_name}\n"
+            f"📞 <b>Telefon:</b> {phone}\n\n"
+            f"⚠️ <b>Hali javob berilmadi!</b>"
+        )
+        
+        # Build original inline keyboard
+        reply_markup = {"inline_keyboard": []}
+        if lead.phone:
+            reply_markup["inline_keyboard"].append([{"text": "📞 Uyali aloqa / Bog'lanish", "url": f"tel:{lead.phone}"}])
+        reply_markup["inline_keyboard"].append([
+            {"text": "✅ Sotildi", "callback_data": f"sold_{lead.id}"},
+            {"text": "❌ Bekor", "callback_data": f"cancel_{lead.id}"}
+        ])
+
+        # Notify Admin
+        NotificationService.send_telegram_message(message, reply_markup=reply_markup)
+        
+        # Notify Company Owner
+        if lead.company and lead.company.user and lead.company.user.telegram_id:
+             NotificationService.send_telegram_message(message, chat_id=str(lead.company.user.telegram_id), reply_markup=reply_markup)

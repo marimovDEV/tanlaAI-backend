@@ -152,6 +152,7 @@ class AITestSerializer(serializers.ModelSerializer):
 class SharedDesignSerializer(serializers.ModelSerializer):
     product_details = ProductSerializer(source='product', read_only=True)
     image = AbsoluteImageField(required=True)
+    original_image = AbsoluteImageField(required=False, allow_null=True)
     
     class Meta:
         model = SharedDesign

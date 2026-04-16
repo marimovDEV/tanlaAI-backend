@@ -46,13 +46,13 @@ dp = Dispatcher()
 async def command_start_handler(message: types.Message) -> None:
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(
-        text="Open ATELIER", 
+        text="Katalogga o'tish", 
         web_app=WebAppInfo(url=WEBAPP_URL)
     ))
 
     await message.answer(
-        f"Welcome to ATELIER, {message.from_user.full_name}!\n\n"
-        "Experience our digital boutique directly in Telegram.",
+        f"Assalomu alaykum, {message.from_user.full_name}!\n\n"
+        "TanlaAI - eshiklarni intellektual tanlash va vizualizatsiya qilish platformasiga xush kelibsiz.",
         reply_markup=builder.as_markup()
     )
 

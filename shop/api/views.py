@@ -118,6 +118,7 @@ def run_api_ai_background(
                         ai_result=ai_result,
                         lead_type="visualize",
                         status="new",
+                        phone=user.phone or "",
                         message="Mijoz mahsulotni SI orqali vizualizatsiya qildi.",
                     )
 
@@ -840,6 +841,13 @@ class LeadRequestViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         tg_user = require_tg_user(self.request)
         product = serializer.validated_data["product"]
+        phone = serializer.validated_data.get("phone")
+        
+        # Persist phone to user profile for future automated leads
+        if phone and not tg_user.phone:
+            tg_user.phone = phone
+            tg_user.save(update_fields=["phone"])
+            
         serializer.save(user=tg_user, company=product.company)
 
 
@@ -879,6 +887,7 @@ class AIResultViewSet(viewsets.ReadOnlyModelViewSet):
             ai_result=ai_result,
             lead_type="visualize",
             status="new",
+            phone=tg_user.phone or "",
             message="Mijoz tarix boyicha ushbu vizualizatsiyaga qiziqish bildirdi.",
         )
         return Response({"status": "ok"})

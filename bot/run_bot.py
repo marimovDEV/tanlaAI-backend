@@ -56,6 +56,47 @@ async def command_start_handler(message: types.Message) -> None:
         reply_markup=builder.as_markup()
     )
 
+
+# --- DJANGO SETUP FOR BOT ---
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "core.settings")
+import django
+django.setup()
+
+from asgiref.sync import sync_to_async
+from shop.models import LeadRequest
+
+@sync_to_async
+def update_lead_status(lead_id: str, new_status: str):
+    obj = LeadRequest.objects.filter(id=lead_id).first()
+    if obj:
+        obj.status = new_status
+        obj.save()
+        return True
+    return False
+
+@dp.callback_query(lambda c: c.data and (c.data.startswith('sold_') or c.data.startswith('cancel_')))
+async def process_lead_status(callback_query: types.CallbackQuery):
+    action, lead_id = callback_query.data.split('_', 1)
+    
+    if action == 'sold':
+        success = await update_lead_status(lead_id, 'converted')
+        text = "✅ Sotildi! (Konversiya qayd etildi)"
+    else:
+        success = await update_lead_status(lead_id, 'rejected')
+        text = "❌ Bekor qilindi."
+
+    if success:
+        await callback_query.answer(text, show_alert=True)
+        # Edit the inline keyboard to remove the choice buttons but keep the phone number
+        # Just grab the existing keyboard and build a new one without the action row
+        message_text = callback_query.message.text
+        message_text += f"\n\n<b>Status:</b> {text}"
+        
+        # remove inline keyboard entirely to avoid double clicking
+        await callback_query.message.edit_text(message_text, parse_mode="HTML", reply_markup=None)
+    else:
+        await callback_query.answer("Topilmadi yoki allaqachon o'zgartirilgan", show_alert=True)
+
 async def main() -> None:
     # Use our custom IPv4 session with optional proxy
     session = IPv4Session(proxy=PROXY_URL)

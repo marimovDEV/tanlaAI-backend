@@ -221,6 +221,8 @@ class LeadRequest(models.Model):
     price_info = models.CharField(
         max_length=100, blank=True, help_text="Calculated price or dimensions info"
     )
+    source = models.CharField(max_length=50, blank=True)
+    shared_id = models.UUIDField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     is_processed = models.BooleanField(default=False)  # Keep for compatibility
 

@@ -64,13 +64,15 @@ class NotificationService:
         message += f"\n\n🚀 <a href='https://tanla-ai.ardentsoft.uz/adminka/leads'>Admin panelda ko'rish</a>"
 
         # Build inline keyboard if phone exists
-        reply_markup = None
+        reply_markup = {"inline_keyboard": []}
+
         if lead.phone:
-            reply_markup = {
-                "inline_keyboard": [
-                    [{"text": "📞 Uyali aloqa / Bog'lanish", "url": f"tel:{lead.phone}"}]
-                ]
-            }
+            reply_markup["inline_keyboard"].append([{"text": "📞 Uyali aloqa / Bog'lanish", "url": f"tel:{lead.phone}"}])
+
+        reply_markup["inline_keyboard"].append([
+            {"text": "✅ Sotildi", "callback_data": f"sold_{lead.id}"},
+            {"text": "❌ Bekor", "callback_data": f"cancel_{lead.id}"}
+        ])
 
         # Notify Admin
         NotificationService.send_telegram_message(message, reply_markup=reply_markup)

@@ -750,6 +750,28 @@ class CompanyViewSet(viewsets.ModelViewSet):
         ensure_company_owner(self.request, instance)
         instance.delete()
 
+    @action(detail=False, methods=['get'])
+    def leaderboard(self, request):
+        """
+        Returns top companies ranked by the number of successful conversions.
+        """
+        companies = Company.objects.filter(is_active=True).annotate(
+            converted_leads=models.Count('leads', filter=models.Q(leads__status='converted')),
+            total_leads=models.Count('leads')
+        ).order_by('-converted_leads', '-total_leads')[:10]
+        
+        data = []
+        for c in companies:
+            data.append({
+                'id': c.id,
+                'name': c.name,
+                'logo': c.logo.url if c.logo else None,
+                'converted_leads': c.converted_leads,
+                'total_leads': c.total_leads,
+            })
+            
+        return Response(data)
+
     @action(detail=False, methods=["get", "post", "put", "patch"])
     def my(self, request):
         tg_user = get_tg_user(request)

@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from ..models import (
     Category, TelegramUser, Company, Product, 
-    AIResult, HomeBanner, Wishlist, LeadRequest, Subscription, AITest
+    AIResult, HomeBanner, Wishlist, LeadRequest, Subscription, AITest, SharedDesign
 )
 
 class AbsoluteImageField(serializers.ImageField):

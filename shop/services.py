@@ -1975,7 +1975,7 @@ class AIService:
         detection_prompt = (
             "Analyze this room image for a door installation.\n"
             "Return ONLY a JSON object with the bounding box where a new door should be placed.\n"
-            "Focus on finding an empty wall or replacing an existing door.\n\n"
+            "Focus on finding an existing door, an empty door frame/open doorway, or an empty wall where a door fits naturally.\n\n"
             'Format: {"ymin": 0-1000, "xmin": 0-1000, "ymax": 0-1000, "xmax": 0-1000}\n'
             "Use normalized coordinates (0 to 1000)."
         )
@@ -2058,12 +2058,13 @@ class AIService:
 Image 2: MASK — white area shows where to place the new door.
 Image 3: The NEW DOOR design to install.
 
-TASK: Replace the masked area with the new door.
+TASK: Install the new door inside the masked area.
 RULES:
-- Match the room's lighting and perspective
-- Blend edges perfectly (shadows, lighting)
-- Do NOT change anything outside the mask
-- Make the door look naturally installed in the wall
+- If the masked area is an open doorway or empty frame, fill the opening completely with the new door.
+- Match the room's lighting, perspective, and scale.
+- Blend edges perfectly with the wall or frame.
+- Do NOT change anything outside the mask.
+- Make the door look like a real physical installation.
 - Return ONLY the edited room image"""
         INPAINT_MODELS = ['gemini-2.5-flash-image', 'gemini-2.5-flash', 'gemini-2.0-flash']
         

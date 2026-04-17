@@ -1973,9 +1973,13 @@ class AIService:
         # ═══════════════════════════════════════
         print("\n🔍 1-BOSQICH: Devorni analiz qilyapman...")
         detection_prompt = (
-            "Analyze this room image for a door installation.\n"
-            "Return ONLY a JSON object with the bounding box where a new door should be placed.\n"
-            "Focus on finding an existing door, an empty door frame/open doorway, or an empty wall where a door fits naturally.\n\n"
+            "Analyze this room image. I need to install a new door.\n"
+            "Find the NEAREST door opening facing the camera — this could be:\n"
+            "  - An open doorway/passage (no door installed, you can see through to another room)\n"
+            "  - An existing door that needs replacing\n"
+            "  - An empty wall section suitable for a door\n\n"
+            "Return ONLY the bounding box of the door frame edges (left jamb, right jamb, top header, floor threshold).\n"
+            "The box must tightly fit the door FRAME, not the room behind it.\n\n"
             'Format: {"ymin": 0-1000, "xmin": 0-1000, "ymax": 0-1000, "xmax": 0-1000}\n'
             "Use normalized coordinates (0 to 1000)."
         )
@@ -2054,18 +2058,20 @@ class AIService:
         # Phase 3: Inpainting
         # ═══════════════════════════════════════
         print("\n🚪 3-BOSQICH: Eshikni joylashtiryapman...")
-        edit_prompt = """Image 1: Original room photo.
-Image 2: MASK — white area shows where to place the new door.
-Image 3: The NEW DOOR design to install.
+        edit_prompt = """You are given 3 images:
+Image 1: A room photo showing a doorway/opening.
+Image 2: A black-and-white MASK. The white rectangle marks exactly where the new door must go.
+Image 3: The NEW DOOR product to install.
 
-TASK: Install the new door inside the masked area.
-RULES:
-- If the masked area is an open doorway or empty frame, fill the opening completely with the new door.
-- Match the room's lighting, perspective, and scale.
-- Blend edges perfectly with the wall or frame.
-- Do NOT change anything outside the mask.
-- Make the door look like a real physical installation.
-- Return ONLY the edited room image"""
+TASK: Place the new door (Image 3) into the masked area (white zone in Image 2) of the room (Image 1).
+
+CRITICAL RULES:
+1. The door MUST fill the entire white mask area — close the opening completely.
+2. If there is an open doorway showing another room behind it, COVER that opening with the new door. The other room should no longer be visible.
+3. Match the room's lighting, perspective, and wall color.
+4. The door should look like it was physically installed in that frame — include realistic shadows and edges.
+5. Do NOT modify anything outside the white mask area.
+6. Return ONLY the final edited room photo as an image."""
         INPAINT_MODELS = ['gemini-2.5-flash-image', 'gemini-2.5-flash', 'gemini-2.0-flash']
         
         final_img = None

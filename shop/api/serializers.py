@@ -1,3 +1,4 @@
+from django.conf import settings
 from rest_framework import serializers
 from ..models import (
     Category, TelegramUser, Company, Product, 
@@ -13,12 +14,20 @@ class AbsoluteImageField(serializers.ImageField):
         if not value:
             return None
         url = value.url
+        # 1. Normalize relative paths
         if url and not url.startswith('/') and not url.startswith('http'):
             url = f"/media/{url}"
         
+        # 2. Try request context
         request = self.context.get('request')
         if request:
             return request.build_absolute_uri(url)
+        
+        # 3. Fallback to settings.BACKEND_URL
+        if url.startswith('/'):
+            backend_url = getattr(settings, 'BACKEND_URL', '').rstrip('/')
+            return f"{backend_url}{url}"
+            
         return url
 
 class CategorySerializer(serializers.ModelSerializer):

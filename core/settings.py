@@ -205,6 +205,7 @@ STATICFILES_DIRS = [BASE_DIR / 'static']
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+BACKEND_URL = env('BACKEND_URL', default='https://tanla-ai.ardentsoft.uz')
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

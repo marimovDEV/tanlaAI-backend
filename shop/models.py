@@ -42,9 +42,13 @@ class Company(models.Model):
     )
     name = models.CharField(max_length=255)
     description = models.TextField()
+    phone = models.CharField(max_length=20, blank=True, default='')
     location = models.CharField(max_length=255)
-    telegram_link = models.CharField(max_length=255, null=True, blank=True)
-    instagram_link = models.CharField(max_length=255, null=True, blank=True)
+    latitude = models.FloatField(null=True, blank=True)
+    longitude = models.FloatField(null=True, blank=True)
+    telegram_link = models.CharField(max_length=255, blank=True, default='')
+    instagram_link = models.CharField(max_length=255, blank=True, default='')
+    youtube_link = models.CharField(max_length=255, blank=True, default='')
     logo = models.ImageField(upload_to="company_logos/", null=True, blank=True)
     is_active = models.BooleanField(default=True)
     subscription_deadline = models.DateTimeField(null=True, blank=True)
@@ -256,7 +260,7 @@ class Subscription(models.Model):
 
 class SystemSettings(models.Model):
     # --- General Settings ---
-    platform_name = models.CharField(max_length=100, default="TanlaAI")
+    platform_name = models.CharField(max_length=100, default="Tanla")
     default_language = models.CharField(max_length=10, default="uz")
     timezone = models.CharField(max_length=50, default="Asia/Tashkent")
     currency = models.CharField(max_length=20, default="UZS")

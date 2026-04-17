@@ -52,7 +52,7 @@ async def command_start_handler(message: types.Message) -> None:
 
     await message.answer(
         f"Assalomu alaykum, {message.from_user.full_name}!\n\n"
-        "TanlaAI - eshiklarni intellektual tanlash va vizualizatsiya qilish platformasiga xush kelibsiz.",
+        "Tanla - eshiklarni intellektual tanlash va vizualizatsiya qilish platformasiga xush kelibsiz.",
         reply_markup=builder.as_markup()
     )
 

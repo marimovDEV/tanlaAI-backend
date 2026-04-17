@@ -2058,20 +2058,12 @@ class AIService:
         # Phase 3: Inpainting
         # ═══════════════════════════════════════
         print("\n🚪 3-BOSQICH: Eshikni joylashtiryapman...")
-        edit_prompt = """You are given 3 images:
-Image 1: A room photo showing a doorway/opening.
-Image 2: A black-and-white MASK. The white rectangle marks exactly where the new door must go.
-Image 3: The NEW DOOR product to install.
-
-TASK: Place the new door (Image 3) into the masked area (white zone in Image 2) of the room (Image 1).
-
-CRITICAL RULES:
-1. The door MUST fill the entire white mask area — close the opening completely.
-2. If there is an open doorway showing another room behind it, COVER that opening with the new door. The other room should no longer be visible.
-3. Match the room's lighting, perspective, and wall color.
-4. The door should look like it was physically installed in that frame — include realistic shadows and edges.
-5. Do NOT modify anything outside the white mask area.
-6. Return ONLY the final edited room photo as an image."""
+        edit_prompt = (
+            "Edit this room photo: install the door shown in Image 1 into the area marked white in the mask (Image 3). "
+            "The door must completely fill the white masked zone. "
+            "Keep everything outside the mask unchanged. Match lighting and perspective. "
+            "Output only the edited room photo."
+        )
         INPAINT_MODELS = ['gemini-2.5-flash-image', 'gemini-2.5-flash', 'gemini-2.0-flash']
         
         final_img = None
@@ -2086,9 +2078,9 @@ CRITICAL RULES:
                     response = client.models.generate_content(
                         model=model_name,
                         contents=[
+                            types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
                             types.Part.from_bytes(data=room_bytes, mime_type='image/png'),
                             types.Part.from_bytes(data=mask_bytes, mime_type='image/png'),
-                            types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
                             edit_prompt
                         ],
                         config=types.GenerateContentConfig(response_modalities=["IMAGE", "TEXT"])
@@ -2110,6 +2102,25 @@ CRITICAL RULES:
                         
         if not final_img:
             raise ValueError(f"Barcha inpainting modellar muvaffaqiyatsiz bo'ldi. Oxirgi xato: {last_inpaint_error}")
+        
+        # ── Aspect-ratio safe resize ──────────────────────────────────────────
+        # Gemini may return a different aspect ratio. Crop to match original first.
+        result_w, result_h = final_img.size
+        target_ratio = w_orig / h_orig
+        result_ratio = result_w / result_h
+        
+        if abs(target_ratio - result_ratio) > 0.01:
+            if result_ratio > target_ratio:
+                # Too wide → crop sides
+                new_w = int(result_h * target_ratio)
+                left = (result_w - new_w) // 2
+                final_img = final_img.crop((left, 0, left + new_w, result_h))
+            else:
+                # Too tall → crop top/bottom
+                new_h = int(result_w / target_ratio)
+                top = (result_h - new_h) // 2
+                final_img = final_img.crop((0, top, result_w, top + new_h))
+            print(f"  📐 Aspect ratio corrected: {result_w}×{result_h} → {final_img.size[0]}×{final_img.size[1]} (target {w_orig}×{h_orig})")
             
         final_img = final_img.resize((w_orig, h_orig), PILImage.Resampling.LANCZOS)
         final_img.save(result_image_path, format="PNG")

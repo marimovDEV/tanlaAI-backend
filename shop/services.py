@@ -2058,12 +2058,17 @@ class AIService:
         # Phase 3: Inpainting
         # ═══════════════════════════════════════
         print("\n🚪 3-BOSQICH: Eshikni joylashtiryapman...")
-        edit_prompt = (
-            "Edit this room photo: install the door shown in Image 1 into the area marked white in the mask (Image 3). "
-            "The door must completely fill the white masked zone. "
-            "Keep everything outside the mask unchanged. Match lighting and perspective. "
-            "Output only the edited room photo."
-        )
+        edit_prompt = """Image 1: Original room photo.
+Image 2: MASK — white area shows where to place the new door.
+Image 3: The NEW DOOR design to install.
+
+TASK: Replace the masked area with the new door.
+RULES:
+- Match the room's lighting and perspective
+- Blend edges perfectly (shadows, lighting)
+- Do NOT change anything outside the mask
+- Make the door look naturally installed in the wall
+- Return ONLY the edited room image"""
         INPAINT_MODELS = ['gemini-2.5-flash-image', 'gemini-2.5-flash', 'gemini-2.0-flash']
         
         final_img = None
@@ -2078,9 +2083,9 @@ class AIService:
                     response = client.models.generate_content(
                         model=model_name,
                         contents=[
-                            types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
                             types.Part.from_bytes(data=room_bytes, mime_type='image/png'),
                             types.Part.from_bytes(data=mask_bytes, mime_type='image/png'),
+                            types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
                             edit_prompt
                         ],
                         config=types.GenerateContentConfig(response_modalities=["IMAGE", "TEXT"])

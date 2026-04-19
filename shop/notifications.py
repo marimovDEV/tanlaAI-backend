@@ -38,6 +38,30 @@ class NotificationService:
             return False
 
     @staticmethod
+    def send_telegram_location(latitude: float, longitude: float, chat_id: str = None):
+        """
+        Sends a native Telegram location pin (opens in built-in map).
+        """
+        token = getattr(settings, 'TELEGRAM_BOT_TOKEN', None)
+        target_chat_id = chat_id or getattr(settings, 'ADMIN_TELEGRAM_ID', None)
+        if not token or not target_chat_id:
+            return False
+
+        url = f"https://api.telegram.org/bot{token}/sendLocation"
+        payload = {
+            "chat_id": target_chat_id,
+            "latitude": float(latitude),
+            "longitude": float(longitude),
+        }
+        try:
+            response = requests.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send Telegram location: {e}")
+            return False
+
+    @staticmethod
     def notify_new_lead(lead):
         """
         Formats and sends a notification about a new lead.
@@ -79,9 +103,19 @@ class NotificationService:
         if lead_time:
             message += f"⏱ <b>Tayyor bo'lishi:</b> {lead_time} kun\n"
 
+        # Address (text and/or geo coords)
+        if lead.latitude is not None and lead.longitude is not None:
+            message += (
+                f"\n📍 <b>Lokatsiya:</b> "
+                f"<a href='https://maps.google.com/?q={lead.latitude},{lead.longitude}'>"
+                f"Xaritada ochish</a>"
+            )
+        if lead.address_text:
+            message += f"\n🏠 <b>Manzil:</b> {lead.address_text}"
+
         if lead.message:
             message += f"\n📝 <b>Izoh:</b> {lead.message}"
-            
+
         message += f"\n\n🚀 <a href='https://tanla-ai.ardentsoft.uz/adminka/leads'>Admin panelda ko'rish</a>"
 
         # Build inline keyboard if phone exists
@@ -97,11 +131,23 @@ class NotificationService:
 
         # Notify Admin
         NotificationService.send_telegram_message(message, reply_markup=reply_markup)
-        
+
+        # Extra: if geo coords were provided, also drop a native map pin so the
+        # recipient can navigate to the address with one tap.
+        if lead.latitude is not None and lead.longitude is not None:
+            NotificationService.send_telegram_location(lead.latitude, lead.longitude)
+
         # Notify Company Owner if applicable
         if lead.company and lead.company.user and lead.company.user.telegram_id:
-             message_company = message + "\n\n<i>Sizning kompaniyangizga yangi so'rov tushdi!</i>"
-             NotificationService.send_telegram_message(message_company, chat_id=str(lead.company.user.telegram_id), reply_markup=reply_markup)
+            company_chat_id = str(lead.company.user.telegram_id)
+            message_company = message + "\n\n<i>Sizning kompaniyangizga yangi so'rov tushdi!</i>"
+            NotificationService.send_telegram_message(
+                message_company, chat_id=company_chat_id, reply_markup=reply_markup
+            )
+            if lead.latitude is not None and lead.longitude is not None:
+                NotificationService.send_telegram_location(
+                    lead.latitude, lead.longitude, chat_id=company_chat_id
+                )
 
     @staticmethod
     def notify_lead_reminder(lead):

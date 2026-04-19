@@ -299,6 +299,10 @@ class LeadRequest(models.Model):
         max_digits=12, decimal_places=2, null=True, blank=True,
         help_text="Auto-calculated: (w*h/10000) * price_per_m2"
     )
+    # Delivery / visit address — either free-text or geo-coords (or both).
+    address_text = models.TextField(blank=True)
+    latitude = models.FloatField(null=True, blank=True)
+    longitude = models.FloatField(null=True, blank=True)
     source = models.CharField(max_length=50, blank=True)
     shared_id = models.UUIDField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

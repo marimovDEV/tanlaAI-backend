@@ -138,6 +138,24 @@ class LeadRequestSerializer(serializers.ModelSerializer):
             'product_name', 'product_image', 'calculated_price',
         ]
 
+    # Require at least one form of address for checkout-style leads.
+    # We DO NOT enforce this for `visualize` (AI auto-lead) or `telegram`
+    # — those flows don't collect an address.
+    CHECKOUT_LEAD_TYPES = {'call', 'measurement'}
+
+    def validate(self, attrs):
+        lead_type = attrs.get('lead_type')
+        if lead_type in self.CHECKOUT_LEAD_TYPES:
+            address_text = (attrs.get('address_text') or '').strip()
+            lat = attrs.get('latitude')
+            lng = attrs.get('longitude')
+            has_coords = lat is not None and lng is not None
+            if not address_text and not has_coords:
+                raise serializers.ValidationError({
+                    'address': "Manzil yoki lokatsiya kerak."
+                })
+        return attrs
+
     def get_ai_result_image(self, obj):
         if not obj.ai_result or not obj.ai_result.image:
             return None

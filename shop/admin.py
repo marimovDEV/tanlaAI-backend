@@ -1,25 +1,34 @@
 from django.db import models
 from django.contrib import admin
 from django.utils.html import format_html
-from .models import Category, Product, Company, TelegramUser
+from .models import Category, Product, Company, TelegramUser, ProductImage
 
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
     list_display = ('name', 'icon')
 
+
+class ProductImageInline(admin.TabularInline):
+    model = ProductImage
+    extra = 0
+    max_num = ProductImage.MAX_IMAGES_PER_PRODUCT
+    fields = ('image', 'is_main', 'order')
+
+
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ('display_thumbnail', 'name', 'price', 'category', 'is_featured', 'ai_status')
+    list_display = ('display_thumbnail', 'name', 'price', 'category', 'is_featured', 'ai_status', 'lead_time_days')
     list_filter = ('category', 'is_featured', 'ai_status')
     search_fields = ('name', 'description')
     readonly_fields = ('display_original', 'display_processed', 'ai_status')
-    
+    inlines = [ProductImageInline]
+
     fieldsets = (
         (None, {
             'fields': ('name', 'description', 'category', 'company', 'owner', 'is_featured')
         }),
         ('Pricing & Dimensions', {
-            'fields': ('price', 'price_per_m2', 'height', 'width')
+            'fields': ('price', 'price_per_m2', 'height', 'width', 'lead_time_days')
         }),
         ('Visuals (View Only)', {
             'fields': ('display_original', 'display_processed'),

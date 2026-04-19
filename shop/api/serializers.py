@@ -1,7 +1,7 @@
 from django.conf import settings
 from rest_framework import serializers
 from ..models import (
-    Category, TelegramUser, Company, Product, 
+    Category, TelegramUser, Company, Product, ProductImage,
     AIResult, HomeBanner, Wishlist, LeadRequest, Subscription, AITest, SharedDesign
 )
 
@@ -57,21 +57,36 @@ class CompanySerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['user', 'is_active', 'subscription_deadline', 'created_at', 'is_currently_active']
 
+class ProductImageSerializer(serializers.ModelSerializer):
+    image = AbsoluteImageField()
+
+    class Meta:
+        model = ProductImage
+        fields = ['id', 'image', 'is_main', 'order']
+        read_only_fields = ['id']
+
+
 class ProductSerializer(serializers.ModelSerializer):
     category_name = serializers.ReadOnlyField(source='category.name')
     company_details = CompanySerializer(source='company', read_only=True)
     owner_details = TelegramUserSerializer(source='owner', read_only=True)
     is_wishlisted = serializers.SerializerMethodField()
-    
+
     # Absolute URL fields (Writable)
     image = AbsoluteImageField(required=False, allow_null=True)
     original_image = AbsoluteImageField(required=False, allow_null=True)
     image_no_bg = AbsoluteImageField(required=False, allow_null=True)
-    
+
+    # Nested gallery (read-only here — write-side is handled in ProductViewSet)
+    images = ProductImageSerializer(many=True, read_only=True)
+
     class Meta:
         model = Product
         fields = '__all__'
-        read_only_fields = ['owner', 'company', 'category_name', 'company_details', 'owner_details', 'is_wishlisted', 'ai_status']
+        read_only_fields = [
+            'owner', 'company', 'category_name', 'company_details',
+            'owner_details', 'is_wishlisted', 'ai_status', 'images',
+        ]
 
     def get_is_wishlisted(self, obj):
         request = self.context.get('request')
@@ -116,7 +131,12 @@ class LeadRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = LeadRequest
         fields = '__all__'
-        read_only_fields = ['user', 'company', 'created_at', 'product_name', 'product_image']
+        # `calculated_price` is read-only from the API's POV:
+        # server always recomputes it from product.price_per_m2 × (w*h/10000).
+        read_only_fields = [
+            'user', 'company', 'created_at',
+            'product_name', 'product_image', 'calculated_price',
+        ]
 
     def get_ai_result_image(self, obj):
         if not obj.ai_result or not obj.ai_result.image:

@@ -1,8 +1,9 @@
 import io
 import os
 
+from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
-from django.db import models
+from django.db import models, transaction
 from PIL import Image
 
 
@@ -129,8 +130,73 @@ class Product(models.Model):
     is_on_sale = models.BooleanField(default=False)
     sale_end_date = models.DateTimeField(null=True, blank=True)
 
+    # Lead time (ready-by duration, in days)
+    lead_time_days = models.PositiveIntegerField(
+        default=3,
+        help_text="Necha kunda tayyor bo'ladi (kun)",
+    )
+
     def __str__(self):
         return self.name
+
+
+class ProductImage(models.Model):
+    """
+    Additional images for a Product.
+    A product can have up to 5 images:
+      - Exactly 1 with `is_main=True` (the cutout / background-removed image)
+      - Up to 4 additional "showcase" images (interior / real previews)
+    The legacy `Product.image` / `image_no_bg` fields are kept untouched for
+    backward compatibility with the existing AI pipeline.
+    """
+
+    MAX_IMAGES_PER_PRODUCT = 5
+
+    product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name="images"
+    )
+    image = models.ImageField(upload_to="products/gallery/")
+    is_main = models.BooleanField(
+        default=False,
+        help_text="Asosiy (foni olingan) rasm. Mahsulot bo'yicha faqat 1 ta True bo'ladi.",
+    )
+    order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-is_main", "order", "id"]
+        verbose_name = "Product Image"
+        verbose_name_plural = "Product Images"
+
+    def __str__(self):
+        tag = "main" if self.is_main else "showcase"
+        return f"{self.product.name} [{tag} #{self.order}]"
+
+    def save(self, *args, **kwargs):
+        # Production-safe invariants:
+        #   a) Hard cap: never more than MAX_IMAGES_PER_PRODUCT per product.
+        #   b) Single main: exactly one is_main=True row per product.
+        # Both must be atomic so concurrent POSTs can't bypass them.
+        with transaction.atomic():
+            if not self.pk and self.product_id:
+                # Lock the product's existing images for the duration of this txn.
+                existing = list(
+                    ProductImage.objects.select_for_update()
+                    .filter(product_id=self.product_id)
+                    .values_list("id", flat=True)
+                )
+                if len(existing) >= self.MAX_IMAGES_PER_PRODUCT:
+                    raise ValidationError(
+                        f"Max {self.MAX_IMAGES_PER_PRODUCT} ta rasm ruxsat etilgan"
+                    )
+
+            if self.is_main and self.product_id:
+                # Demote any other main rows atomically.
+                ProductImage.objects.select_for_update().filter(
+                    product_id=self.product_id, is_main=True
+                ).exclude(pk=self.pk).update(is_main=False)
+
+            super().save(*args, **kwargs)
 
 
 class AIResult(models.Model):
@@ -225,6 +291,13 @@ class LeadRequest(models.Model):
     phone = models.CharField(max_length=20, blank=True)
     price_info = models.CharField(
         max_length=100, blank=True, help_text="Calculated price or dimensions info"
+    )
+    # Structured measurement fields (filled when user orders via o'lchash flow)
+    width_cm = models.PositiveIntegerField(null=True, blank=True)
+    height_cm = models.PositiveIntegerField(null=True, blank=True)
+    calculated_price = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        help_text="Auto-calculated: (w*h/10000) * price_per_m2"
     )
     source = models.CharField(max_length=50, blank=True)
     shared_id = models.UUIDField(null=True, blank=True)

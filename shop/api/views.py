@@ -25,6 +25,7 @@ from ..models import (
     HomeBanner,
     LeadRequest,
     Product,
+    ProductImage,
     Subscription,
     SystemSettings,
     TelegramUser,
@@ -378,6 +379,83 @@ class ProductViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(products, many=True)
         return Response(serializer.data)
 
+    # ---- Gallery helpers (ProductImage: 1 cutout + up to 4 showcase) ----
+    def _sync_product_gallery(self, request, product):
+        """
+        Reads multipart fields from the request and syncs ProductImage rows
+        for the given product. Fields handled (all optional):
+          - gallery_images: one or more uploaded files (FILE list)
+          - gallery_main_index: int — which of the new uploads is the cutout
+          - delete_image_ids: comma-separated IDs to remove
+        Silently ignores missing fields so this stays backwards-compatible
+        with existing create/update calls that don't send any gallery data.
+        """
+        # 1) Deletions
+        delete_ids = (request.data.get("delete_image_ids") or "").strip()
+        if delete_ids:
+            ids = [int(x) for x in delete_ids.split(",") if x.strip().isdigit()]
+            if ids:
+                ProductImage.objects.filter(product=product, id__in=ids).delete()
+
+        # 2) New uploads
+        new_files = request.FILES.getlist("gallery_images")
+        if not new_files:
+            return
+
+        # Enforce MAX_IMAGES_PER_PRODUCT across existing + new
+        existing_count = product.images.count()
+        allowed = ProductImage.MAX_IMAGES_PER_PRODUCT - existing_count
+        if allowed <= 0:
+            raise ValidationError(
+                {"gallery_images": [
+                    f"Max {ProductImage.MAX_IMAGES_PER_PRODUCT} ta rasm ruxsat etilgan."
+                ]}
+            )
+        if len(new_files) > allowed:
+            raise ValidationError(
+                {"gallery_images": [
+                    f"Faqat {allowed} ta rasm qo'shish mumkin "
+                    f"(jami limit: {ProductImage.MAX_IMAGES_PER_PRODUCT})."
+                ]}
+            )
+
+        raw_main = request.data.get("gallery_main_index", None)
+        try:
+            main_index = int(raw_main) if raw_main not in (None, "") else None
+        except (TypeError, ValueError):
+            main_index = None
+
+        has_existing_main = product.images.filter(is_main=True).exists()
+
+        # If product has no main yet AND client didn't tell us which new upload
+        # is the cutout, refuse — otherwise we'd silently pick the first file
+        # which leads to confusing bugs for the company user.
+        if not has_existing_main and main_index is None:
+            raise ValidationError(
+                {"gallery_main_index": [
+                    "Asosiy (foni olingan) rasmni tanlang."
+                ]}
+            )
+
+        if main_index is not None and not (0 <= main_index < len(new_files)):
+            raise ValidationError(
+                {"gallery_main_index": [
+                    "gallery_main_index diapazondan tashqarida."
+                ]}
+            )
+
+        next_order = (product.images.aggregate(
+            m=models.Max("order")
+        )["m"] or 0) + 1
+
+        for i, f in enumerate(new_files):
+            ProductImage.objects.create(
+                product=product,
+                image=f,
+                is_main=(i == main_index),
+                order=next_order + i,
+            )
+
     def perform_create(self, serializer):
         tg_user = require_tg_user(self.request)
         company = getattr(tg_user, "company", None)
@@ -394,11 +472,13 @@ class ProductViewSet(viewsets.ModelViewSet):
                 }
             )
 
-        serializer.save(owner=tg_user, company=company)
+        product = serializer.save(owner=tg_user, company=company)
+        self._sync_product_gallery(self.request, product)
 
     def perform_update(self, serializer):
         ensure_product_owner(self.request, serializer.instance)
-        serializer.save()
+        product = serializer.save()
+        self._sync_product_gallery(self.request, product)
 
     def perform_destroy(self, instance):
         ensure_product_owner(self.request, instance)
@@ -842,13 +922,32 @@ class LeadRequestViewSet(viewsets.ModelViewSet):
         tg_user = require_tg_user(self.request)
         product = serializer.validated_data["product"]
         phone = serializer.validated_data.get("phone")
-        
+
         # Persist phone to user profile for future automated leads
         if phone and not tg_user.phone:
             tg_user.phone = phone
             tg_user.save(update_fields=["phone"])
-            
-        serializer.save(user=tg_user, company=product.company)
+
+        # Security: price is ALWAYS computed on the server.
+        # Any `calculated_price` sent by the client is discarded so a malicious
+        # frontend can't quote itself a $1 door.
+        width_cm = serializer.validated_data.get("width_cm")
+        height_cm = serializer.validated_data.get("height_cm")
+        calculated = None
+
+        if width_cm and height_cm and product.price_per_m2:
+            from decimal import Decimal
+            try:
+                area_m2 = (Decimal(width_cm) * Decimal(height_cm)) / Decimal(10000)
+                calculated = (area_m2 * product.price_per_m2).quantize(Decimal("0.01"))
+            except Exception:
+                calculated = None
+
+        serializer.save(
+            user=tg_user,
+            company=product.company,
+            calculated_price=calculated,
+        )
 
 
 class AIResultViewSet(viewsets.ReadOnlyModelViewSet):

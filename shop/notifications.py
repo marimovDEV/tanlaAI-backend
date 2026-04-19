@@ -48,16 +48,37 @@ class NotificationService:
         lead_type = lead.get_lead_type_display()
         
         message = (
-            f"🎯 <b>Yangi Lead!</b>\n\n"
+            f"📩 <b>YANGI BUYURTMA</b>\n\n"
+            f"🚪 <b>Mahsulot:</b> {product_name}\n"
+            f"🛠 <b>Tur:</b> {lead_type}\n"
             f"👤 <b>Mijoz:</b> {user_name}\n"
             f"📞 <b>Telefon:</b> {phone}\n"
-            f"📦 <b>Mahsulot:</b> {product_name}\n"
-            f"🛠 <b>Tur:</b> {lead_type}\n"
         )
-        
-        if lead.price_info:
+
+        # Structured measurement (new fields)
+        if lead.width_cm and lead.height_cm:
+            area_m2 = (lead.width_cm * lead.height_cm) / 10000
+            message += (
+                f"📐 <b>O'lcham:</b> {lead.width_cm} × {lead.height_cm} sm\n"
+                f"📏 <b>Maydon:</b> {area_m2:.2f} m²\n"
+            )
+        if lead.calculated_price:
+            try:
+                price_fmt = f"{float(lead.calculated_price):,.0f}".replace(",", " ")
+            except Exception:
+                price_fmt = str(lead.calculated_price)
+            message += f"💰 <b>Narx:</b> {price_fmt} so'm\n"
+
+        # Legacy free-text price info (kept for compatibility — shown only if
+        # we don't already have structured measurement data)
+        if lead.price_info and not (lead.width_cm or lead.calculated_price):
             message += f"💰 <b>O'lcham/Narx:</b> {lead.price_info}\n"
-            
+
+        # Lead-time / tayyor bo'lish muddati
+        lead_time = getattr(lead.product, "lead_time_days", None)
+        if lead_time:
+            message += f"⏱ <b>Tayyor bo'lishi:</b> {lead_time} kun\n"
+
         if lead.message:
             message += f"\n📝 <b>Izoh:</b> {lead.message}"
             

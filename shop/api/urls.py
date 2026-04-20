@@ -1,11 +1,12 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    TelegramAuthView, CategoryViewSet, ProductViewSet, 
-    CompanyViewSet, BannerViewSet, WishlistViewSet, 
+    TelegramAuthView, CategoryViewSet, ProductViewSet,
+    CompanyViewSet, BannerViewSet, WishlistViewSet,
     LeadRequestViewSet, AIResultViewSet, SharedDesignViewSet,
     AdminLoginApiView, AdminLogoutApiView, AdminMeApiView,
     AdminSystemSettingsApiView, AdminRunActionApiView,
+    PaymentViewSet,
 )
 
 from .admin_api import (
@@ -19,6 +20,7 @@ from .admin_api import (
     AdminLeadViewSet,
     AdminAIResultViewSet,
     AdminAITestViewSet,
+    AdminPaymentViewSet,
 )
 
 # Public API router
@@ -31,6 +33,7 @@ router.register(r'wishlist', WishlistViewSet, basename='wishlist')
 router.register(r'leads', LeadRequestViewSet, basename='leads')
 router.register(r'ai-results', AIResultViewSet, basename='ai-results')
 router.register(r'shared-designs', SharedDesignViewSet, basename='shared-designs')
+router.register(r'payments', PaymentViewSet, basename='payments')
 
 # Admin panel API router
 admin_router = DefaultRouter()
@@ -43,6 +46,7 @@ admin_router.register(r'banners', AdminBannerViewSet, basename='admin-banners')
 admin_router.register(r'leads', AdminLeadViewSet, basename='admin-leads')
 admin_router.register(r'ai-results', AdminAIResultViewSet, basename='admin-ai-results')
 admin_router.register(r'ai-tests', AdminAITestViewSet, basename='admin-ai-tests')
+admin_router.register(r'payments', AdminPaymentViewSet, basename='admin-payments')
 
 urlpatterns = [
     path('auth/telegram/', TelegramAuthView.as_view(), name='api_tg_auth'),

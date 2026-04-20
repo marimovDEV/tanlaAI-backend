@@ -12,13 +12,15 @@ from django.shortcuts import get_object_or_404
 
 from ..models import (
     Product, Category, TelegramUser, Company,
-    HomeBanner, LeadRequest, AIResult, Subscription, AITest, SystemSettings
+    HomeBanner, LeadRequest, AIResult, Subscription, AITest, SystemSettings,
+    Payment,
 )
 from rest_framework import serializers as drf_serializers
 from .serializers import (
     ProductSerializer, CategorySerializer, TelegramUserSerializer,
     HomeBannerSerializer, CompanySerializer, LeadRequestSerializer,
-    AdminLeadRequestSerializer, AdminAIResultSerializer, AITestSerializer
+    AdminLeadRequestSerializer, AdminAIResultSerializer, AITestSerializer,
+    PaymentSerializer,
 )
 
 
@@ -294,6 +296,23 @@ class AdminPromotionViewSet(viewsets.ModelViewSet):
         product.save(update_fields=['is_on_sale'])
         return Response(ProductSerializer(product).data)
 
+    @action(detail=True, methods=['post'], url_path='broadcast')
+    def broadcast(self, request, pk=None):
+        """Send this promotion to ALL Telegram users as a broadcast."""
+        from shop.notifications import NotificationService
+        product = self.get_object()
+        if not product.is_on_sale:
+            return Response(
+                {"detail": "Mahsulot aksiyada emas."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        sent, failed = NotificationService.broadcast_promotion(product)
+        return Response({
+            "detail": f"Broadcast yakunlandi: {sent} ta yuborildi, {failed} ta xato.",
+            "sent": sent,
+            "failed": failed,
+        })
+
 
 # ── Banners ─────────────────────────────────────────────────
 class AdminBannerViewSet(viewsets.ModelViewSet):
@@ -409,3 +428,117 @@ class AdminAITestViewSet(viewsets.ModelViewSet):
                 'error': str(e),
                 'traceback': traceback.format_exc()
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ── Payment moderation (admin) ───────────────────────────────
+class AdminPaymentViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Admin panel endpoints for reviewing company payment submissions.
+
+    - GET /api/admin/payments/            — list all (filter by ?status=pending)
+    - GET /api/admin/payments/{id}/       — detail
+    - POST /api/admin/payments/{id}/approve/  — extend subscription + reactivate products
+    - POST /api/admin/payments/{id}/reject/   — mark rejected (body: {reason})
+    """
+    serializer_class = PaymentSerializer
+    permission_classes = [IsAdminUser]
+
+    def get_queryset(self):
+        qs = Payment.objects.select_related(
+            "company", "company__user", "reviewed_by"
+        )
+        status_filter = self.request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        return qs
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAdminUser])
+    def approve(self, request, pk=None):
+        from datetime import timedelta
+        from django.db import transaction
+
+        from ..models import Subscription
+        from ..notifications import NotificationService
+
+        payment = self.get_object()
+        if payment.status != "pending":
+            return Response(
+                {"detail": f"To'lov allaqachon {payment.get_status_display()} holatida."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        now = timezone.now()
+        company = payment.company
+
+        with transaction.atomic():
+            # Extend from LATER of (now, existing deadline) so early payments
+            # stack instead of being eaten by an already-active subscription.
+            current_deadline = company.subscription_deadline
+            base = current_deadline if current_deadline and current_deadline > now else now
+            new_deadline = base + timedelta(days=30 * payment.months)
+            company.subscription_deadline = new_deadline
+            company.is_active = True
+            company.save(update_fields=["subscription_deadline", "is_active"])
+
+            # Keep the Subscription row roughly in sync. Not load-bearing for
+            # listings (those read Company.subscription_deadline) but useful
+            # for /api/companies/my/subscription/ and future migrations.
+            sub, _ = Subscription.objects.get_or_create(company=company)
+            sub.expires_at = new_deadline
+            sub.save(update_fields=["expires_at"])
+
+            # Reactivate ALL products for this company. Tradeoff documented
+            # in deactivate_expired_companies.py: owner may have manually
+            # paused some seasonal items and will need to re-pause them.
+            # In the common case (recently-expired owner), this is the right
+            # behavior — they paid to see their listings again.
+            reactivated = Product.objects.filter(
+                company=company, is_active=False
+            ).update(is_active=True)
+
+            payment.status = "approved"
+            payment.reviewed_at = now
+            # Admins are Django auth users; we store the TelegramUser of the
+            # admin if they have one linked, otherwise leave blank.
+            tg_user = TelegramUser.objects.filter(
+                telegram_id=getattr(request.user, "id", None)
+            ).first()
+            if tg_user:
+                payment.reviewed_by = tg_user
+            payment.save(update_fields=["status", "reviewed_at", "reviewed_by"])
+
+        NotificationService.notify_payment_approved(payment, reactivated_count=reactivated)
+        return Response(PaymentSerializer(payment, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAdminUser])
+    def reject(self, request, pk=None):
+        from ..notifications import NotificationService
+
+        payment = self.get_object()
+        if payment.status != "pending":
+            return Response(
+                {"detail": f"To'lov allaqachon {payment.get_status_display()} holatida."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reason = (request.data.get("reason") or "").strip()
+        if not reason:
+            return Response(
+                {"reason": "Rad etish sababi kiritilishi shart."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        payment.status = "rejected"
+        payment.rejection_reason = reason
+        payment.reviewed_at = timezone.now()
+        tg_user = TelegramUser.objects.filter(
+            telegram_id=getattr(request.user, "id", None)
+        ).first()
+        if tg_user:
+            payment.reviewed_by = tg_user
+        payment.save(
+            update_fields=["status", "rejection_reason", "reviewed_at", "reviewed_by"]
+        )
+
+        NotificationService.notify_payment_rejected(payment)
+        return Response(PaymentSerializer(payment, context={"request": request}).data)

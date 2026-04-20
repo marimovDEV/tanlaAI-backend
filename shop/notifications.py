@@ -70,9 +70,23 @@ class NotificationService:
         user_name = f"{lead.user.first_name} {lead.user.last_name or ''}".strip()
         phone = lead.phone or "Ko'rsatilmagan"
         lead_type = lead.get_lead_type_display()
-        
+
+        # Header changes per lead type so the recipient can prioritize at a
+        # glance — direct orders are the highest-intent (no AI detour), so
+        # they get the most attention-grabbing header.
+        if lead.lead_type == "direct":
+            header = "🛒 <b>TO'G'RIDAN-TO'G'RI BUYURTMA</b>"
+        elif lead.lead_type == "visualize":
+            header = "🎨 <b>AI VIZUALIZATSIYA BUYURTMASI</b>"
+        elif lead.lead_type == "measurement":
+            header = "📐 <b>O'LCHASH BUYURTMASI</b>"
+        elif lead.lead_type == "call":
+            header = "📞 <b>QO'NG'IROQ SO'ROVI</b>"
+        else:
+            header = "📩 <b>YANGI BUYURTMA</b>"
+
         message = (
-            f"📩 <b>YANGI BUYURTMA</b>\n\n"
+            f"{header}\n\n"
             f"🚪 <b>Mahsulot:</b> {product_name}\n"
             f"🛠 <b>Tur:</b> {lead_type}\n"
             f"👤 <b>Mijoz:</b> {user_name}\n"
@@ -179,3 +193,223 @@ class NotificationService:
         # Notify Company Owner
         if lead.company and lead.company.user and lead.company.user.telegram_id:
              NotificationService.send_telegram_message(message, chat_id=str(lead.company.user.telegram_id), reply_markup=reply_markup)
+
+
+    # ── Payment notifications ───────────────────────────────
+    # Each of these is called from PaymentViewSet / AdminPaymentViewSet.
+    # Kept as static methods on NotificationService for consistency with the
+    # existing `notify_new_lead` / `notify_lead_reminder` style.
+
+    @staticmethod
+    def notify_payment_submitted(payment):
+        """Admin gets a ping when an owner uploads a payment screenshot."""
+        company = payment.company
+        owner = company.user
+        owner_name = (
+            f"{owner.first_name or ''} {owner.last_name or ''}".strip()
+            if owner else "?"
+        )
+        try:
+            amount_fmt = f"{float(payment.amount):,.0f}".replace(",", " ")
+        except Exception:
+            amount_fmt = str(payment.amount)
+
+        message = (
+            "💳 <b>YANGI TO'LOV TASDIQLASH SO'ROVI</b>\n\n"
+            f"🏢 <b>Kompaniya:</b> {company.name}\n"
+            f"👤 <b>Egasi:</b> {owner_name}\n"
+            f"💰 <b>Summa:</b> {amount_fmt} so'm\n"
+            f"📅 <b>Muddati:</b> {payment.months} oy\n"
+        )
+        if payment.note:
+            message += f"📝 <b>Izoh:</b> {payment.note}\n"
+
+        message += (
+            f"\n🚀 <a href='https://tanla-ai.ardentsoft.uz/adminka/payments/"
+            f"{payment.id}'>Admin panelda ko'rish</a>"
+        )
+
+        reply_markup = {
+            "inline_keyboard": [[
+                {"text": "✅ Tasdiqlash", "callback_data": f"pay_approve_{payment.id}"},
+                {"text": "❌ Rad etish",  "callback_data": f"pay_reject_{payment.id}"},
+            ]]
+        }
+        NotificationService.send_telegram_message(message, reply_markup=reply_markup)
+
+    @staticmethod
+    def notify_payment_approved(payment, reactivated_count=0):
+        """Owner gets a confirmation with new deadline + reactivated count."""
+        company = payment.company
+        if not (company.user and company.user.telegram_id):
+            return
+
+        deadline = company.subscription_deadline
+        deadline_str = deadline.strftime("%Y-%m-%d") if deadline else "?"
+
+        message = (
+            "✅ <b>To'lov tasdiqlandi!</b>\n\n"
+            f"🏢 <b>Kompaniya:</b> {company.name}\n"
+            f"📅 <b>Yangi muddat:</b> {deadline_str}\n"
+            f"➕ <b>{payment.months} oy</b> qo'shildi.\n"
+        )
+        if reactivated_count:
+            message += (
+                f"\n♻️ <b>{reactivated_count} ta mahsulot</b> qayta faollashtirildi."
+            )
+
+        NotificationService.send_telegram_message(
+            message, chat_id=str(company.user.telegram_id)
+        )
+
+    @staticmethod
+    def notify_payment_rejected(payment):
+        """Owner gets the rejection reason so they can resubmit."""
+        company = payment.company
+        if not (company.user and company.user.telegram_id):
+            return
+
+        message = (
+            "❌ <b>To'lov rad etildi</b>\n\n"
+            f"🏢 <b>Kompaniya:</b> {company.name}\n"
+            f"📝 <b>Sabab:</b> {payment.rejection_reason or '—'}\n\n"
+            "Iltimos, to'lovni qayta yuboring."
+        )
+        NotificationService.send_telegram_message(
+            message, chat_id=str(company.user.telegram_id)
+        )
+
+    @staticmethod
+    def notify_subscription_expiring(company, days_left):
+        """
+        Used by the notify_expiring_subscriptions cron to warn an owner that
+        their subscription ends soon. Idempotent at the caller's level — the
+        cron decides when (e.g. at 3 days and at 1 day).
+        """
+        if not (company.user and company.user.telegram_id):
+            return
+
+        deadline_str = (
+            company.subscription_deadline.strftime("%Y-%m-%d")
+            if company.subscription_deadline else "?"
+        )
+        message = (
+            "⏰ <b>Obuna muddati yaqinlashdi</b>\n\n"
+            f"🏢 <b>Kompaniya:</b> {company.name}\n"
+            f"📅 <b>Tugash sanasi:</b> {deadline_str}\n"
+            f"⏳ <b>Qolgan:</b> {days_left} kun\n\n"
+            "Listinglar yo'qolib qolmasligi uchun to'lovni oldindan yuboring."
+        )
+        NotificationService.send_telegram_message(
+            message, chat_id=str(company.user.telegram_id)
+        )
+
+    # ── Promotion Broadcast ─────────────────────────────────
+    @staticmethod
+    def send_telegram_photo(photo_url: str, caption: str, chat_id: str = None, reply_markup: dict = None):
+        """Sends a photo message to a Telegram chat."""
+        token = getattr(settings, 'TELEGRAM_BOT_TOKEN', None)
+        target_chat_id = chat_id or getattr(settings, 'ADMIN_TELEGRAM_ID', None)
+        if not token or not target_chat_id:
+            return False
+
+        url = f"https://api.telegram.org/bot{token}/sendPhoto"
+        payload = {
+            "chat_id": target_chat_id,
+            "photo": photo_url,
+            "caption": caption,
+            "parse_mode": "HTML",
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        try:
+            response = requests.post(url, json=payload, timeout=15)
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send Telegram photo: {e}")
+            return False
+
+    @staticmethod
+    def broadcast_promotion(product, excluded_chat_ids=None):
+        """
+        Sends a promotion broadcast to ALL Telegram users.
+        Returns (sent_count, fail_count).
+        """
+        from .models import TelegramUser
+
+        excluded = set(excluded_chat_ids or [])
+        users = TelegramUser.objects.exclude(telegram_id__in=excluded).values_list('telegram_id', flat=True)
+
+        # Format prices
+        try:
+            old_price = f"{float(product.price):,.0f}".replace(",", " ") if product.price else "—"
+        except Exception:
+            old_price = str(product.price) if product.price else "—"
+        try:
+            new_price = f"{float(product.discount_price):,.0f}".replace(",", " ") if product.discount_price else "—"
+        except Exception:
+            new_price = str(product.discount_price) if product.discount_price else "—"
+
+        # Discount percentage
+        discount_pct = ""
+        try:
+            if product.price and product.discount_price:
+                pct = round((1 - float(product.discount_price) / float(product.price)) * 100)
+                discount_pct = f" (-{pct}%)"
+        except Exception:
+            pass
+
+        company_name = product.company.name if product.company else "Tanla"
+        end_date = ""
+        if product.sale_end_date:
+            try:
+                from django.utils import timezone as tz
+                end_date = f"\n⏳ <b>Aksiya muddati:</b> {product.sale_end_date.strftime('%d.%m.%Y')}"
+            except Exception:
+                pass
+
+        caption = (
+            f"🔥 <b>AKSIYA!</b>{discount_pct}\n\n"
+            f"🚪 <b>{product.name}</b>\n"
+            f"🏢 {company_name}\n\n"
+            f"💰 <s>{old_price} so'm</s> → <b>{new_price} so'm</b>\n"
+            f"{end_date}\n\n"
+            "📲 Batafsil ko'rish uchun ilovani oching!"
+        )
+
+        # Try to get absolute image URL
+        image_url = None
+        if product.image_no_bg:
+            img = product.image_no_bg.url
+        elif product.image:
+            img = product.image.url
+        else:
+            img = None
+
+        if img:
+            backend_url = getattr(settings, 'BACKEND_URL', 'https://tanla-ai.ardentsoft.uz').rstrip('/')
+            if img.startswith('http'):
+                image_url = img
+            else:
+                image_url = f"{backend_url}{img}"
+
+        sent = 0
+        failed = 0
+        for tg_id in users:
+            chat_id = str(tg_id)
+            try:
+                if image_url:
+                    ok = NotificationService.send_telegram_photo(image_url, caption, chat_id=chat_id)
+                else:
+                    ok = NotificationService.send_telegram_message(caption, chat_id=chat_id)
+                if ok:
+                    sent += 1
+                else:
+                    failed += 1
+            except Exception:
+                failed += 1
+
+        logger.info(f"Promotion broadcast: sent={sent}, failed={failed}, product={product.id}")
+        return sent, failed
+

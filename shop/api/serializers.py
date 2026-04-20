@@ -2,7 +2,8 @@ from django.conf import settings
 from rest_framework import serializers
 from ..models import (
     Category, TelegramUser, Company, Product, ProductImage,
-    AIResult, HomeBanner, Wishlist, LeadRequest, Subscription, AITest, SharedDesign
+    AIResult, HomeBanner, Wishlist, LeadRequest, Subscription, AITest, SharedDesign,
+    Payment,
 )
 
 class AbsoluteImageField(serializers.ImageField):
@@ -141,7 +142,8 @@ class LeadRequestSerializer(serializers.ModelSerializer):
     # Require at least one form of address for checkout-style leads.
     # We DO NOT enforce this for `visualize` (AI auto-lead) or `telegram`
     # — those flows don't collect an address.
-    CHECKOUT_LEAD_TYPES = {'call', 'measurement'}
+    # `direct` = customer orders the product directly without AI visualization.
+    CHECKOUT_LEAD_TYPES = {'call', 'measurement', 'direct'}
 
     def validate(self, attrs):
         lead_type = attrs.get('lead_type')
@@ -185,6 +187,47 @@ class SubscriptionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Subscription
         fields = '__all__'
+
+
+class PaymentSerializer(serializers.ModelSerializer):
+    """
+    Payment submission/read serializer.
+
+    Owner-writable fields:  amount, months, screenshot, note
+    Server-controlled:      status, rejection_reason, reviewed_at, reviewed_by,
+                            company (set from request.user's company), created_at
+    """
+    company_name = serializers.CharField(source='company.name', read_only=True)
+    screenshot = AbsoluteImageField()
+    reviewed_by_name = serializers.CharField(
+        source='reviewed_by.first_name', read_only=True, default=None
+    )
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = Payment
+        fields = [
+            'id', 'company', 'company_name', 'amount', 'months',
+            'screenshot', 'note',
+            'status', 'status_display', 'rejection_reason',
+            'created_at', 'reviewed_at', 'reviewed_by', 'reviewed_by_name',
+        ]
+        read_only_fields = [
+            'id', 'company', 'company_name',
+            'status', 'status_display', 'rejection_reason',
+            'created_at', 'reviewed_at', 'reviewed_by', 'reviewed_by_name',
+        ]
+
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Summa 0 dan katta bo'lishi kerak.")
+        return value
+
+    def validate_months(self, value):
+        # Sanity bound — we don't want a typo to extend a subscription by 9999 months.
+        if value < 1 or value > 24:
+            raise serializers.ValidationError("Oylar soni 1–24 oralig'ida bo'lishi kerak.")
+        return value
 
 class AITestSerializer(serializers.ModelSerializer):
     door_details = ProductSerializer(source='door', read_only=True)

@@ -24,6 +24,7 @@ from ..models import (
     Company,
     HomeBanner,
     LeadRequest,
+    Payment,
     Product,
     ProductImage,
     Subscription,
@@ -38,6 +39,7 @@ from .serializers import (
     CompanySerializer,
     HomeBannerSerializer,
     LeadRequestSerializer,
+    PaymentSerializer,
     ProductSerializer,
     TelegramUserSerializer,
     WishlistSerializer,
@@ -328,8 +330,9 @@ class ProductViewSet(viewsets.ModelViewSet):
 
         if self.action == "list":
             # Show products that either have no company (system products)
-            # OR belong to an active company with a valid subscription
-            queryset = queryset.filter(
+            # OR belong to an active company with a valid subscription.
+            # Also hide rows the owner has manually paused (is_active=False).
+            queryset = queryset.filter(is_active=True).filter(
                 models.Q(company__isnull=True)
                 | (
                     models.Q(company__is_active=True)
@@ -465,10 +468,20 @@ class ProductViewSet(viewsets.ModelViewSet):
             )
 
         subscription, _ = Subscription.objects.get_or_create(company=company)
-        if company.products.count() >= subscription.max_products:
+        current_count = company.products.count()
+        if current_count >= subscription.max_products:
+            # Structured payload so the frontend can render a real "limit reached"
+            # screen with an upgrade CTA, not just a toast. Keep `detail` for
+            # backward-compat with existing alert handlers.
             raise ValidationError(
                 {
-                    "detail": f"You have reached your plan limit of {subscription.max_products} products."
+                    "detail": (
+                        f"Mahsulot limiti tugadi: {current_count}/"
+                        f"{subscription.max_products}. Tarifni yangilang."
+                    ),
+                    "code": "product_limit_reached",
+                    "current": current_count,
+                    "limit": subscription.max_products,
                 }
             )
 
@@ -483,6 +496,24 @@ class ProductViewSet(viewsets.ModelViewSet):
     def perform_destroy(self, instance):
         ensure_product_owner(self.request, instance)
         instance.delete()
+
+    @action(detail=True, methods=["post"], url_path="toggle-active")
+    def toggle_active(self, request, pk=None):
+        """
+        Owner-only: pause/resume this product listing without deleting it.
+        Returns the new state so the frontend can optimistic-update in place.
+        Staff users can also toggle (for moderation).
+        """
+        product = self.get_object()
+        ensure_product_owner(request, product)
+        product.is_active = not product.is_active
+        product.save(update_fields=["is_active"])
+        return Response(
+            {
+                "id": product.id,
+                "is_active": product.is_active,
+            }
+        )
 
     @action(detail=True, methods=["post"], permission_classes=[permissions.AllowAny])
     def toggle_wishlist(self, request, pk=None):
@@ -880,6 +911,60 @@ class CompanyViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED if company is None else status.HTTP_200_OK,
         )
 
+    @action(detail=False, methods=["get"], url_path="my/subscription")
+    def my_subscription(self, request):
+        """
+        Dashboard endpoint: returns current company's product usage and
+        subscription window. Frontend uses this to render the "12/30 ta mahsulot
+        ishlatilgan" widget + "Obuna X kundan keyin tugaydi" warning.
+
+        We source the deadline from `Company.subscription_deadline` because
+        that's the field already used everywhere to filter listings — keeping
+        a single source of truth avoids the two-fields drift bug.
+        """
+        from django.utils import timezone
+        from ..models import Subscription
+
+        tg_user = get_tg_user(request)
+        if tg_user is None:
+            return Response(
+                {"error": "Not authenticated"}, status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        company = Company.objects.filter(user_id=tg_user.id).first()
+        if not company:
+            return Response(
+                {"error": "Company not found"}, status=status.HTTP_404_NOT_FOUND
+            )
+
+        subscription, _ = Subscription.objects.get_or_create(company=company)
+        used = company.products.count()
+        limit = subscription.max_products
+        deadline = company.subscription_deadline
+        now = timezone.now()
+
+        days_left = None
+        if deadline:
+            delta = deadline - now
+            # Round up: if there's ANY time left today, count today as a day.
+            days_left = max(0, delta.days + (1 if delta.seconds > 0 else 0))
+
+        return Response(
+            {
+                "plan": subscription.plan,
+                "used": used,
+                "limit": limit,
+                "remaining": max(0, limit - used),
+                "is_at_limit": used >= limit,
+                "expires_at": deadline.isoformat() if deadline else None,
+                "days_left": days_left,
+                # `is_active` mirrors Company.is_currently_active — the property
+                # the shop listings already use for visibility filtering.
+                "is_active": company.is_currently_active,
+                "ai_generations_limit": subscription.ai_generations_limit,
+            }
+        )
+
 
 class BannerViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = HomeBanner.objects.filter(is_active=True)
@@ -1177,3 +1262,50 @@ class SharedDesignViewSet(viewsets.ModelViewSet):
         self.perform_create(serializer)
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+
+# ── Payment submission (company owner) ───────────────────────
+class PaymentViewSet(viewsets.ModelViewSet):
+    """
+    Company owner submits subscription payments with a screenshot.
+    - POST /api/payments/   — upload screenshot + amount + months
+    - GET  /api/payments/   — list the current user's company's payments
+    - GET  /api/payments/{id}/ — detail (owner only)
+
+    Updates/deletes are disabled — once submitted, only admin can change
+    status via the admin endpoints. This prevents owners from tampering
+    with a pending payment after admin has already started reviewing.
+    """
+    serializer_class = PaymentSerializer
+    permission_classes = [permissions.AllowAny]
+    parser_classes = [parsers.MultiPartParser, parsers.FormParser, parsers.JSONParser]
+    http_method_names = ["get", "post", "head", "options"]
+
+    def get_queryset(self):
+        tg_user = get_tg_user(self.request)
+        if tg_user is None:
+            return Payment.objects.none()
+        # Owner sees only their own company's payments. Staff sees everything
+        # (kept here for debugging — admins usually use /admin/payments/).
+        if self.request.user.is_authenticated and self.request.user.is_staff:
+            return Payment.objects.select_related("company", "reviewed_by").all()
+        return Payment.objects.select_related("company", "reviewed_by").filter(
+            company__user=tg_user
+        )
+
+    def perform_create(self, serializer):
+        tg_user = require_tg_user(self.request)
+        company = getattr(tg_user, "company", None)
+        if company is None:
+            raise ValidationError(
+                {"detail": "Avval kompaniya profilini yarating."}
+            )
+
+        # Lazy import — notifications uses requests which may not be needed
+        # in every code path (e.g. migrations).
+        from ..notifications import NotificationService
+
+        payment = serializer.save(company=company)
+        NotificationService.notify_payment_submitted(payment)
+
+

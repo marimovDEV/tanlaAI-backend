@@ -12,7 +12,7 @@ def home_view(request):
     category_id = request.GET.get('category')
     categories = Category.objects.all()
     now = timezone.now()
-    active_company_q = Q(company__isnull=True) | (Q(company__is_active=True) & (Q(company__subscription_deadline__gt=now) | Q(company__subscription_deadline__isnull=True)))
+    active_company_q = Q(is_active=True) & (Q(company__isnull=True) | (Q(company__is_active=True) & (Q(company__subscription_deadline__gt=now) | Q(company__subscription_deadline__isnull=True))))
     
     if category_id:
         products = Product.objects.filter(active_company_q, category_id=category_id).select_related('category', 'company', 'owner')
@@ -51,7 +51,7 @@ def product_detail_view(request, pk):
 def search_view(request):
     query = request.GET.get('q')
     now = timezone.now()
-    active_company_q = Q(company__isnull=True) | (Q(company__is_active=True) & (Q(company__subscription_deadline__gt=now) | Q(company__subscription_deadline__isnull=True)))
+    active_company_q = Q(is_active=True) & (Q(company__isnull=True) | (Q(company__is_active=True) & (Q(company__subscription_deadline__gt=now) | Q(company__subscription_deadline__isnull=True))))
 
     if query:
         products = Product.objects.filter(active_company_q).filter(
@@ -82,7 +82,7 @@ def discounts_view(request):
     query = request.GET.get('q')
     company_id = request.GET.get('company')
     now = timezone.now()
-    active_company_q = Q(company__isnull=True) | (Q(company__is_active=True) & (Q(company__subscription_deadline__gt=now) | Q(company__subscription_deadline__isnull=True)))
+    active_company_q = Q(is_active=True) & (Q(company__isnull=True) | (Q(company__is_active=True) & (Q(company__subscription_deadline__gt=now) | Q(company__subscription_deadline__isnull=True))))
     
     products = Product.objects.filter(active_company_q, is_on_sale=True).select_related('category', 'company', 'owner')
     products = products.filter(Q(sale_end_date__gt=now) | Q(sale_end_date__isnull=True))

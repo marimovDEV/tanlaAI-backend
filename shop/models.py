@@ -105,6 +105,11 @@ class Product(models.Model):
         related_name="added_products",
     )
     is_featured = models.BooleanField(default=False)
+    # Owner can pause a listing without deleting it. The cron also flips this
+    # off for every product when the company's subscription expires.
+    # Public listings hide is_active=False; the owner's own dashboard ("my")
+    # still shows them so they know what's paused.
+    is_active = models.BooleanField(default=True)
 
     # AI Processing fields
     original_image = models.ImageField(upload_to="products/raw/", null=True, blank=True)
@@ -262,6 +267,9 @@ class LeadRequest(models.Model):
         ("telegram", "Telegram Message"),
         ("measurement", "Measurement Request"),
         ("visualize", "AI Visualization"),
+        # Direct checkout — customer orders the product without going through
+        # the AI visualization flow. Requires phone + address (lat/lng OR text).
+        ("direct", "Direct Order"),
     ]
     STATUS_CHOICES = [
         ("new", "🆕 Yangi"),
@@ -326,13 +334,71 @@ class Subscription(models.Model):
         Company, on_delete=models.CASCADE, related_name="subscription"
     )
     plan = models.CharField(max_length=10, choices=PLANS, default="free")
-    max_products = models.IntegerField(default=10)
+    # 30 is the baseline marketplace cap. Paid tiers can bump this via admin.
+    max_products = models.IntegerField(default=30)
     ai_generations_limit = models.IntegerField(default=50)
     started_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.company.name} — {self.get_plan_display()}"
+
+
+class Payment(models.Model):
+    """
+    Subscription payment submission.
+
+    Flow:
+      1. Company owner pays via bank/card, uploads a screenshot → status="pending".
+      2. Admin reviews in /adminka/payments and clicks Approve or Reject.
+      3. On approve: `Company.subscription_deadline` is extended by `months`
+         from the LATER of (now, current deadline) — so early payments stack
+         instead of being wasted. Paused products belonging to the company
+         are reactivated in the same transaction.
+      4. On reject: status="rejected" + rejection_reason is filled. The owner
+         is notified via Telegram.
+
+    We deliberately keep this model separate from `Subscription` rather than
+    mutating Subscription in place, because we want an audit trail of every
+    payment (amount, screenshot, who approved, when).
+    """
+    STATUS_CHOICES = [
+        ("pending", "Pending Review"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+    ]
+
+    company = models.ForeignKey(
+        Company, on_delete=models.CASCADE, related_name="payments"
+    )
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    months = models.PositiveSmallIntegerField(
+        default=1,
+        help_text="How many months to extend the subscription on approval.",
+    )
+    screenshot = models.ImageField(upload_to="payments/")
+    note = models.TextField(blank=True, help_text="Owner's note (bank, reference, etc.)")
+
+    status = models.CharField(
+        max_length=10, choices=STATUS_CHOICES, default="pending"
+    )
+    rejection_reason = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        TelegramUser,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="reviewed_payments",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.company.name} — {self.amount} ({self.get_status_display()})"
 
 
 class SystemSettings(models.Model):

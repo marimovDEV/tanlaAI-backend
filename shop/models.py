@@ -42,9 +42,9 @@ class Company(models.Model):
         TelegramUser, on_delete=models.CASCADE, related_name="company"
     )
     name = models.CharField(max_length=255)
-    description = models.TextField()
+    description = models.TextField(blank=True, default='')
     phone = models.CharField(max_length=20, blank=True, default='')
-    location = models.CharField(max_length=255)
+    location = models.CharField(max_length=255, blank=True, default='')
     latitude = models.FloatField(null=True, blank=True)
     longitude = models.FloatField(null=True, blank=True)
     telegram_link = models.CharField(max_length=255, blank=True, default='')

@@ -223,7 +223,7 @@ def expand_pixel_box_top_heavy(
     width,
     height,
     pad_x_ratio=0.08,
-    pad_top_ratio=0.28,
+    pad_top_ratio=0.42,
     pad_bottom_ratio=0.02,
 ):
     """
@@ -233,7 +233,7 @@ def expand_pixel_box_top_heavy(
     above the door frame.  The extra top padding ensures the old arch is fully
     covered during inpainting and that the new door overlay hides it completely.
 
-        pad_top_ratio  = 0.28  →  adds 28 % of door height above the box
+        pad_top_ratio  = 0.42  →  adds 42 % of door height above the box
         pad_bottom_ratio = 0.02 →  adds  2 % below  (door stays on floor)
     """
     left, top, right, bottom = sanitize_pixel_box(pixel_box, width, height)
@@ -608,15 +608,15 @@ def detect_door_box_with_opencv(room_bgr, expected_aspect_ratio):
     gray = clahe.apply(gray)
 
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    # Looser Canny thresholds to catch the dark doorway edges
-    edges = cv2.Canny(blurred, 40, 120)
+    # Looser Canny thresholds for dark rooms (v47.1 boost)
+    edges = cv2.Canny(blurred, 30, 95)
     adaptive = cv2.adaptiveThreshold(
         blurred,
         255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY_INV,
-        41,  # Slightly larger block size
-        5,  # Slightly lower C
+        51,  # Larger block size for better structure in shadows
+        4,   # Lower C to be more sensitive to weak edges
     )
 
     combined = cv2.bitwise_or(edges, adaptive)
@@ -1786,10 +1786,10 @@ class AIService:
             "Reference image 2 is a binary mask where white marks the ONLY area you may edit.\n"
             "Reference image 3 is the exact new door assembly that must be installed.\n\n"
             "TASK:\n"
-            f"Completely remove the existing door, its entire frame, and all decorative molding or arches from Reference 1 and replace them with the exact door design '{door_name}' from Reference 3.\n"
-            "This is a precise replacement task. The goal is to make it look like the old door was uninstalled and the new one was professionally fitted.\n\n"
+            f"Completely remove the existing door, its entire frame, and all decorative molding, arches, or transom windows (top-lights) from Reference 1 and replace them with the exact door design '{door_name}' from Reference 3.\n"
+            "This is a precise replacement task. The goal is to make it look like the old door and all its surrounding overhead architecture were professionally uninstalled and the new one was fitted.\n\n"
             "STRICT RULES:\n"
-            "- DESTROY the old structure: Completely overwrite the old door and its architectural frame within the mask.\n"
+            "- DESTROY the old structure: Completely overwrite the old door, its transom window, and its architectural frame within the mask.\n"
             "- USE Reference 3: Treat the reference door as a complete assembly (leaf + frame). Install it as-is.\n"
             "- Keep the room exactly the same outside the white mask.\n"
             "- Do not redesign, restyle, or upscale the room.\n"
@@ -1989,8 +1989,8 @@ class AIService:
             "  - An open doorway/passage (no door installed, you can see through to another room)\n"
             "  - An existing door that needs replacing\n"
             "  - An empty wall section suitable for a door\n\n"
-            "Return ONLY the bounding box of the door frame edges (left jamb, right jamb, top header, floor threshold).\n"
-            "The box must tightly fit the door FRAME, not the room behind it.\n\n"
+            "Return ONLY the bounding box of the door frame edges (left jamb, right jamb, top header/transom, floor threshold).\n"
+            "The box must tightly fit the door FRAME and any transom windows above it, not the room behind it.\n\n"
             'Format: {"ymin": 0-1000, "xmin": 0-1000, "ymax": 0-1000, "xmax": 0-1000}\n'
             "Use normalized coordinates (0 to 1000)."
         )
@@ -2086,7 +2086,7 @@ Image 3: The NEW DOOR design.
 
 TASK:
 1. COMPLETELY REPLACE the pixels in the masked area of Image 1 with the door design from Image 3.
-2. The old door in Image 1 MUST be entirely covered and hidden.
+2. The old door and any transom windows above it in Image 1 MUST be entirely covered and hidden.
 3. Align the new door design to the door frame's perspective and lighting.
 4. Ensure the shadows around the new frame look natural.
 5. DO NOT change anything outside the white masked area.

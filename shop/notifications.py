@@ -99,6 +99,70 @@ class NotificationService:
             return None
 
     @staticmethod
+    def send_media_group_to_telegram(photo_paths: list, caption: str = "", chat_id: str = None) -> list:
+        """
+        Sends multiple photos as an album (media group).
+        Returns a list of file_ids for the uploaded photos.
+        """
+        import json
+        from .models import SystemSettings
+        token = getattr(settings, 'TELEGRAM_BOT_TOKEN', None)
+        target_chat_id = chat_id or getattr(SystemSettings.get_solo(), 'ai_storage_channel_id', None) or getattr(settings, 'ADMIN_TELEGRAM_ID', None)
+
+        if not token or not target_chat_id or not photo_paths:
+            return []
+
+        url = f"https://api.telegram.org/bot{token}/sendMediaGroup"
+        
+        media = []
+        files = {}
+        opened_files = []
+
+        try:
+            for i, path in enumerate(photo_paths):
+                file_key = f"photo{i}"
+                f = open(path, 'rb')
+                opened_files.append(f)
+                files[file_key] = f
+                
+                item = {
+                    "type": "photo",
+                    "media": f"attach://{file_key}",
+                }
+                # Attach caption to the FIRST photo in the group (standard behavior)
+                if i == len(photo_paths) - 1: # Last one is usually the 'After' image
+                    item["caption"] = caption
+                    item["parse_mode"] = "HTML"
+                
+                media.append(item)
+
+            # Note: For albums, the caption should usually be on the first OR last image.
+            # We'll put it on the last one (the result) if it's Before->After order.
+            # Wait, if Before is 0 and After is 1, then i=1 is the last.
+
+            payload = {
+                "chat_id": target_chat_id,
+                "media": json.dumps(media)
+            }
+            
+            response = requests.post(url, data=payload, files=files, timeout=60)
+            response.raise_for_status()
+            
+            data = response.json()
+            file_ids = []
+            if data.get("ok") and isinstance(data.get("result"), list):
+                for msg in data["result"]:
+                    if msg.get("photo"):
+                        file_ids.append(msg["photo"][-1]["file_id"])
+            return file_ids
+        except Exception as e:
+            logger.error(f"Failed to send media group to Telegram: {e}")
+            return []
+        finally:
+            for f in opened_files:
+                f.close()
+
+    @staticmethod
     def notify_new_lead(lead):
         """
         Formats and sends a notification about a new lead.

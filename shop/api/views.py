@@ -121,9 +121,13 @@ def run_api_ai_background(
                     f"🚪 Product: {product.name}\n\n"
                     f"#tanlaai #result"
                 )
-                file_id = NotificationService.upload_photo_to_telegram(result_path, caption)
-                if file_id:
-                    ai_result.telegram_file_id = file_id
+                file_ids = NotificationService.send_media_group_to_telegram(
+                    [room_path, result_path], 
+                    caption
+                )
+                if file_ids:
+                    # The last image in the group is our result path
+                    ai_result.telegram_file_id = file_ids[-1]
                     ai_result.save(update_fields=['telegram_file_id'])
 
                 # Automatically create a "soft" lead if enabled in system settings

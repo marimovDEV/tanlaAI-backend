@@ -2040,6 +2040,8 @@ class AIService:
             box_coords = (fx, fy, fx + fw, fy + fh)
             det_model_used = 'fallback-center'
 
+        py_xmin, py_ymin, py_xmax, py_ymax = box_coords
+
         # Expand detected box slightly (5% each side) to ensure full coverage of old door frames/edges
         dw = py_xmax - py_xmin
         dh = py_ymax - py_ymin

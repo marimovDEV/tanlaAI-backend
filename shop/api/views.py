@@ -1195,6 +1195,49 @@ class AdminSystemSettingsApiView(views.APIView):
         return Response({"status": "ok", "updated": updated_fields})
 
 
+class AdminBillingApiView(views.APIView):
+    """GET/POST for the single-row SystemBilling config."""
+    permission_classes = [permissions.AllowAny]
+
+    def _check_admin(self, request):
+        if not request.user.is_authenticated or not request.user.is_staff:
+            raise PermissionDenied("Admin authentication required")
+
+    def get(self, request):
+        self._check_admin(request)
+        from ..models import SystemBilling
+        billing = SystemBilling.get_solo()
+        data = {}
+        for field in billing._meta.fields:
+            if field.name not in ["id", "updated_at"]:
+                val = getattr(billing, field.name)
+                # Convert date/decimal to serializable types
+                if hasattr(val, 'isoformat'):
+                    val = val.isoformat() if val else None
+                elif hasattr(val, 'as_tuple'):
+                    val = float(val)
+                data[field.name] = val
+        return Response(data)
+
+    def post(self, request):
+        self._check_admin(request)
+        from ..models import SystemBilling
+        billing = SystemBilling.get_solo()
+        allowed_fields = [
+            f.name for f in billing._meta.fields if f.name not in ["id", "updated_at"]
+        ]
+        updated_fields = []
+        for key, value in request.data.items():
+            if key in allowed_fields:
+                # Handle empty date strings
+                if key in ('server_due_date', 'ai_due_date') and value == '':
+                    value = None
+                setattr(billing, key, value)
+                updated_fields.append(key)
+        if updated_fields:
+            billing.save(update_fields=updated_fields + ["updated_at"])
+        return Response({"status": "ok", "updated": updated_fields})
+
 class AdminRunActionApiView(views.APIView):
     permission_classes = [permissions.AllowAny]
 

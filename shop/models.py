@@ -311,6 +311,11 @@ class LeadRequest(models.Model):
     address_text = models.TextField(blank=True)
     latitude = models.FloatField(null=True, blank=True)
     longitude = models.FloatField(null=True, blank=True)
+    quantity = models.PositiveIntegerField(default=1)
+    total_price = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True,
+        help_text="quantity × price, computed on frontend and stored"
+    )
     source = models.CharField(max_length=50, blank=True)
     shared_id = models.UUIDField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

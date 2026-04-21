@@ -137,6 +137,7 @@ class LeadRequestSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'user', 'company', 'created_at',
             'product_name', 'product_image', 'calculated_price',
+            'ai_result_image', 'ai_result_details',
         ]
 
     # Require at least one form of address for checkout-style leads.

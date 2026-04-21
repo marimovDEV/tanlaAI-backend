@@ -100,25 +100,8 @@ class ProductSerializer(serializers.ModelSerializer):
 
 class AIResultSerializer(serializers.ModelSerializer):
     product_details = ProductSerializer(source='product', read_only=True)
-    image = serializers.SerializerMethodField()
-    input_image = AbsoluteImageField(read_only=True)
-
-    def get_image(self, obj):
-        request = self.context.get('request')
-        if obj.image:
-            url = obj.image.url
-            if url and not url.startswith('/') and not url.startswith('http'):
-                url = f"/media/{url}"
-            if request:
-                return request.build_absolute_uri(url)
-            return getattr(settings, 'BACKEND_URL', '').rstrip('/') + url
-        elif obj.telegram_file_id:
-            from django.urls import reverse
-            proxy_path = reverse('api_telegram_proxy', kwargs={'file_id': obj.telegram_file_id})
-            if request:
-                return request.build_absolute_uri(proxy_path)
-            return getattr(settings, 'BACKEND_URL', '').rstrip('/') + proxy_path
-        return None
+    image = AbsoluteImageField(required=False, allow_null=True)
+    input_image = AbsoluteImageField(required=False, allow_null=True)
 
     class Meta:
         model = AIResult

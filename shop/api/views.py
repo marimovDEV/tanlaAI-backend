@@ -1063,7 +1063,7 @@ class LeadRequestViewSet(viewsets.ModelViewSet):
         )
 
 
-class AIResultViewSet(viewsets.ReadOnlyModelViewSet):
+class AIResultViewSet(viewsets.ModelViewSet):
     serializer_class = AIResultSerializer
     permission_classes = [permissions.AllowAny]
 

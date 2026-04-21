@@ -1551,11 +1551,25 @@ def validate_locked_scene_candidate(
     mse = float(np.mean((candidate_pixels - baseline_pixels) ** 2))
     changed_ratio = float(np.mean(np.max(diff, axis=1) > 16.0))
 
-    is_valid = mse <= mse_threshold and changed_ratio <= ratio_threshold
+    # --- Interior Change Check (NEW) ---
+    # We must ensure the AI actually changed something INSIDE the mask.
+    # If the interior remains identical, the generation failed to execute the prompt.
+    interior_mask = validation_mask > 0
+    interior_baseline = baseline_bgr[interior_mask].astype(np.float32)
+    interior_candidate = candidate_bgr[interior_mask].astype(np.float32)
+    interior_mse = float(np.mean((interior_candidate - interior_baseline) ** 2))
+    
+    # 0.5 is a very safe floor (practically looks identical if below this)
+    is_interior_changed = interior_mse >= 0.5
+
+    is_valid = mse <= mse_threshold and changed_ratio <= ratio_threshold and is_interior_changed
+    
     return is_valid, {
         "mse": round(mse, 3),
         "changed_ratio": round(changed_ratio, 5),
-        "thresholds": {"mse": mse_threshold, "ratio": ratio_threshold},
+        "interior_mse": round(interior_mse, 3),
+        "is_interior_changed": bool(is_interior_changed),
+        "thresholds": {"mse": mse_threshold, "ratio": ratio_threshold, "min_interior_mse": 0.5},
     }
 
 
@@ -1767,31 +1781,28 @@ class AIService:
         door_name = getattr(product, "name", "door")
 
         return (
-            "You are a professional architectural image editor.\n"
+            "You are a professional architectural image editor specialized in door replacements.\n"
             "Reference image 1 is the original room photo.\n"
             "Reference image 2 is a binary mask where white marks the ONLY area you may edit.\n"
-            "Reference image 3 is the exact new door design that must be installed.\n\n"
+            "Reference image 3 is the exact new door assembly that must be installed.\n\n"
             "TASK:\n"
-            f"Replace the existing door/opening with the exact reference door '{door_name}'.\n"
-            "This is an image editing task, not scene generation.\n\n"
+            f"Completely remove the existing door, its entire frame, and all decorative molding or arches from Reference 1 and replace them with the exact door design '{door_name}' from Reference 3.\n"
+            "This is a precise replacement task. The goal is to make it look like the old door was uninstalled and the new one was professionally fitted.\n\n"
             "STRICT RULES:\n"
-            "- Keep the room exactly the same outside the white mask\n"
-            "- Do not redesign, restyle, upscale, or beautify the room\n"
-            "- Do not change walls, floor, carpet, curtains, furniture, trim, or lighting outside the mask\n"
-            "- Preserve the exact door design, glass pattern, frame details, and proportions from the reference door\n"
-            "- Do not invent a new door design\n"
-            "- Do not add extra molding, handles, windows, decor, or architectural elements\n\n"
+            "- DESTROY the old structure: Completely overwrite the old door and its architectural frame within the mask.\n"
+            "- USE Reference 3: Treat the reference door as a complete assembly (leaf + frame). Install it as-is.\n"
+            "- Keep the room exactly the same outside the white mask.\n"
+            "- Do not redesign, restyle, or upscale the room.\n"
+            "- Do not invent a new door design; use the glass pattern and texture from Reference 3.\n\n"
             "PLACEMENT RULES:\n"
             f"- Install the door inside this bounding box in pixels: left={left}, top={top}, right={right}, bottom={bottom}\n"
             f"- The same box in 0-1000 normalized coordinates is: top={box_1000[0]}, left={box_1000[1]}, bottom={box_1000[2]}, right={box_1000[3]}\n"
-            "- Keep the door bottom aligned to the floor line\n"
-            "- Keep the top of the door below the ceiling line and naturally inside the opening\n"
-            "- Fit the door proportionally inside the opening; do not stretch it\n"
-            "- Center the door naturally within the opening\n\n"
+            "- Align the door base to the floor line.\n"
+            "- Ensure the top of the door is naturally integrated into the opening.\n\n"
             "REALISM:\n"
-            "- Match perspective, local lighting, edge blending, and contact shadow naturally\n"
-            "- The door must look physically installed into the wall\n"
-            "- Return one edited image only"
+            "- Match the room's perspective, lighting direction, and shadows.\n"
+            "- The transition between the new door frame and the original wall must be seamless.\n"
+            "- Return one edited image only."
         )
 
     @staticmethod
@@ -2194,12 +2205,13 @@ Return ONLY the final edited room image."""
             detected_box, detection_method = detect_door_opening_box(
                 room_bgr, expected_aspect_ratio
             )
-            master_box = expand_pixel_box(
+            master_box = expand_pixel_box_top_heavy(
                 detected_box,
                 image_width,
                 image_height,
-                pad_x_ratio=0.06,
-                pad_y_ratio=0.04,
+                pad_x_ratio=0.10,
+                pad_top_ratio=0.35,  # Generous padding for arches
+                pad_bottom_ratio=0.03,
             )
 
         mask = build_box_mask(

@@ -481,6 +481,13 @@ class SystemSettings(models.Model):
         max_length=255, blank=True, default='',
         help_text="Telegram kanal yoki guruh ID si (Masalan: -100123456789) AI rasmlarni saqlash uchun."
     )
+    
+    # --- UI & Experience ---
+    platform_logo = models.CharField(max_length=500, blank=True, default='', help_text="Logo URL or Base64")
+    
+    # --- Automation ---
+    auto_delete_results_hours = models.IntegerField(default=24, help_text="AI natijalarini necha soatdan keyin o'chirish")
+    auto_followup_minutes = models.IntegerField(default=10, help_text="Lead tushgandan keyin necha daqiqa o'tib followup qilish")
 
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -513,6 +520,9 @@ class SystemBilling(models.Model):
     )
     usd_to_uzs_rate       = models.IntegerField(default=12500, help_text="1 USD = X UZS")
     ai_monthly_budget_uzs = models.IntegerField(default=0, help_text="Oylik AI limit (UZS)")
+
+    # --- CRM Monetization ---
+    lead_price_usd        = models.DecimalField(max_digits=10, decimal_places=2, default=0.0, help_text="Bitta lead nomi (kelajak uchun)")
 
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -109,6 +109,22 @@ def run_api_ai_background(
                     input_image=os.path.join("ai_temp", os.path.basename(room_path)),
                     status="done",
                 )
+                
+                # Upload to Telegram as permanent storage
+                from ..notifications import NotificationService
+                import datetime
+                company_name = product.company.name if product.company else "Tanla AI"
+                caption = (
+                    f"🆔 User: {user.id}\n"
+                    f"🏢 Company: {company_name}\n"
+                    f"🕒 Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                    f"🚪 Product: {product.name}\n\n"
+                    f"#tanlaai #result"
+                )
+                file_id = NotificationService.upload_photo_to_telegram(result_path, caption)
+                if file_id:
+                    ai_result.telegram_file_id = file_id
+                    ai_result.save(update_fields=['telegram_file_id'])
 
                 # Automatically create a "soft" lead if enabled in system settings
                 from ..models import SystemSettings
@@ -176,14 +192,26 @@ def run_api_ai_background(
 
 def build_ai_result_payload(request, ai_result):
     from ..ai_utils import load_visualization_metadata
+    from django.urls import reverse
+
+    if ai_result.image:
+        img_url = request.build_absolute_uri(ai_result.image.url)
+    elif ai_result.telegram_file_id:
+        # Avoid hardcoding by using reverse
+        proxy_path = reverse('api_telegram_proxy', kwargs={'file_id': ai_result.telegram_file_id})
+        img_url = request.build_absolute_uri(proxy_path)
+    else:
+        img_url = ""
 
     payload = {
         "status": "done",
-        "image_url": request.build_absolute_uri(ai_result.image.url),
+        "image_url": img_url,
     }
 
+    metadata = None
     try:
-        metadata = load_visualization_metadata(ai_result.image.path)
+        if ai_result.image:
+            metadata = load_visualization_metadata(ai_result.image.path)
     except Exception:
         metadata = None
 
@@ -1263,6 +1291,42 @@ class SharedDesignViewSet(viewsets.ModelViewSet):
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
+
+from django.http import StreamingHttpResponse, Http404
+import requests
+
+def telegram_proxy_view(request, file_id):
+    """
+    Proxies a Telegram file_id to the frontend securely, avoiding the 1-hour expiration limit.
+    """
+    token = getattr(settings, 'TELEGRAM_BOT_TOKEN', None)
+    if not token:
+        raise Http404("Bot token is missing")
+
+    try:
+        # First, fetch file info to get the file_path
+        info_url = f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}"
+        info_res = requests.get(info_url, timeout=10)
+        info_res.raise_for_status()
+        
+        info_data = info_res.json()
+        if not info_data.get('ok'):
+            raise Http404("Telegram API rejected file_id")
+            
+        file_path = info_data["result"]["file_path"]
+        download_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+        
+        # Stream the image file back to the client
+        image_res = requests.get(download_url, stream=True, timeout=30)
+        image_res.raise_for_status()
+        
+        response = StreamingHttpResponse(image_res.raw, content_type="image/jpeg")
+        response['Cache-Control'] = 'public, max-age=86400' # Cache for 1 day
+        return response
+        
+    except Exception as e:
+        logger.error(f"Telegram proxy error: {e}")
+        raise Http404("Could not fetch image")
 
 # ── Payment submission (company owner) ───────────────────────
 class PaymentViewSet(viewsets.ModelViewSet):

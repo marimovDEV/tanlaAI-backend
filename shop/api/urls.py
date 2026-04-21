@@ -6,7 +6,7 @@ from .views import (
     LeadRequestViewSet, AIResultViewSet, SharedDesignViewSet,
     AdminLoginApiView, AdminLogoutApiView, AdminMeApiView,
     AdminSystemSettingsApiView, AdminRunActionApiView,
-    PaymentViewSet,
+    PaymentViewSet, telegram_proxy_view,
 )
 
 from .admin_api import (
@@ -56,6 +56,7 @@ urlpatterns = [
     path('admin/system-settings/', AdminSystemSettingsApiView.as_view(), name='api_admin_system_settings'),
     path('admin/run-action/', AdminRunActionApiView.as_view(), name='api_admin_run_action'),
     path('admin/dashboard/', AdminDashboardApiView.as_view(), name='api_admin_dashboard'),
+    path('media/telegram/<str:file_id>/', telegram_proxy_view, name='api_telegram_proxy'),
     path('admin/', include(admin_router.urls)),
     path('', include(router.urls)),
 ]

@@ -62,6 +62,43 @@ class NotificationService:
             return False
 
     @staticmethod
+    def upload_photo_to_telegram(photo_path: str, caption: str = "", chat_id: str = None) -> str:
+        """
+        Uploads a photo to Telegram and returns the file_id.
+        """
+        from .models import SystemSettings
+        token = getattr(settings, 'TELEGRAM_BOT_TOKEN', None)
+        
+        target_chat_id = chat_id or getattr(SystemSettings.get_solo(), 'ai_storage_channel_id', None) or getattr(settings, 'ADMIN_TELEGRAM_ID', None)
+        
+        if not token or not target_chat_id:
+            logger.warning("Telegram photo upload skipped: Token or Chat ID missing.")
+            return None
+
+        url = f"https://api.telegram.org/bot{token}/sendPhoto"
+        
+        try:
+            with open(photo_path, 'rb') as photo_file:
+                payload = {
+                    "chat_id": target_chat_id,
+                    "caption": caption,
+                    "parse_mode": "HTML"
+                }
+                files = {"photo": photo_file}
+                response = requests.post(url, data=payload, files=files, timeout=30)
+                response.raise_for_status()
+                
+                data = response.json()
+                if data.get("ok") and data.get("result", {}).get("photo"):
+                    # Get the largest resolution photo file_id
+                    photos = data["result"]["photo"]
+                    return photos[-1]["file_id"]
+                return None
+        except Exception as e:
+            logger.error(f"Failed to upload photo to Telegram: {e}")
+            return None
+
+    @staticmethod
     def notify_new_lead(lead):
         """
         Formats and sends a notification about a new lead.

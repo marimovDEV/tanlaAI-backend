@@ -37,6 +37,15 @@ class TelegramUser(models.Model):
         return f"{self.first_name} ({self.telegram_id})"
 
 
+class SubscriptionPlan(models.Model):
+    name = models.CharField(max_length=100)
+    price = models.IntegerField(help_text="Oylik to'lov summasi (UZS)")
+    duration_days = models.IntegerField(default=30)
+    
+    def __str__(self):
+        return f"{self.name} - {self.price} so'm"
+
+
 class Company(models.Model):
     user = models.OneToOneField(
         TelegramUser, on_delete=models.CASCADE, related_name="company"
@@ -53,6 +62,7 @@ class Company(models.Model):
     logo = models.ImageField(upload_to="company_logos/", null=True, blank=True)
     is_active = models.BooleanField(default=True)
     subscription_deadline = models.DateTimeField(null=True, blank=True)
+    plan = models.ForeignKey(SubscriptionPlan, null=True, blank=True, on_delete=models.SET_NULL, related_name="companies")
     created_at = models.DateTimeField(auto_now_add=True)
 
     @property
@@ -218,7 +228,8 @@ class AIResult(models.Model):
         Product, on_delete=models.CASCADE, related_name="ai_visualizations"
     )
     input_image = models.ImageField(upload_to="ai_inputs/", null=True, blank=True)
-    image = models.ImageField(upload_to="ai_results/")
+    image = models.ImageField(upload_to="ai_results/", null=True, blank=True)
+    telegram_file_id = models.CharField(max_length=255, blank=True, default='')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="done")
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -465,6 +476,12 @@ class SystemSettings(models.Model):
     # --- DevOps & Updates ---
     enable_deploy_actions = models.BooleanField(default=True)
 
+    # --- Telegram Storage ---
+    ai_storage_channel_id = models.CharField(
+        max_length=255, blank=True, default='',
+        help_text="Telegram kanal yoki guruh ID si (Masalan: -100123456789) AI rasmlarni saqlash uchun."
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -480,13 +497,48 @@ class SystemSettings(models.Model):
         return obj
 
 
+class SystemBilling(models.Model):
+    """Single-row billing config for server & AI cost tracking."""
+
+    # Server
+    server_due_date  = models.DateField(null=True, blank=True)
+    server_cost      = models.IntegerField(default=0, help_text="UZS / oy")
+    server_note      = models.CharField(max_length=255, blank=True, default='')
+
+    # AI
+    ai_due_date           = models.DateField(null=True, blank=True)
+    ai_cost_per_request   = models.DecimalField(
+        max_digits=10, decimal_places=6, default=0.01,
+        help_text="USD / bitta AI so'rov"
+    )
+    usd_to_uzs_rate       = models.IntegerField(default=12500, help_text="1 USD = X UZS")
+    ai_monthly_budget_uzs = models.IntegerField(default=0, help_text="Oylik AI limit (UZS)")
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "System Billing"
+
+    def __str__(self):
+        return "System Billing Config"
+
+    @classmethod
+    def get_solo(cls):
+        obj, _ = cls.objects.get_or_create(id=1)
+        return obj
+
+    def ai_cost_uzs_per_request(self):
+        return float(self.ai_cost_per_request) * self.usd_to_uzs_rate
+
+
 class AITest(models.Model):
     door = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="ai_tests")
-    room_image = models.ImageField(upload_to="ai_tests/rooms/")
+    room_image = models.ImageField(upload_to="ai_tests/rooms/", null=True, blank=True)
     prompt = models.TextField(blank=True, null=True)
     result_image = models.ImageField(
         upload_to="ai_tests/results/", blank=True, null=True
     )
+    telegram_file_id = models.CharField(max_length=255, blank=True, default='')
     metadata = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

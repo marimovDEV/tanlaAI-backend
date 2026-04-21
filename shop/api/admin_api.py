@@ -33,6 +33,8 @@ class AdminCompanySerializer(drf_serializers.ModelSerializer):
     owner_username = drf_serializers.SerializerMethodField()
     product_count = drf_serializers.IntegerField(read_only=True, default=0)
     logo = drf_serializers.SerializerMethodField()
+    plan_name = drf_serializers.CharField(source='plan.name', read_only=True)
+    plan_price = drf_serializers.IntegerField(source='plan.price', read_only=True)
 
     class Meta:
         model = Company
@@ -262,7 +264,7 @@ class AdminCompanyViewSet(viewsets.ModelViewSet):
         company = self.get_object()
         company.is_active = not company.is_active
         company.save(update_fields=['is_active'])
-        return Response(CompanySerializer(company).data)
+        return Response(AdminCompanySerializer(company, context={'request': request}).data)
 
     @action(detail=True, methods=['post'], url_path='update-deadline')
     def update_deadline(self, request, pk=None):
@@ -279,7 +281,26 @@ class AdminCompanyViewSet(viewsets.ModelViewSet):
         else:
             company.subscription_deadline = None
         company.save(update_fields=['subscription_deadline'])
-        return Response(CompanySerializer(company).data)
+        return Response(AdminCompanySerializer(company, context={'request': request}).data)
+
+    @action(detail=True, methods=['post'], url_path='accept-payment')
+    def accept_payment(self, request, pk=None):
+        company = self.get_object()
+        duration = 30
+        if company.plan:
+            duration = company.plan.duration_days
+        
+        now = timezone.now()
+        current_deadline = company.subscription_deadline
+        base = current_deadline if current_deadline and current_deadline > now else now
+        new_deadline = base + datetime.timedelta(days=duration)
+        
+        company.subscription_deadline = new_deadline
+        company.is_active = True
+        company.save(update_fields=["subscription_deadline", "is_active"])
+        
+        return Response(AdminCompanySerializer(company, context={'request': request}).data)
+
 
 
 # ── Promotions (on-sale products) ───────────────────────────
@@ -412,6 +433,19 @@ class AdminAITestViewSet(viewsets.ModelViewSet):
             image_rel_path = f"ai_tests/results/{os.path.basename(result_path)}"
             test_obj.result_image = image_rel_path
             
+            # Upload to Telegram as permanent storage
+            from ..notifications import NotificationService
+            import datetime
+            caption = (
+                f"🧪 AI Test Result\n"
+                f"🕒 Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                f"🚪 Product: {product.name}\n\n"
+                f"#tanlaai #aitest"
+            )
+            file_id = NotificationService.upload_photo_to_telegram(result_path, caption)
+            if file_id:
+                test_obj.telegram_file_id = file_id
+
             # Load metadata if exists
             from ..ai_utils import load_visualization_metadata
             try:

@@ -100,8 +100,25 @@ class ProductSerializer(serializers.ModelSerializer):
 
 class AIResultSerializer(serializers.ModelSerializer):
     product_details = ProductSerializer(source='product', read_only=True)
-    image = AbsoluteImageField(read_only=True)
+    image = serializers.SerializerMethodField()
     input_image = AbsoluteImageField(read_only=True)
+
+    def get_image(self, obj):
+        request = self.context.get('request')
+        if obj.image:
+            url = obj.image.url
+            if url and not url.startswith('/') and not url.startswith('http'):
+                url = f"/media/{url}"
+            if request:
+                return request.build_absolute_uri(url)
+            return getattr(settings, 'BACKEND_URL', '').rstrip('/') + url
+        elif obj.telegram_file_id:
+            from django.urls import reverse
+            proxy_path = reverse('api_telegram_proxy', kwargs={'file_id': obj.telegram_file_id})
+            if request:
+                return request.build_absolute_uri(proxy_path)
+            return getattr(settings, 'BACKEND_URL', '').rstrip('/') + proxy_path
+        return None
 
     class Meta:
         model = AIResult
@@ -160,17 +177,27 @@ class LeadRequestSerializer(serializers.ModelSerializer):
         return attrs
 
     def get_ai_result_image(self, obj):
-        if not obj.ai_result or not obj.ai_result.image:
+        if not obj.ai_result:
             return None
         
-        url = obj.ai_result.image.url
-        if url and not url.startswith('/') and not url.startswith('http'):
-            url = f"/media/{url}"
-        
         request = self.context.get('request')
-        if request:
-            return request.build_absolute_uri(url)
-        return url
+            
+        if obj.ai_result.image:
+            url = obj.ai_result.image.url
+            if url and not url.startswith('/') and not url.startswith('http'):
+                url = f"/media/{url}"
+            if request:
+                return request.build_absolute_uri(url)
+            return getattr(settings, 'BACKEND_URL', '').rstrip('/') + url
+            
+        elif obj.ai_result.telegram_file_id:
+            from django.urls import reverse
+            proxy_path = reverse('api_telegram_proxy', kwargs={'file_id': obj.ai_result.telegram_file_id})
+            if request:
+                return request.build_absolute_uri(proxy_path)
+            return getattr(settings, 'BACKEND_URL', '').rstrip('/') + proxy_path
+            
+        return None
 
 # Admin aliases for backward compatibility
 AdminLeadRequestSerializer = LeadRequestSerializer

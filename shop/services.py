@@ -1983,7 +1983,7 @@ class AIService:
             'Format: {"ymin": 0-1000, "xmin": 0-1000, "ymax": 0-1000, "xmax": 0-1000}\n'
             "Use normalized coordinates (0 to 1000)."
         )
-        DETECTION_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro']
+        DETECTION_MODELS = ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-pro']
         
         box_coords = None
         det_model_used = None
@@ -2040,7 +2040,15 @@ class AIService:
             box_coords = (fx, fy, fx + fw, fy + fh)
             det_model_used = 'fallback-center'
 
-        py_xmin, py_ymin, py_xmax, py_ymax = box_coords
+        # Expand detected box slightly (5% each side) to ensure full coverage of old door frames/edges
+        dw = py_xmax - py_xmin
+        dh = py_ymax - py_ymin
+        py_xmin = max(0, py_xmin - int(dw * 0.05))
+        py_ymin = max(0, py_ymin - int(dh * 0.05))
+        py_xmax = min(w_send, py_xmax + int(dw * 0.05))
+        py_ymax = min(h_send, py_ymax + int(dh * 0.05))
+        
+        box_coords = (py_xmin, py_ymin, py_xmax, py_ymax)
 
         # ═══════════════════════════════════════
         # Phase 2: Auto Masking
@@ -2058,18 +2066,20 @@ class AIService:
         # Phase 3: Inpainting
         # ═══════════════════════════════════════
         print("\n🚪 3-BOSQICH: Eshikni joylashtiryapman...")
-        edit_prompt = """Image 1: Original room photo.
-Image 2: MASK — white area shows where to place the new door.
-Image 3: The NEW DOOR design to install.
+        edit_prompt = """You are an expert interior design photo editor.
+Image 1: The original room where we need to install a new door.
+Image 2: REPLACEMENT MASK (white area). This shows EXACTLY where the modification MUST happen.
+Image 3: The NEW DOOR design.
 
-TASK: Replace the masked area with the new door.
-RULES:
-- Match the room's lighting and perspective
-- Blend edges perfectly (shadows, lighting)
-- Do NOT change anything outside the mask
-- Make the door look naturally installed in the wall
-- Return ONLY the edited room image"""
-        INPAINT_MODELS = ['gemini-2.5-flash-image', 'gemini-2.5-flash', 'gemini-2.0-flash']
+TASK:
+1. COMPLETELY REPLACE the pixels in the masked area of Image 1 with the door design from Image 3.
+2. The old door in Image 1 MUST be entirely covered and hidden.
+3. Align the new door design to the door frame's perspective and lighting.
+4. Ensure the shadows around the new frame look natural.
+5. DO NOT change anything outside the white masked area.
+
+Return ONLY the final edited room image."""
+        INPAINT_MODELS = ['gemini-1.5-pro', 'gemini-2.0-flash-exp', 'gemini-1.5-flash']
         
         final_img = None
         inp_model_used = None

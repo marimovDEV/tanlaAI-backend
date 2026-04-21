@@ -164,6 +164,10 @@ class AdminProductViewSet(viewsets.ModelViewSet):
         
         return Response({'status': 'processing'})
 
+    def perform_create(self, serializer):
+        # Always mark admin-created products as active
+        serializer.save(is_active=True)
+
     def perform_destroy(self, instance):
         instance.delete()
 

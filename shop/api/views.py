@@ -485,7 +485,7 @@ class ProductViewSet(viewsets.ModelViewSet):
                 }
             )
 
-        product = serializer.save(owner=tg_user, company=company)
+        product = serializer.save(owner=tg_user, company=company, is_active=True)
         self._sync_product_gallery(self.request, product)
 
     def perform_update(self, serializer):

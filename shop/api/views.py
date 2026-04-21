@@ -500,6 +500,16 @@ class ProductViewSet(viewsets.ModelViewSet):
                 {"detail": "Create a company profile before adding products."}
             )
 
+        # Block product creation if subscription is not active
+        if company.status != "active":
+            raise ValidationError(
+                {
+                    "detail": "Mahsulot qo'shish uchun avval obunani faollashtiring.",
+                    "code": "subscription_inactive",
+                    "status": company.status,
+                }
+            )
+
         subscription, _ = Subscription.objects.get_or_create(company=company)
         current_count = company.products.count()
         if current_count >= subscription.max_products:
@@ -874,8 +884,8 @@ class CompanyViewSet(viewsets.ModelViewSet):
         if hasattr(tg_user, "company"):
             raise ValidationError({"detail": "You already have a company profile."})
 
-        # Create company
-        company = serializer.save(user=tg_user)
+        # Create company with pending_payment status
+        company = serializer.save(user=tg_user, status="pending_payment", is_active=False)
 
         # Upgrade user role to COMPANY automatically
         if tg_user.role != "COMPANY":
@@ -1438,6 +1448,28 @@ class PaymentViewSet(viewsets.ModelViewSet):
         from ..notifications import NotificationService
 
         payment = serializer.save(company=company)
+
+        # Update company status to 'waiting_confirmation'
+        company.status = "waiting_confirmation"
+        company.save(update_fields=["status"])
+
         NotificationService.notify_payment_submitted(payment)
+
+
+class BillingInfoView(views.APIView):
+    """
+    Public endpoint that returns the platform's payment card details
+    and monthly subscription price. Used by the creator dashboard
+    to show payment instructions.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        settings_obj = SystemSettings.get_solo()
+        return Response({
+            "monthly_price": settings_obj.monthly_price,
+            "card_number": settings_obj.card_number,
+            "card_holder": settings_obj.card_holder,
+        })
 
 

@@ -56,7 +56,7 @@ class CompanySerializer(serializers.ModelSerializer):
     class Meta:
         model = Company
         fields = '__all__'
-        read_only_fields = ['user', 'is_active', 'subscription_deadline', 'created_at', 'is_currently_active']
+        read_only_fields = ['user', 'is_active', 'status', 'subscription_deadline', 'created_at', 'is_currently_active']
 
 class ProductImageSerializer(serializers.ModelSerializer):
     image = AbsoluteImageField()

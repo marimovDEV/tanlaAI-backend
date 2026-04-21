@@ -585,7 +585,8 @@ class AdminPaymentViewSet(viewsets.ReadOnlyModelViewSet):
             new_deadline = base + timedelta(days=30 * payment.months)
             company.subscription_deadline = new_deadline
             company.is_active = True
-            company.save(update_fields=["subscription_deadline", "is_active"])
+            company.status = "active"
+            company.save(update_fields=["subscription_deadline", "is_active", "status"])
 
             # Keep the Subscription row roughly in sync. Not load-bearing for
             # listings (those read Company.subscription_deadline) but useful
@@ -646,6 +647,11 @@ class AdminPaymentViewSet(viewsets.ReadOnlyModelViewSet):
         payment.save(
             update_fields=["status", "rejection_reason", "reviewed_at", "reviewed_by"]
         )
+
+        # Revert company status so the owner can re-submit
+        company = payment.company
+        company.status = "pending_payment"
+        company.save(update_fields=["status"])
 
         NotificationService.notify_payment_rejected(payment)
         return Response(PaymentSerializer(payment, context={"request": request}).data)

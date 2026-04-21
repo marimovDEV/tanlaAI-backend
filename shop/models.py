@@ -47,6 +47,12 @@ class SubscriptionPlan(models.Model):
 
 
 class Company(models.Model):
+    STATUS_CHOICES = [
+        ("pending_payment", "To'lov kutilmoqda"),
+        ("waiting_confirmation", "Tasdiqlash kutilmoqda"),
+        ("active", "Faol"),
+        ("expired", "Muddati o'tgan"),
+    ]
     user = models.OneToOneField(
         TelegramUser, on_delete=models.CASCADE, related_name="company"
     )
@@ -61,6 +67,10 @@ class Company(models.Model):
     youtube_link = models.CharField(max_length=255, blank=True, default='')
     logo = models.ImageField(upload_to="company_logos/", null=True, blank=True)
     is_active = models.BooleanField(default=True)
+    status = models.CharField(
+        max_length=25, choices=STATUS_CHOICES, default="pending_payment",
+        help_text="Kompaniya hayot davrasi holati"
+    )
     subscription_deadline = models.DateTimeField(null=True, blank=True)
     plan = models.ForeignKey(SubscriptionPlan, null=True, blank=True, on_delete=models.SET_NULL, related_name="companies")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -488,6 +498,20 @@ class SystemSettings(models.Model):
     # --- Automation ---
     auto_delete_results_hours = models.IntegerField(default=24, help_text="AI natijalarini necha soatdan keyin o'chirish")
     auto_followup_minutes = models.IntegerField(default=10, help_text="Lead tushgandan keyin necha daqiqa o'tib followup qilish")
+
+    # --- Billing / Payment Info (shown to company owners) ---
+    monthly_price = models.IntegerField(
+        default=100000,
+        help_text="Oylik obuna narxi (UZS)"
+    )
+    card_number = models.CharField(
+        max_length=100, blank=True, default='',
+        help_text="To'lov uchun karta raqami"
+    )
+    card_holder = models.CharField(
+        max_length=100, blank=True, default='',
+        help_text="Karta egasi ismi"
+    )
 
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -2,7 +2,7 @@ from django.db import transaction
 import threading
 from django.db.models.signals import post_save
 from django.dispatch import receiver
-from .models import Product, LeadRequest
+from .models import Product, LeadRequest, Company
 from django.conf import settings
 
 
@@ -49,3 +49,36 @@ def notify_new_lead_signal(sender, instance, created, **kwargs):
 
         reminder_timer = threading.Timer(600, send_reminder) # 600 seconds = 10 minutes
         reminder_timer.start()
+
+
+@receiver(post_save, sender=Company)
+def notify_admin_new_company(sender, instance, created, **kwargs):
+    """
+    Sends a Telegram notification to the admin when a new company is created.
+    """
+    if created:
+        from .notifications import NotificationService
+
+        owner = instance.user
+        owner_name = (
+            f"{owner.first_name or ''} {owner.last_name or ''}".strip()
+            if owner else "?"
+        )
+        username = f"@{owner.username}" if owner and owner.username else "—"
+        phone = owner.phone if owner and owner.phone else "—"
+
+        message = (
+            "🏢 <b>YANGI KAMPANIYA YARATILDI</b>\n\n"
+            f"📝 <b>Nomi:</b> {instance.name}\n"
+            f"👤 <b>Egasi:</b> {owner_name}\n"
+            f"📱 <b>Username:</b> {username}\n"
+            f"📞 <b>Telefon:</b> {phone}\n\n"
+            "🟡 <b>Status:</b> To'lov kutilmoqda\n\n"
+            "❗ <i>Foydalanuvchi to'lov qilishini kutib turing.</i>"
+        )
+
+        thread = threading.Thread(
+            target=NotificationService.send_telegram_message,
+            args=(message,)
+        )
+        thread.start()

@@ -52,6 +52,7 @@ class Company(models.Model):
         ("waiting_confirmation", "Tasdiqlash kutilmoqda"),
         ("active", "Faol"),
         ("expired", "Muddati o'tgan"),
+        ("rejected", "Rad etilgan"),
     ]
     user = models.OneToOneField(
         TelegramUser, on_delete=models.CASCADE, related_name="company"

@@ -1983,7 +1983,7 @@ class AIService:
             'Format: {"ymin": 0-1000, "xmin": 0-1000, "ymax": 0-1000, "xmax": 0-1000}\n'
             "Use normalized coordinates (0 to 1000)."
         )
-        DETECTION_MODELS = ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-pro']
+        DETECTION_MODELS = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.0-flash-exp']
         
         box_coords = None
         det_model_used = None
@@ -2081,7 +2081,7 @@ TASK:
 5. DO NOT change anything outside the white masked area.
 
 Return ONLY the final edited room image."""
-        INPAINT_MODELS = ['gemini-1.5-pro', 'gemini-2.0-flash-exp', 'gemini-1.5-flash']
+        INPAINT_MODELS = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview', 'gemini-2.5-flash', 'gemini-2.0-flash']
         
         final_img = None
         inp_model_used = None

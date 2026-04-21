@@ -612,19 +612,7 @@ class ProductViewSet(viewsets.ModelViewSet):
 
         # Allow admin-added products without a company
         if product.company:
-            # 1. Block AI generation if the company is not active (subscription check)
-            if product.company.status != "active":
-                return Response(
-                    {
-                        "status": "error",
-                        "message": "AI vizualizatsiyadan foydalanish uchun obunani faollashtiring.",
-                        "code": "subscription_inactive",
-                        "company_status": product.company.status
-                    },
-                    status=status.HTTP_403_FORBIDDEN
-                )
-
-            # 2. Limit check
+            # Limit check (Sellers still have a quota, but it's not blocked by status)
             subscription, _ = Subscription.objects.get_or_create(
                 company=product.company
             )

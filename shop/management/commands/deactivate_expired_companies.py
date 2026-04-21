@@ -69,9 +69,6 @@ class Command(BaseCommand):
             if dry_run:
                 continue
 
-            with transaction.atomic():
-                affected_qs.update(is_active=False)
-
             if notify and company.user and company.user.telegram_id:
                 message = (
                     "⚠️ <b>Obuna muddati tugadi</b>\n\n"
@@ -83,6 +80,12 @@ class Command(BaseCommand):
                 NotificationService.send_telegram_message(
                     message, chat_id=str(company.user.telegram_id)
                 )
+
+            # Update company status to 'expired' and is_active=False
+            with transaction.atomic():
+                company.status = "expired"
+                company.is_active = False
+                company.save(update_fields=["status", "is_active"])
 
         if dry_run:
             self.stdout.write(self.style.WARNING(

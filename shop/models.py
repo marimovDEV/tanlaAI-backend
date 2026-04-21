@@ -72,6 +72,7 @@ class Company(models.Model):
         max_length=25, choices=STATUS_CHOICES, default="pending_payment",
         help_text="Kompaniya hayot davrasi holati"
     )
+    rejection_reason = models.TextField(blank=True, default='')
     subscription_deadline = models.DateTimeField(null=True, blank=True)
     plan = models.ForeignKey(SubscriptionPlan, null=True, blank=True, on_delete=models.SET_NULL, related_name="companies")
     created_at = models.DateTimeField(auto_now_add=True)

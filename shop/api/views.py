@@ -612,6 +612,19 @@ class ProductViewSet(viewsets.ModelViewSet):
 
         # Allow admin-added products without a company
         if product.company:
+            # 1. Block AI generation if the company is not active (subscription check)
+            if product.company.status != "active":
+                return Response(
+                    {
+                        "status": "error",
+                        "message": "AI vizualizatsiyadan foydalanish uchun obunani faollashtiring.",
+                        "code": "subscription_inactive",
+                        "company_status": product.company.status
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            # 2. Limit check
             subscription, _ = Subscription.objects.get_or_create(
                 company=product.company
             )
@@ -1442,6 +1455,18 @@ class PaymentViewSet(viewsets.ModelViewSet):
             raise ValidationError(
                 {"detail": "Avval kompaniya profilini yarating."}
             )
+
+        # Validate screenshot (max 5MB and image types)
+        screenshot = self.request.FILES.get('screenshot')
+        if screenshot:
+            if screenshot.size > 5 * 1024 * 1024:
+                raise ValidationError({"detail": "Chek rasmi 5MB dan oshmasligi kerak."})
+            
+            content_type = screenshot.content_type
+            if not content_type.startswith('image/'):
+                raise ValidationError({"detail": "Faqat rasm formatidagi fayllarni yuklash mumkin."})
+        else:
+            raise ValidationError({"detail": "To'lov chekini yuklash shart."})
 
         # Lazy import — notifications uses requests which may not be needed
         # in every code path (e.g. migrations).

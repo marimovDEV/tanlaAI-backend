@@ -63,7 +63,11 @@ import django
 django.setup()
 
 from asgiref.sync import sync_to_async
-from shop.models import LeadRequest
+from django.utils import timezone
+from django.db import transaction
+from datetime import timedelta
+from shop.models import LeadRequest, Payment, Company, Product, TelegramUser, Subscription
+from shop.notifications import NotificationService
 
 @sync_to_async
 def update_lead_status(lead_id: str, new_status: str):
@@ -87,15 +91,84 @@ async def process_lead_status(callback_query: types.CallbackQuery):
 
     if success:
         await callback_query.answer(text, show_alert=True)
-        # Edit the inline keyboard to remove the choice buttons but keep the phone number
-        # Just grab the existing keyboard and build a new one without the action row
         message_text = callback_query.message.text
         message_text += f"\n\n<b>Status:</b> {text}"
-        
-        # remove inline keyboard entirely to avoid double clicking
         await callback_query.message.edit_text(message_text, parse_mode="HTML", reply_markup=None)
     else:
         await callback_query.answer("Topilmadi yoki allaqachon o'zgartirilgan", show_alert=True)
+
+@sync_to_async
+def process_payment_decision(payment_id: str, is_approved: bool, reviewer_tg_id: int):
+    try:
+        with transaction.atomic():
+            payment = Payment.objects.select_related("company").get(id=payment_id)
+            if payment.status != "pending":
+                return False, f"To'lov holati allaqachon '{payment.status}'"
+
+            company = payment.company
+            now = timezone.now()
+            reviewer = TelegramUser.objects.filter(telegram_id=reviewer_tg_id).first()
+
+            if is_approved:
+                # Approve Logic (Mirrors AdminPaymentViewSet.approve)
+                current_deadline = company.subscription_deadline
+                base = current_deadline if current_deadline and current_deadline > now else now
+                new_deadline = base + timedelta(days=30 * payment.months)
+                
+                company.subscription_deadline = new_deadline
+                company.is_active = True
+                company.status = "active"
+                company.save(update_fields=["subscription_deadline", "is_active", "status"])
+
+                sub, _ = Subscription.objects.get_or_create(company=company)
+                sub.expires_at = new_deadline
+                sub.save(update_fields=["expires_at"])
+
+                reactivated = Product.objects.filter(company=company, is_active=False).update(is_active=True)
+
+                payment.status = "approved"
+                payment.reviewed_at = now
+                payment.reviewed_by = reviewer
+                payment.save(update_fields=["status", "reviewed_at", "reviewed_by"])
+                
+                # Notify Owner via Task/Signal or manual call
+                NotificationService.notify_payment_approved(payment, reactivated_count=reactivated)
+                return True, "✅ To'lov tasdiqlandi!"
+            else:
+                # Reject Logic (Mirrors AdminPaymentViewSet.reject)
+                payment.status = "rejected"
+                payment.rejection_reason = "Telegram orqali rad etildi."
+                payment.reviewed_at = now
+                payment.reviewed_by = reviewer
+                payment.save(update_fields=["status", "rejection_reason", "reviewed_at", "reviewed_by"])
+
+                company.status = "pending_payment"
+                company.save(update_fields=["status"])
+
+                NotificationService.notify_payment_rejected(payment)
+                return True, "❌ To'lov rad etildi."
+    except Exception as e:
+        print(f"Error in process_payment_decision: {e}")
+        return False, "Tizim xatoligi."
+
+@dp.callback_query(lambda c: c.data and (c.data.startswith('pay_approve_') or c.data.startswith('pay_reject_')))
+async def process_payment_callback(callback_query: types.CallbackQuery):
+    data = callback_query.data
+    reviewer_id = callback_query.from_user.id
+    
+    if data.startswith('pay_approve_'):
+        payment_id = data.replace('pay_approve_', '')
+        success, text = await process_payment_decision(payment_id, True, reviewer_id)
+    else:
+        payment_id = data.replace('pay_reject_', '')
+        success, text = await process_payment_decision(payment_id, False, reviewer_id)
+
+    if success:
+        await callback_query.answer(text, show_alert=True)
+        msg_text = callback_query.message.text + f"\n\n<b>Qaror:</b> {text}"
+        await callback_query.message.edit_text(msg_text, parse_mode="HTML", reply_markup=None)
+    else:
+        await callback_query.answer(f"Xatolik: {text}", show_alert=True)
 
 async def main() -> None:
     # Use our custom IPv4 session with optional proxy

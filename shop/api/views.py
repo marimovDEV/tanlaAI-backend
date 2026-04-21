@@ -208,6 +208,7 @@ def build_ai_result_payload(request, ai_result):
         img_url = ""
 
     payload = {
+        "id": ai_result.id,
         "status": "done",
         "image_url": img_url,
     }
@@ -1107,6 +1108,26 @@ class AIResultViewSet(viewsets.ModelViewSet):
             message="Mijoz tarix boyicha ushbu vizualizatsiyaga qiziqish bildirdi.",
         )
         return Response({"status": "ok"})
+
+    @action(detail=True, methods=["get"], url_path="download")
+    def download(self, request, pk=None):
+        """
+        Proxies the image file as a download attachment to bypass CORS restrictions.
+        Returns a FileResponse with Content-Disposition: attachment.
+        """
+        from django.http import FileResponse
+        import os
+        ai_result = self.get_object()
+        if not ai_result.image:
+             return Response({"error": "Image not found"}, status=404)
+        
+        # Open the file
+        file_handle = open(ai_result.image.path, 'rb')
+        filename = f"tanla_ai_{ai_result.id}.png"
+        
+        response = FileResponse(file_handle, content_type='image/png')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
 
 
 class AdminLoginApiView(views.APIView):

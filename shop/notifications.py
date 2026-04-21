@@ -186,52 +186,58 @@ class NotificationService:
         else:
             header = "📩 <b>YANGI BUYURTMA</b>"
 
-        message = (
-            f"{header}\n\n"
-            f"🚪 <b>Mahsulot:</b> {product_name}\n"
-            f"🛠 <b>Tur:</b> {lead_type}\n"
-            f"👤 <b>Mijoz:</b> {user_name}\n"
-            f"📞 <b>Telefon:</b> {phone}\n"
-        )
+        message = f"{header}\n\n"
+        
+        # Section: Product Details
+        message += "📦 <b>BUYURTMA TAFSILOTLARI</b>\n"
+        message += f"🚪 <b>Mahsulot:</b> {product_name}\n"
+        
+        if hasattr(lead, 'quantity') and lead.quantity > 1:
+            message += f"🔢 <b>Soni:</b> {lead.quantity} ta\n"
+            
+        if hasattr(lead, 'total_price') and lead.total_price:
+            try:
+                total_fmt = f"{float(lead.total_price):,.0f}".replace(",", " ")
+                message += f"💰 <b>Jami summa:</b> {total_fmt} so'm\n"
+            except Exception:
+                message += f"💰 <b>Jami summa:</b> {lead.total_price} so'm\n"
+        elif lead.calculated_price:
+            try:
+                price_fmt = f"{float(lead.calculated_price):,.0f}".replace(",", " ")
+                message += f"💰 <b>Narx:</b> {price_fmt} so'm\n"
+            except Exception:
+                message += f"💰 <b>Narx:</b> {lead.calculated_price} so'm\n"
 
-        # Structured measurement (new fields)
+        # Section: Measurement (if applicable)
         if lead.width_cm and lead.height_cm:
             area_m2 = (lead.width_cm * lead.height_cm) / 10000
             message += (
                 f"📐 <b>O'lcham:</b> {lead.width_cm} × {lead.height_cm} sm\n"
                 f"📏 <b>Maydon:</b> {area_m2:.2f} m²\n"
             )
-        if lead.calculated_price:
-            try:
-                price_fmt = f"{float(lead.calculated_price):,.0f}".replace(",", " ")
-            except Exception:
-                price_fmt = str(lead.calculated_price)
-            message += f"💰 <b>Narx:</b> {price_fmt} so'm\n"
 
-        # Legacy free-text price info (kept for compatibility — shown only if
-        # we don't already have structured measurement data)
-        if lead.price_info and not (lead.width_cm or lead.calculated_price):
-            message += f"💰 <b>O'lcham/Narx:</b> {lead.price_info}\n"
+        # Section: Customer Details
+        message += "\n👤 <b>MIJOZ MA'LUMOTLARI</b>\n"
+        message += f"👤 <b>Ism:</b> {user_name}\n"
+        message += f"📞 <b>Telefon:</b> {phone}\n"
 
-        # Lead-time / tayyor bo'lish muddati
-        lead_time = getattr(lead.product, "lead_time_days", None)
-        if lead_time:
-            message += f"⏱ <b>Tayyor bo'lishi:</b> {lead_time} kun\n"
+        # Section: Logistics
+        if lead.address_text or (lead.latitude and lead.longitude):
+            message += "\n📍 <b>LOGISTIKA</b>\n"
+            if lead.latitude is not None and lead.longitude is not None:
+                message += (
+                    f"📍 <b>Lokatsiya:</b> "
+                    f"<a href='https://maps.google.com/?q={lead.latitude},{lead.longitude}'>"
+                    f"Xaritada ochish</a>\n"
+                )
+            if lead.address_text:
+                message += f"🏠 <b>Manzil:</b> {lead.address_text}\n"
 
-        # Address (text and/or geo coords)
-        if lead.latitude is not None and lead.longitude is not None:
-            message += (
-                f"\n📍 <b>Lokatsiya:</b> "
-                f"<a href='https://maps.google.com/?q={lead.latitude},{lead.longitude}'>"
-                f"Xaritada ochish</a>"
-            )
-        if lead.address_text:
-            message += f"\n🏠 <b>Manzil:</b> {lead.address_text}"
-
+        # Section: Additional Info
         if lead.message:
-            message += f"\n📝 <b>Izoh:</b> {lead.message}"
+            message += f"\n📝 <b>Izoh:</b> {lead.message}\n"
 
-        message += f"\n\n🚀 <a href='https://tanla-ai.ardentsoft.uz/adminka/leads'>Admin panelda ko'rish</a>"
+        message += f"\n🚀 <a href='https://tanla-ai.ardentsoft.uz/adminka/leads/{lead.id}'>Admin panelda ochish</a>"
 
         # Build inline keyboard if phone exists
         reply_markup = {"inline_keyboard": []}

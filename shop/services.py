@@ -2051,13 +2051,102 @@ class AIService:
                     if any(kw in str(e) for kw in ("429", "quota", "RESOURCE_EXHAUSTED")):
                         time.sleep(2)
 
+        # ── Fallback 1: OpenAI gpt-image-1 edit ──────────────────────────────
         if not final_img:
-            raise ValueError(
-                f"Gemini barcha modellarda muvaffaqiyatsiz bo'ldi. "
-                f"Oxirgi xato: {last_error}"
-            )
+            print(f"  ⚠️ All Gemini models failed ({last_error[:120]}). Trying gpt-image-1...")
+            try:
+                import base64
+                from openai import OpenAI as _OpenAI
 
-        # ── Restore original aspect-ratio (Gemini may change it slightly) ─────
+                _oai_key = (
+                    getattr(settings, "OPENAI_API_KEY", None)
+                    or os.environ.get("OPENAI_API_KEY", "")
+                )
+                if not _oai_key or not str(_oai_key).strip().startswith("sk-"):
+                    raise ValueError("OpenAI API key not configured")
+
+                _oai = _OpenAI(api_key=_oai_key.strip())
+
+                # Get a text description of the door via GPT-4o (best effort)
+                door_desc_text = product.name if hasattr(product, "name") else "door"
+                try:
+                    _b64d = base64.b64encode(door_bytes).decode("utf-8")
+                    _dr = _oai.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Describe this door: material, color, panel style, glass elements. Max 40 words."},
+                                {"type": "image_url", "image_url": {"url": f"data:{door_mime};base64,{_b64d}", "detail": "low"}},
+                            ],
+                        }],
+                        max_tokens=80,
+                    )
+                    door_desc_text = _dr.choices[0].message.content.strip()
+                    print(f"  🚪 Door description: {door_desc_text[:80]}")
+                except Exception as _de:
+                    print(f"  ⚠️ GPT-4o door describe failed: {_de}")
+
+                # Prepare room as square RGBA PNG (gpt-image-1 needs RGBA PNG for edit)
+                _room_pil = PILImage.open(BytesIO(room_bytes)).convert("RGBA")
+                _sz = max(_room_pil.size)
+                _sq = PILImage.new("RGBA", (_sz, _sz), (255, 255, 255, 255))
+                _ox = (_sz - _room_pil.size[0]) // 2
+                _oy = (_sz - _room_pil.size[1]) // 2
+                _sq.paste(_room_pil, (_ox, _oy))
+                _sq_buf = BytesIO()
+                _sq.save(_sq_buf, format="PNG")
+                _sq_buf.seek(0)
+
+                _oai_prompt = (
+                    f"This is a real room photo. "
+                    f"Find the existing door and replace it with this new door: {door_desc_text}. "
+                    f"Remove the old door completely — erase its frame, arch, and all decorative elements. "
+                    f"Install the new door in exactly the same wall opening. "
+                    f"The door bottom must touch the floor. "
+                    f"Keep walls, floor, carpet, curtains, and all other objects completely unchanged. "
+                    f"The new door must look naturally built into the wall, not overlaid."
+                )
+
+                _edit_resp = _oai.images.edit(
+                    model="gpt-image-1",
+                    image=("room.png", _sq_buf, "image/png"),
+                    prompt=_oai_prompt,
+                    size="1024x1024",
+                )
+                _img_b64 = _edit_resp.data[0].b64_json
+                final_img = PILImage.open(BytesIO(base64.b64decode(_img_b64))).convert("RGB")
+                model_used = "gpt-image-1"
+                print(f"  ✅ gpt-image-1 succeeded: {final_img.size}")
+            except Exception as _oai_err:
+                last_error = str(_oai_err)
+                print(f"  ❌ gpt-image-1 failed: {str(_oai_err)[:200]}")
+
+        # ── Fallback 2: DALL-E 3 via visualize_door_in_room ─────────────────
+        if not final_img:
+            print("  ⚠️ gpt-image-1 failed. Trying DALL-E 3 (visualize_door_in_room)...")
+            try:
+                from .ai_utils import visualize_door_in_room as _dalle_fn
+                _dalle_fn(product, room_image_path, result_image_path)
+                print(f"  ✅ DALL-E 3 succeeded → {result_image_path}")
+                save_visualization_metadata(result_image_path, {
+                    "pipeline": {
+                        "version": "gemini_direct_v3",
+                        "image_edit_engine": "DALL-E 3",
+                        "mode": "dalle3_generate_fallback",
+                        "model": "dall-e-3",
+                        "post_processed": False,
+                    }
+                })
+                return result_image_path
+            except Exception as _d3_err:
+                raise ValueError(
+                    f"Barcha AI provayderlar muvaffaqiyatsiz bo'ldi. "
+                    f"Gemini: {last_error[:100]} | "
+                    f"DALL-E 3: {str(_d3_err)[:100]}"
+                )
+
+        # ── Restore original aspect-ratio ─────────────────────────────────────
         result_w, result_h = final_img.size
         target_ratio = w_orig / h_orig
         result_ratio = result_w / result_h
@@ -2080,7 +2169,7 @@ class AIService:
             "generation_prompt": edit_prompt,
             "pipeline": {
                 "version": "gemini_direct_v3",
-                "image_edit_engine": "Gemini",
+                "image_edit_engine": model_used,
                 "mode": "gemini_direct_edit",
                 "model": model_used,
                 "post_processed": False,

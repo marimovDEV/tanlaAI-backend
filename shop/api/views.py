@@ -114,11 +114,18 @@ def run_api_ai_background(
                 from ..notifications import NotificationService
                 import datetime
                 company_name = product.company.name if product.company else "Tanla AI"
+                user_details = f"{user.first_name or ''} {user.last_name or ''}".strip()
+                if user.username:
+                    user_details += f" (@{user.username})"
+                user_details = user_details or "Noma'lum"
+
                 caption = (
-                    f"🆔 User: {user.id}\n"
-                    f"🏢 Company: {company_name}\n"
-                    f"🕒 Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-                    f"🚪 Product: {product.name}\n\n"
+                    f"🆔 User ID: {user.id}\n"
+                    f"👤 Mijoz: {user_details}\n"
+                    f"🏢 Kompaniya: {company_name}\n"
+                    f"🕒 Vaqt: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                    f"🚪 Eshik: {product.name} (ID: {product.id})\n"
+                    f"🔗 Havola: https://tanla-ai.ardentsoft.uz/product/{product.id}\n\n"
                     f"#tanlaai #result"
                 )
                 file_ids = NotificationService.send_media_group_to_telegram(

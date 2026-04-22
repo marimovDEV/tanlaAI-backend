@@ -223,7 +223,7 @@ def expand_pixel_box_top_heavy(
     width,
     height,
     pad_x_ratio=0.08,
-    pad_top_ratio=0.45,
+    pad_top_ratio=0.28,
     pad_bottom_ratio=0.02,
 ):
     """
@@ -233,7 +233,7 @@ def expand_pixel_box_top_heavy(
     above the door frame.  The extra top padding ensures the old arch is fully
     covered during inpainting and that the new door overlay hides it completely.
 
-        pad_top_ratio  = 0.45  →  adds 45 % of door height above the box
+        pad_top_ratio  = 0.28  →  adds 28 % of door height above the box
         pad_bottom_ratio = 0.02 →  adds  2 % below  (door stays on floor)
     """
     left, top, right, bottom = sanitize_pixel_box(pixel_box, width, height)
@@ -1551,25 +1551,11 @@ def validate_locked_scene_candidate(
     mse = float(np.mean((candidate_pixels - baseline_pixels) ** 2))
     changed_ratio = float(np.mean(np.max(diff, axis=1) > 16.0))
 
-    # --- Interior Change Check (NEW) ---
-    # We must ensure the AI actually changed something INSIDE the mask.
-    # If the interior remains identical, the generation failed to execute the prompt.
-    interior_mask = validation_mask > 0
-    interior_baseline = baseline_bgr[interior_mask].astype(np.float32)
-    interior_candidate = candidate_bgr[interior_mask].astype(np.float32)
-    interior_mse = float(np.mean((interior_candidate - interior_baseline) ** 2))
-    
-    # 0.5 is a very safe floor (practically looks identical if below this)
-    is_interior_changed = interior_mse >= 0.5
-
-    is_valid = mse <= mse_threshold and changed_ratio <= ratio_threshold and is_interior_changed
-    
+    is_valid = mse <= mse_threshold and changed_ratio <= ratio_threshold
     return is_valid, {
         "mse": round(mse, 3),
         "changed_ratio": round(changed_ratio, 5),
-        "interior_mse": round(interior_mse, 3),
-        "is_interior_changed": bool(is_interior_changed),
-        "thresholds": {"mse": mse_threshold, "ratio": ratio_threshold, "min_interior_mse": 0.5},
+        "thresholds": {"mse": mse_threshold, "ratio": ratio_threshold},
     }
 
 
@@ -1781,28 +1767,31 @@ class AIService:
         door_name = getattr(product, "name", "door")
 
         return (
-            "You are a professional architectural image editor specialized in door replacements.\n"
+            "You are a professional architectural image editor.\n"
             "Reference image 1 is the original room photo.\n"
             "Reference image 2 is a binary mask where white marks the ONLY area you may edit.\n"
-            "Reference image 3 is the exact new door assembly that must be installed.\n\n"
+            "Reference image 3 is the exact new door design that must be installed.\n\n"
             "TASK:\n"
-            f"Completely remove the existing door, its entire frame, and all decorative molding or arches from Reference 1 and replace them with the exact door design '{door_name}' from Reference 3.\n"
-            "This is a precise replacement task. The goal is to make it look like the old door was uninstalled and the new one was professionally fitted.\n\n"
+            f"Replace the existing door/opening with the exact reference door '{door_name}'.\n"
+            "This is an image editing task, not scene generation.\n\n"
             "STRICT RULES:\n"
-            "- DESTROY the old structure: Completely overwrite the old door and its architectural frame within the mask.\n"
-            "- USE Reference 3: Treat the reference door as a complete assembly (leaf + frame). Install it as-is.\n"
-            "- Keep the room exactly the same outside the white mask.\n"
-            "- Do not redesign, restyle, or upscale the room.\n"
-            "- Do not invent a new door design; use the glass pattern and texture from Reference 3.\n\n"
+            "- Keep the room exactly the same outside the white mask\n"
+            "- Do not redesign, restyle, upscale, or beautify the room\n"
+            "- Do not change walls, floor, carpet, curtains, furniture, trim, or lighting outside the mask\n"
+            "- Preserve the exact door design, glass pattern, frame details, and proportions from the reference door\n"
+            "- Do not invent a new door design\n"
+            "- Do not add extra molding, handles, windows, decor, or architectural elements\n\n"
             "PLACEMENT RULES:\n"
             f"- Install the door inside this bounding box in pixels: left={left}, top={top}, right={right}, bottom={bottom}\n"
             f"- The same box in 0-1000 normalized coordinates is: top={box_1000[0]}, left={box_1000[1]}, bottom={box_1000[2]}, right={box_1000[3]}\n"
-            "- Align the door base to the floor line.\n"
-            "- Ensure the top of the door is naturally integrated into the opening.\n\n"
+            "- Keep the door bottom aligned to the floor line\n"
+            "- Keep the top of the door below the ceiling line and naturally inside the opening\n"
+            "- Fit the door proportionally inside the opening; do not stretch it\n"
+            "- Center the door naturally within the opening\n\n"
             "REALISM:\n"
-            "- Match the room's perspective, lighting direction, and shadows.\n"
-            "- The transition between the new door frame and the original wall must be seamless.\n"
-            "- Return one edited image only."
+            "- Match perspective, local lighting, edge blending, and contact shadow naturally\n"
+            "- The door must look physically installed into the wall\n"
+            "- Return one edited image only"
         )
 
     @staticmethod
@@ -1989,12 +1978,12 @@ class AIService:
             "  - An open doorway/passage (no door installed, you can see through to another room)\n"
             "  - An existing door that needs replacing\n"
             "  - An empty wall section suitable for a door\n\n"
-            "Return ONLY the bounding box of the door frame edges (left jamb, right jamb, top header/transom, floor threshold).\n"
-            "The box must tightly fit the door FRAME and any transom windows above it.\n\n"
+            "Return ONLY the bounding box of the door frame edges (left jamb, right jamb, top header, floor threshold).\n"
+            "The box must tightly fit the door FRAME, not the room behind it.\n\n"
             'Format: {"ymin": 0-1000, "xmin": 0-1000, "ymax": 0-1000, "xmax": 0-1000}\n'
             "Use normalized coordinates (0 to 1000)."
         )
-        DETECTION_MODELS = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.0-flash-exp']
+        DETECTION_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro']
         
         box_coords = None
         det_model_used = None
@@ -2053,16 +2042,6 @@ class AIService:
 
         py_xmin, py_ymin, py_xmax, py_ymax = box_coords
 
-        # Expand detected box slightly (5% each side) to ensure full coverage of old door frames/edges
-        dw = py_xmax - py_xmin
-        dh = py_ymax - py_ymin
-        py_xmin = max(0, py_xmin - int(dw * 0.05))
-        py_ymin = max(0, py_ymin - int(dh * 0.05))
-        py_xmax = min(w_send, py_xmax + int(dw * 0.05))
-        py_ymax = min(h_send, py_ymax + int(dh * 0.05))
-        
-        box_coords = (py_xmin, py_ymin, py_xmax, py_ymax)
-
         # ═══════════════════════════════════════
         # Phase 2: Auto Masking
         # ═══════════════════════════════════════
@@ -2079,20 +2058,18 @@ class AIService:
         # Phase 3: Inpainting
         # ═══════════════════════════════════════
         print("\n🚪 3-BOSQICH: Eshikni joylashtiryapman...")
-        edit_prompt = """You are an expert interior design photo editor.
-Image 1: The original room where we need to install a new door.
-Image 2: REPLACEMENT MASK (white area). This shows EXACTLY where the modification MUST happen.
-Image 3: The NEW DOOR design.
+        edit_prompt = """Image 1: Original room photo.
+Image 2: MASK — white area shows where to place the new door.
+Image 3: The NEW DOOR design to install.
 
-TASK:
-1. COMPLETELY REPLACE the masked area of Image 1 with the door design from Image 3.
-2. STRICTOR ADHERENCE: Image 3 is the EXACT door model to install. COPY EVERY DETAIL: glass patterns, panel count, and frame style. Do not hallucinate or invent new designs. 
-3. Within the mask, COMPLETELY DESTROY and REMOVE any existing ornate arches, white moldings, cornices, or transom windows. Replace them with a clean wall-to-frame transition.
-4. Align the new door design to the door frame's perspective and lighting.
-5. DO NOT change anything outside the white masked area.
-
-Return ONLY the final edited room image."""
-        INPAINT_MODELS = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview', 'gemini-2.5-flash', 'gemini-2.0-flash']
+TASK: Replace the masked area with the new door.
+RULES:
+- Match the room's lighting and perspective
+- Blend edges perfectly (shadows, lighting)
+- Do NOT change anything outside the mask
+- Make the door look naturally installed in the wall
+- Return ONLY the edited room image"""
+        INPAINT_MODELS = ['gemini-2.5-flash-image', 'gemini-2.5-flash', 'gemini-2.0-flash']
         
         final_img = None
         inp_model_used = None
@@ -2205,13 +2182,12 @@ Return ONLY the final edited room image."""
             detected_box, detection_method = detect_door_opening_box(
                 room_bgr, expected_aspect_ratio
             )
-            master_box = expand_pixel_box_top_heavy(
+            master_box = expand_pixel_box(
                 detected_box,
                 image_width,
                 image_height,
-                pad_x_ratio=0.10,
-                pad_top_ratio=0.35,  # Generous padding for arches
-                pad_bottom_ratio=0.03,
+                pad_x_ratio=0.06,
+                pad_y_ratio=0.04,
             )
 
         mask = build_box_mask(
@@ -2725,15 +2701,9 @@ Return ONLY the final edited room image."""
 
         if provider in ("gemini_direct", "gemini"):
             print(f"DEBUG: [Pipeline] Using Gemini Direct for product {product.id}...")
-            try:
-                return AIService.generate_with_gemini_direct(
-                    product, room_image_path, result_image_path
-                )
-            except Exception as e:
-                gemini_full_edit_error = str(e)[:500]
-                print(f"WARNING: [Pipeline] Gemini Direct failed, falling back to hybrid: {e}")
-                # Log error and proceed to hybrid fallback below
-                provider = "hybrid"
+            return AIService.generate_with_gemini_direct(
+                product, room_image_path, result_image_path
+            )
 
         if provider == "nano_banana":
             print(

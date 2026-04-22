@@ -2092,7 +2092,13 @@ TASK:
 5. DO NOT change anything outside the white masked area.
 
 Return ONLY the final edited room image."""
-        INPAINT_MODELS = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview', 'gemini-2.5-flash', 'gemini-2.0-flash']
+        INPAINT_MODELS = [
+            'gemini-2.0-flash-exp',              # Primary — confirmed image output support
+            'gemini-2.0-flash-preview-image-generation',  # Newer image gen model
+            'gemini-2.5-flash-preview-04-17',    # May support image output
+            'gemini-2.5-flash',                  # Fallback
+            'gemini-2.0-flash',                  # Last resort
+        ]
         
         final_img = None
         inp_model_used = None
@@ -2725,9 +2731,14 @@ Return ONLY the final edited room image."""
 
         if provider in ("gemini_direct", "gemini"):
             print(f"DEBUG: [Pipeline] Using Gemini Direct for product {product.id}...")
-            return AIService.generate_with_gemini_direct(
-                product, room_image_path, result_image_path
-            )
+            try:
+                return AIService.generate_with_gemini_direct(
+                    product, room_image_path, result_image_path
+                )
+            except Exception as e:
+                gemini_full_edit_error = str(e)[:500]
+                print(f"WARNING: [Pipeline] Gemini Direct failed, falling back to hybrid: {e}")
+                # Fall through to hybrid pipeline below
 
         if provider == "nano_banana":
             print(

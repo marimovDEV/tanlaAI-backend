@@ -223,7 +223,7 @@ def expand_pixel_box_top_heavy(
     width,
     height,
     pad_x_ratio=0.08,
-    pad_top_ratio=0.28,
+    pad_top_ratio=0.45,
     pad_bottom_ratio=0.02,
 ):
     """
@@ -233,7 +233,7 @@ def expand_pixel_box_top_heavy(
     above the door frame.  The extra top padding ensures the old arch is fully
     covered during inpainting and that the new door overlay hides it completely.
 
-        pad_top_ratio  = 0.28  →  adds 28 % of door height above the box
+        pad_top_ratio  = 0.45  →  adds 45 % of door height above the box
         pad_bottom_ratio = 0.02 →  adds  2 % below  (door stays on floor)
     """
     left, top, right, bottom = sanitize_pixel_box(pixel_box, width, height)
@@ -1989,8 +1989,8 @@ class AIService:
             "  - An open doorway/passage (no door installed, you can see through to another room)\n"
             "  - An existing door that needs replacing\n"
             "  - An empty wall section suitable for a door\n\n"
-            "Return ONLY the bounding box of the door frame edges (left jamb, right jamb, top header, floor threshold).\n"
-            "The box must tightly fit the door FRAME, not the room behind it.\n\n"
+            "Return ONLY the bounding box of the door frame edges (left jamb, right jamb, top header/transom, floor threshold).\n"
+            "The box must tightly fit the door FRAME and any transom windows above it.\n\n"
             'Format: {"ymin": 0-1000, "xmin": 0-1000, "ymax": 0-1000, "xmax": 0-1000}\n'
             "Use normalized coordinates (0 to 1000)."
         )
@@ -2085,10 +2085,10 @@ Image 2: REPLACEMENT MASK (white area). This shows EXACTLY where the modificatio
 Image 3: The NEW DOOR design.
 
 TASK:
-1. COMPLETELY REPLACE the pixels in the masked area of Image 1 with the door design from Image 3.
-2. The old door in Image 1 MUST be entirely covered and hidden.
-3. Align the new door design to the door frame's perspective and lighting.
-4. Ensure the shadows around the new frame look natural.
+1. COMPLETELY REPLACE the masked area of Image 1 with the door design from Image 3.
+2. STRICTOR ADHERENCE: Image 3 is the EXACT door model to install. COPY EVERY DETAIL: glass patterns, panel count, and frame style. Do not hallucinate or invent new designs. 
+3. Within the mask, COMPLETELY DESTROY and REMOVE any existing ornate arches, white moldings, cornices, or transom windows. Replace them with a clean wall-to-frame transition.
+4. Align the new door design to the door frame's perspective and lighting.
 5. DO NOT change anything outside the white masked area.
 
 Return ONLY the final edited room image."""
@@ -2725,9 +2725,15 @@ Return ONLY the final edited room image."""
 
         if provider in ("gemini_direct", "gemini"):
             print(f"DEBUG: [Pipeline] Using Gemini Direct for product {product.id}...")
-            return AIService.generate_with_gemini_direct(
-                product, room_image_path, result_image_path
-            )
+            try:
+                return AIService.generate_with_gemini_direct(
+                    product, room_image_path, result_image_path
+                )
+            except Exception as e:
+                gemini_full_edit_error = str(e)[:500]
+                print(f"WARNING: [Pipeline] Gemini Direct failed, falling back to hybrid: {e}")
+                # Log error and proceed to hybrid fallback below
+                provider = "hybrid"
 
         if provider == "nano_banana":
             print(

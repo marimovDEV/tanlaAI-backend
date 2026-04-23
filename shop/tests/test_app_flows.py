@@ -105,8 +105,9 @@ class AppFlowTests(TestCase):
         lead_response = self.client.post('/api/v1/leads/', {
             'product': product.id,
             'lead_type': 'measurement',
-            'message': 'Ertaga o‘lchov olish mumkinmi?',
+            'message': 'Ertaga o\'lchov olish mumkinmi?',
             'phone': '+998901234567',
+            'address_text': 'Toshkent, Chilonzor tumani',
         })
         self.assertEqual(lead_response.status_code, 201)
         self.assertTrue(LeadRequest.objects.filter(user=viewer, product=product, company=product.company).exists())

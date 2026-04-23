@@ -942,16 +942,6 @@ class CompanyViewSet(viewsets.ModelViewSet):
             serializer = self.get_serializer(company)
             return Response(serializer.data)
 
-        # PATCH/PUT — kompaniya mavjud bo'lishi shart, yo'q bo'lsa 404
-        if request.method in ("PATCH", "PUT") and not company:
-            return Response(
-                {"error": "Company not found"}, status=status.HTTP_404_NOT_FOUND
-            )
-
-        # Agar PATCH/PUT bo'lsa — faqat kompaniya egasi o'zgartira oladi
-        if request.method in ("PATCH", "PUT") and company:
-            ensure_company_owner(request, company)
-
         partial = request.method == "PATCH"
         serializer = self.get_serializer(company, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)

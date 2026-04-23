@@ -21,7 +21,7 @@ class ModelTests(TestCase):
         subscription, created = Subscription.objects.get_or_create(company=company)
         
         self.assertEqual(subscription.plan, 'free')
-        self.assertEqual(subscription.max_products, 30)  # Model default is 30
+        self.assertEqual(subscription.max_products, 10)
         self.assertEqual(subscription.ai_generations_limit, 50)
         
         # Update plan

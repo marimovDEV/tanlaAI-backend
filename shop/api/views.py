@@ -163,6 +163,10 @@ def run_api_ai_background(
             from django.core.cache import cache
             cache.set(f"ai_job_user_{tg_user_id}_req_{request_id}", {"status": "done", "ai_result_id": ai_result.id if ai_result else None}, timeout=3600)
             
+            # Add global lookup for the download endpoint (which lacks auth headers)
+            if request_id and ai_result:
+                cache.set(f"ai_res_uuid_to_id_{request_id}", ai_result.id, timeout=3600)
+            
         logger.info(
             f"DEBUG: [AI Service] Background task COMPLETED for product {product_id}"
         )
@@ -1135,9 +1139,25 @@ class AIResultViewSet(viewsets.ModelViewSet):
         from django.http import FileResponse
         import os
         from django.shortcuts import get_object_or_404
+        from django.core.cache import cache
         from ..models import AIResult
         
-        ai_result = get_object_or_404(AIResult, pk=pk)
+        # Try to resolve UUID to real ID via cache first
+        real_id = cache.get(f"ai_res_uuid_to_id_{pk}")
+        lookup_id = real_id if real_id else pk
+        
+        try:
+            # 1. Primary lookup (Int ID or direct UUID if model changed)
+            ai_result = AIResult.objects.filter(pk=lookup_id).first()
+            
+            # 2. Fallback: Lookup by UUID in filename (for old results or cache misses)
+            if not ai_result and len(str(pk)) > 30: # looks like a UUID
+                ai_result = AIResult.objects.filter(image__icontains=str(pk)).first()
+                
+            if not ai_result:
+                return Response({"error": "Result not found"}, status=404)
+        except (ValueError, TypeError):
+             return Response({"error": "Invalid result ID format"}, status=400)
         if not ai_result.image:
              return Response({"error": "Image not found"}, status=404)
         

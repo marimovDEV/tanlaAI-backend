@@ -892,7 +892,11 @@ class CompanyViewSet(viewsets.ModelViewSet):
             raise ValidationError({"detail": "You already have a company profile."})
 
         # Create company
-        company = serializer.save(user=tg_user)
+        try:
+            company = serializer.save(user=tg_user)
+        except Exception as e:
+            print(f"DEBUG: Company creation error: {e}")
+            raise
 
         # Upgrade user role to COMPANY automatically
         if tg_user.role != "COMPANY":

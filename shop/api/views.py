@@ -1134,7 +1134,10 @@ class AIResultViewSet(viewsets.ModelViewSet):
         """
         from django.http import FileResponse
         import os
-        ai_result = self.get_object()
+        from django.shortcuts import get_object_or_404
+        from ..models import AIResult
+        
+        ai_result = get_object_or_404(AIResult, pk=pk)
         if not ai_result.image:
              return Response({"error": "Image not found"}, status=404)
         

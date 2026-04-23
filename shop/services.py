@@ -2062,8 +2062,42 @@ class AIService:
         py_ymin = max(0, py_ymin - int(dh * 0.05))
         py_xmax = min(w_send, py_xmax + int(dw * 0.05))
         py_ymax = min(h_send, py_ymax + int(dh * 0.05))
-        
+
         box_coords = (py_xmin, py_ymin, py_xmax, py_ymax)
+
+        # ── Close-up detection ────────────────────────────────────────────────
+        # If the detected door box covers >65% of the image, the photo is a
+        # close-up shot of the door itself (not a wide-angle room shot).
+        # In this mode we replace the ENTIRE image instead of a sub-region.
+        box_area = (py_xmax - py_xmin) * (py_ymax - py_ymin)
+        total_area = w_send * h_send
+        coverage_ratio = box_area / max(total_area, 1)
+        is_closeup = coverage_ratio > 0.65
+        if is_closeup:
+            print(f"  📸 Close-up mode activated (coverage={coverage_ratio:.0%}): using full-image replacement")
+            py_xmin, py_ymin = 0, 0
+            py_xmax, py_ymax = w_send, h_send
+            box_coords = (py_xmin, py_ymin, py_xmax, py_ymax)
+
+        # ── Schematic / CAD drawing detection ────────────────────────────────
+        # Check whether the door product image is a technical drawing rather
+        # than a real photograph.  Heuristic: real photos have high colour
+        # saturation; schematics are mostly grey/white/black lines.
+        def _is_schematic(img_bytes: bytes) -> bool:
+            try:
+                from PIL import Image as _PIL
+                from io import BytesIO as _BytesIO
+                img = _PIL.open(_BytesIO(img_bytes)).convert("HSV")
+                pixels = list(img.getdata())
+                # HSV saturation is channel index 1 (0-255 in PIL HSV)
+                avg_sat = sum(p[1] for p in pixels) / max(len(pixels), 1)
+                return avg_sat < 30  # very low saturation → schematic
+            except Exception:
+                return False
+
+        door_is_schematic = _is_schematic(door_bytes)
+        if door_is_schematic:
+            print("  📐 Door image detected as schematic/CAD drawing — using design-interpretation mode")
 
         # ═══════════════════════════════════════
         # Phase 2: Auto Masking
@@ -2075,13 +2109,64 @@ class AIService:
         mask_buf = BytesIO()
         mask.save(mask_buf, format='PNG')
         mask_bytes = mask_buf.getvalue()
-        print(f"✅ Mask created: {py_xmax-py_xmin}x{py_ymax-py_ymin} pixels")
+        print(f"✅ Mask created: {py_xmax-py_xmin}x{py_ymax-py_ymin} pixels (close-up={is_closeup}, schematic={door_is_schematic})")
 
         # ═══════════════════════════════════════
-        # Phase 3: Inpainting
+        # Phase 3: Inpainting — adaptive prompt
         # ═══════════════════════════════════════
         print("\n🚪 3-BOSQICH: Eshikni joylashtiryapman...")
-        edit_prompt = """You are an expert interior design photo editor.
+
+        if is_closeup and door_is_schematic:
+            # Close-up photo + schematic design
+            edit_prompt = """You are an expert interior design visualizer.
+Image 1: A close-up photo of an existing door (the door fills almost the entire frame).
+Image 2: A white mask showing the area to modify (entire image).
+Image 3: A technical drawing / schematic of a new door design.
+
+TASK:
+1. Study the door STYLE, PROPORTIONS, and PANEL LAYOUT shown in Image 3 (technical drawing).
+2. Render that door design as a PHOTOREALISTIC door, replacing the door in Image 1.
+3. Keep exactly the same camera angle, perspective, lighting, and wall/floor surroundings from Image 1.
+4. The new door must look like a real photograph, NOT a drawing.
+5. Match the frame width, door height-to-width ratio, and panel configuration from the schematic.
+
+Return ONLY the final photorealistic image."""
+
+        elif is_closeup:
+            # Close-up photo, real door product image
+            edit_prompt = """You are an expert interior design photo editor.
+Image 1: A close-up photo of an existing door (the door fills almost the entire frame).
+Image 2: A white mask (entire image — full replacement zone).
+Image 3: The NEW DOOR to install.
+
+TASK:
+1. Replace the entire existing door in Image 1 with the door from Image 3.
+2. Keep EXACTLY the same perspective, camera angle, wall edges, floor, and lighting as Image 1.
+3. The new door must fit perfectly in the existing door frame — match the frame width and height.
+4. Ensure natural shadows and reflections around the new door.
+5. The result must look like a real photograph taken from the same position.
+
+Return ONLY the final edited image."""
+
+        elif door_is_schematic:
+            # Normal wide-angle room photo, but schematic door product
+            edit_prompt = """You are an expert interior design visualizer.
+Image 1: A room photo showing an existing door that needs replacing.
+Image 2: REPLACEMENT MASK (white area = exact door zone to modify).
+Image 3: A technical drawing / schematic of the new door design.
+
+TASK:
+1. Study the door DESIGN from Image 3: note the panel layout, glass sections, frame style, and proportions.
+2. Render that design as a PHOTOREALISTIC door inside the masked area of Image 1.
+3. The rendered door must look like a real door in the room — correct perspective, lighting, and shadows.
+4. DO NOT place the drawing literally; CREATE a photorealistic version of the design.
+5. DO NOT change anything outside the white masked area.
+
+Return ONLY the final edited room image."""
+
+        else:
+            # Normal case: wide-angle room photo + real door photo
+            edit_prompt = """You are an expert interior design photo editor.
 Image 1: The original room where we need to install a new door.
 Image 2: REPLACEMENT MASK (white area). This shows EXACTLY where the modification MUST happen.
 Image 3: The NEW DOOR design.
@@ -2166,6 +2251,9 @@ Return ONLY the final edited room image."""
                 "version": "nano_banana_v2",
                 "mode": "gemini_direct_edit",
                 "annotation_box": list(box_coords),
+                "is_closeup": is_closeup,
+                "coverage_ratio": round(coverage_ratio, 3),
+                "door_is_schematic": door_is_schematic,
                 "post_processed": False
             }
         })

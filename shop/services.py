@@ -2112,12 +2112,60 @@ class AIService:
         print(f"✅ Mask created: {py_xmax-py_xmin}x{py_ymax-py_ymin} pixels (close-up={is_closeup}, schematic={door_is_schematic})")
 
         # ═══════════════════════════════════════
-        # Phase 3: Inpainting — adaptive prompt
+        # Phase 3: Door placement
+        #   • Non-schematic doors → deterministic OpenCV compositing
+        #     (exact pixel-perfect door, no AI distortion)
+        #   • Schematic/CAD drawings  → Gemini inpainting
+        #     (AI must render the technical drawing as a photorealistic door)
         # ═══════════════════════════════════════
         print("\n🚪 3-BOSQICH: Eshikni joylashtiryapman...")
 
-        # ── Shared no-distortion constraint (appended to every prompt) ──────
-        NO_DISTORTION = """
+        final_img = None
+        inp_model_used = None
+        use_ai_inpaint = door_is_schematic  # schematics always need Gemini
+
+        # ── PATH A: Deterministic compositing (real door photo) ──────────────
+        if not use_ai_inpaint:
+            print("  🔩 Deterministik kompozitsiya: eshik AYNAN qo'yilmoqda (AI yo'q)...")
+            try:
+                # Load room at FULL original resolution
+                room_bgr_full = cv2.imread(room_image_path, cv2.IMREAD_COLOR)
+                if room_bgr_full is None:
+                    raise ValueError("cv2.imread returned None for room image")
+
+                # Scale detection box from send-space → original-image space
+                scale_x = w_orig / max(w_send, 1)
+                scale_y = h_orig / max(h_send, 1)
+                orig_box = (
+                    int(py_xmin * scale_x),
+                    int(py_ymin * scale_y),
+                    int(py_xmax * scale_x),
+                    int(py_ymax * scale_y),
+                )
+                print(f"  📐 Scaled box: send={box_coords} → orig={orig_box} (scale {scale_x:.3f}×{scale_y:.3f})")
+
+                # Load the exact door asset with transparent background
+                door_rgba_cv = load_best_door_rgba(product)
+
+                # Composite: resize door to fit box, feathered alpha blend
+                composited_bgr = overlay_door_into_room(room_bgr_full, door_rgba_cv, orig_box)
+
+                # Convert BGR→RGB for PIL
+                composited_rgb = cv2.cvtColor(composited_bgr, cv2.COLOR_BGR2RGB)
+                final_img = PILImage.fromarray(composited_rgb)
+                inp_model_used = "opencv_deterministic"
+                print(f"  ✅ Deterministic compositing done: result={final_img.size}, box={orig_box}")
+
+            except Exception as comp_err:
+                print(f"  ⚠️ Deterministic compositing failed: {comp_err}. Falling back to Gemini...")
+                use_ai_inpaint = True  # fall through to AI path
+
+        # ── PATH B: Gemini AI inpainting (schematic doors OR compositing fallback) ──
+        if use_ai_inpaint:
+            print("  🤖 Gemini inpainting (schematic eshik yoki fallback)...")
+
+            # ── Shared no-distortion constraint (appended to every prompt) ──
+            NO_DISTORTION = """
 CRITICAL DOOR CONSTRAINTS — MUST FOLLOW:
 - Keep the door's original aspect ratio (height-to-width ratio) UNCHANGED.
 - Do NOT stretch, squeeze, squish, or distort the door in any direction.
@@ -2126,9 +2174,8 @@ CRITICAL DOOR CONSTRAINTS — MUST FOLLOW:
 - The door must look exactly as it appears in the reference image, only scaled and perspective-corrected.
 - A real door never changes its shape. Treat this door the same way."""
 
-        if is_closeup and door_is_schematic:
-            # Close-up photo + schematic design
-            edit_prompt = """You are an expert interior design visualizer.
+            if is_closeup and door_is_schematic:
+                edit_prompt = """You are an expert interior design visualizer.
 Image 1: A close-up photo of an existing door (the door fills almost the entire frame).
 Image 2: A white mask showing the area to modify (entire image).
 Image 3: A technical drawing / schematic of a new door design.
@@ -2141,9 +2188,8 @@ TASK:
 5. Match the frame width, door height-to-width ratio, and panel configuration from the schematic.
 """ + NO_DISTORTION + "\nReturn ONLY the final photorealistic image."
 
-        elif is_closeup:
-            # Close-up photo, real door product image
-            edit_prompt = """You are an expert interior design photo editor.
+            elif is_closeup:
+                edit_prompt = """You are an expert interior design photo editor.
 Image 1: A close-up photo of an existing door (the door fills almost the entire frame).
 Image 2: A white mask (entire image — full replacement zone).
 Image 3: The NEW DOOR to install.
@@ -2156,9 +2202,8 @@ TASK:
 5. The result must look like a real photograph taken from the same position.
 """ + NO_DISTORTION + "\nReturn ONLY the final edited image."
 
-        elif door_is_schematic:
-            # Normal wide-angle room photo, but schematic door product
-            edit_prompt = """You are an expert interior design visualizer.
+            elif door_is_schematic:
+                edit_prompt = """You are an expert interior design visualizer.
 Image 1: A room photo showing an existing door that needs replacing.
 Image 2: REPLACEMENT MASK (white area = exact door zone to modify).
 Image 3: A technical drawing / schematic of the new door design.
@@ -2171,9 +2216,9 @@ TASK:
 5. DO NOT change anything outside the white masked area.
 """ + NO_DISTORTION + "\nReturn ONLY the final edited room image."
 
-        else:
-            # Normal case: wide-angle room photo + real door photo
-            edit_prompt = """You are an expert interior design photo editor.
+            else:
+                # Fallback from failed compositing — real door photo
+                edit_prompt = """You are an expert interior design photo editor.
 Image 1: The original room where we need to install a new door.
 Image 2: REPLACEMENT MASK (white area). This shows EXACTLY where the modification MUST happen.
 Image 3: The NEW DOOR design.
@@ -2185,64 +2230,58 @@ TASK:
 4. Ensure the shadows around the new frame look natural.
 5. DO NOT change anything outside the white masked area.
 """ + NO_DISTORTION + "\nReturn ONLY the final edited room image."
-        INPAINT_MODELS = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview', 'gemini-2.5-flash', 'gemini-2.0-flash']
-        
-        final_img = None
-        inp_model_used = None
-        
-        last_inpaint_error = "Noma'lum xato"
-        for client_label, client in clients:
-            if final_img: break
-            for model_name in INPAINT_MODELS:
-                try:
-                    print(f"  🤖 Trying {model_name} for inpainting ({client_label})...")
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=[
-                            types.Part.from_bytes(data=room_bytes, mime_type='image/png'),
-                            types.Part.from_bytes(data=mask_bytes, mime_type='image/png'),
-                            types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
-                            edit_prompt
-                        ],
-                        config=types.GenerateContentConfig(response_modalities=["IMAGE", "TEXT"])
-                    )
-                    
-                    if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
-                        for part in response.candidates[0].content.parts:
-                            if part.inline_data:
-                                final_img = PILImage.open(BytesIO(part.inline_data.data))
-                                inp_model_used = model_name
-                                print(f"  ✅ Inpaint success with {model_name}: {final_img.size}")
-                                break
-                    if final_img: break
-                except Exception as e:
-                    last_inpaint_error = str(e)
-                    print(f"  ❌ {model_name}: {str(e)[:200]}")
-                    if "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
-                        time.sleep(2)
-                        
-        if not final_img:
-            raise ValueError(f"Barcha inpainting modellar muvaffaqiyatsiz bo'ldi. Oxirgi xato: {last_inpaint_error}")
-        
-        # ── Aspect-ratio safe resize ──────────────────────────────────────────
-        # Gemini may return a different aspect ratio. Crop to match original first.
-        result_w, result_h = final_img.size
-        target_ratio = w_orig / h_orig
-        result_ratio = result_w / result_h
-        
-        if abs(target_ratio - result_ratio) > 0.01:
-            if result_ratio > target_ratio:
-                # Too wide → crop sides
-                new_w = int(result_h * target_ratio)
-                left = (result_w - new_w) // 2
-                final_img = final_img.crop((left, 0, left + new_w, result_h))
-            else:
-                # Too tall → crop top/bottom
-                new_h = int(result_w / target_ratio)
-                top = (result_h - new_h) // 2
-                final_img = final_img.crop((0, top, result_w, top + new_h))
-            print(f"  📐 Aspect ratio corrected: {result_w}×{result_h} → {final_img.size[0]}×{final_img.size[1]} (target {w_orig}×{h_orig})")
-            
+
+            INPAINT_MODELS = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview', 'gemini-2.5-flash', 'gemini-2.0-flash']
+            last_inpaint_error = "Noma'lum xato"
+
+            for client_label, client in clients:
+                if final_img: break
+                for model_name in INPAINT_MODELS:
+                    try:
+                        print(f"    🤖 Trying {model_name} ({client_label})...")
+                        response = client.models.generate_content(
+                            model=model_name,
+                            contents=[
+                                types.Part.from_bytes(data=room_bytes, mime_type='image/png'),
+                                types.Part.from_bytes(data=mask_bytes, mime_type='image/png'),
+                                types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
+                                edit_prompt
+                            ],
+                            config=types.GenerateContentConfig(response_modalities=["IMAGE", "TEXT"])
+                        )
+                        if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                            for part in response.candidates[0].content.parts:
+                                if part.inline_data:
+                                    final_img = PILImage.open(BytesIO(part.inline_data.data))
+                                    inp_model_used = model_name
+                                    print(f"    ✅ Inpaint success with {model_name}: {final_img.size}")
+                                    break
+                        if final_img: break
+                    except Exception as e:
+                        last_inpaint_error = str(e)
+                        print(f"    ❌ {model_name}: {str(e)[:200]}")
+                        if "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
+                            time.sleep(2)
+
+            if not final_img:
+                raise ValueError(f"Barcha inpainting modellar muvaffaqiyatsiz bo'ldi. Oxirgi xato: {last_inpaint_error}")
+
+            # ── Aspect-ratio safe resize (Gemini may return different aspect ratio) ──
+            result_w, result_h = final_img.size
+            target_ratio = w_orig / h_orig
+            result_ratio = result_w / result_h
+            if abs(target_ratio - result_ratio) > 0.01:
+                if result_ratio > target_ratio:
+                    new_w = int(result_h * target_ratio)
+                    left_crop = (result_w - new_w) // 2
+                    final_img = final_img.crop((left_crop, 0, left_crop + new_w, result_h))
+                else:
+                    new_h = int(result_w / target_ratio)
+                    top_crop = (result_h - new_h) // 2
+                    final_img = final_img.crop((0, top_crop, result_w, top_crop + new_h))
+                print(f"  📐 Aspect ratio corrected: {result_w}×{result_h} → {final_img.size[0]}×{final_img.size[1]}")
+
+        # ── Final resize to original dimensions ──────────────────────────────
         final_img = final_img.resize((w_orig, h_orig), PILImage.Resampling.LANCZOS)
         final_img.save(result_image_path, format="PNG")
         
@@ -2255,7 +2294,7 @@ TASK:
             },
             "pipeline": {
                 "version": "nano_banana_v2",
-                "mode": "gemini_direct_edit",
+                "mode": "deterministic_composite" if inp_model_used == "opencv_deterministic" else "gemini_direct_edit",
                 "annotation_box": list(box_coords),
                 "is_closeup": is_closeup,
                 "coverage_ratio": round(coverage_ratio, 3),

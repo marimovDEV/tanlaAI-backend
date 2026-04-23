@@ -1789,8 +1789,7 @@ class AIService:
             f"Completely remove the existing door, its entire frame, and all decorative molding or arches from Reference 1 and replace them with the exact door design '{door_name}' from Reference 3.\n"
             "This is a precise replacement task. The goal is to make it look like the old door was uninstalled and the new one was professionally fitted.\n\n"
             "STRICT RULES:\n"
-            "- DESTROY the old structure: Completely overwrite the old door, its entire frame, and ALL decorative glass, molding, or arches within the mask. Do not leave any remnants of the original structure.\n"
-            "- IGNORE original design: Even if the original door has multiple panels or glass windows, replace the whole area with the solid new assembly from Reference 3.\n"
+            "- DESTROY the old structure: Completely overwrite the old door and its architectural frame within the mask.\n"
             "- USE Reference 3: Treat the reference door as a complete assembly (leaf + frame). Install it as-is.\n"
             "- EXTREMELY IMPORTANT: You MUST preserve the EXACT color, material, wood grain, and glass pattern of the door in Reference 3. DO NOT change its color to white or any other color. The final installed door must match the exact hue and material of Reference 3.\n"
             "- Keep the room exactly the same outside the white mask.\n"
@@ -2062,82 +2061,8 @@ class AIService:
         py_ymin = max(0, py_ymin - int(dh * 0.05))
         py_xmax = min(w_send, py_xmax + int(dw * 0.05))
         py_ymax = min(h_send, py_ymax + int(dh * 0.05))
-
+        
         box_coords = (py_xmin, py_ymin, py_xmax, py_ymax)
-
-        # ── Close-up detection ────────────────────────────────────────────────
-        # If the detected door box covers >65% of the image, the photo is a
-        # close-up shot of the door itself (not a wide-angle room shot).
-        # In this mode we replace the ENTIRE image instead of a sub-region.
-        box_area = (py_xmax - py_xmin) * (py_ymax - py_ymin)
-        total_area = w_send * h_send
-        coverage_ratio = box_area / max(total_area, 1)
-        is_closeup = coverage_ratio > 0.65
-        if is_closeup:
-            print(f"  📸 Close-up mode activated (coverage={coverage_ratio:.0%}): using full-image replacement")
-            py_xmin, py_ymin = 0, 0
-            py_xmax, py_ymax = w_send, h_send
-            box_coords = (py_xmin, py_ymin, py_xmax, py_ymax)
-
-        # ── Schematic / CAD drawing detection ────────────────────────────────
-        # Check whether the door product image is a technical drawing rather
-        # than a real photograph.  Heuristic: real photos have high colour
-        # saturation; schematics are mostly grey/white/black lines.
-        def _is_schematic(img_bytes: bytes) -> bool:
-            """
-            Schematic/CAD chizmasini aniqlash.
-            Haqiqiy eshik rasmlari (oq bo'lsa ham) NOTO'G'RI aniqlanmasligi uchun:
-            - Alpha channel bor → transparent fon → haqiqiy mahsulot rasmi → False
-            - Oq piksellar > 60% VA qora piksellar > 3% → schematic (oq fon + qora chiziqlar)
-            - Faqat past saturation yetarli emas (oq eshiklar ham past saturationga ega)
-            """
-            try:
-                from PIL import Image as _PIL
-                from io import BytesIO as _BytesIO
-                img = _PIL.open(_BytesIO(img_bytes))
-
-                # Alpha channel → haqiqiy mahsulot rasmi, schematic emas
-                if img.mode in ('RGBA', 'LA') or (
-                    img.mode == 'P' and 'transparency' in img.info
-                ):
-                    return False
-
-                # RGB sifatida tahlil qilish
-                rgb = img.convert("RGB")
-                pixels = list(rgb.getdata())
-                n = max(len(pixels), 1)
-
-                # Oq piksellar (r>220, g>220, b>220) va qora piksellar (r<35, g<35, b<35)
-                near_white = sum(1 for r, g, b in pixels if r > 220 and g > 220 and b > 220)
-                near_black = sum(1 for r, g, b in pixels if r < 35  and g < 35  and b < 35)
-                white_ratio = near_white / n
-                black_ratio = near_black / n
-
-                # Schematic: oq fon (>60%) + qora chiziqlar (>3%)
-                # Haqiqiy oq eshik: oq piksellar ko'p, lekin qora piksellar oz
-                is_sch = white_ratio > 0.60 and black_ratio > 0.03
-                print(f"  🔍 Schematic check: white={white_ratio:.0%}, black={black_ratio:.0%} → {'schematic' if is_sch else 'haqiqiy eshik'}")
-                return is_sch
-            except Exception:
-                return False
-
-        door_is_schematic = _is_schematic(door_bytes)
-        # Agar mahsulotda image_no_bg (transparent fon) mavjud bo'lsa →
-        # bu haqiqiy mahsulot rasmi, hech qachon schematic emas.
-        # (Transparent RGBA → schematic detection noto'g'ri positive beradi)
-        try:
-            from PIL import Image as _PILcheck
-            from io import BytesIO as _BIOcheck
-            _chk = _PILcheck.open(_BIOcheck(door_bytes))
-            if _chk.mode in ('RGBA', 'LA') or (
-                _chk.mode == 'P' and 'transparency' in _chk.info
-            ):
-                door_is_schematic = False
-                print("  🔍 Alpha channel aniqlandi → schematic emas (haqiqiy mahsulot rasmi)")
-        except Exception:
-            pass
-        if door_is_schematic:
-            print("  📐 Door image detected as schematic/CAD drawing — using design-interpretation mode")
 
         # ═══════════════════════════════════════
         # Phase 2: Auto Masking
@@ -2149,191 +2074,88 @@ class AIService:
         mask_buf = BytesIO()
         mask.save(mask_buf, format='PNG')
         mask_bytes = mask_buf.getvalue()
-        print(f"✅ Mask created: {py_xmax-py_xmin}x{py_ymax-py_ymin} pixels (close-up={is_closeup}, schematic={door_is_schematic})")
+        print(f"✅ Mask created: {py_xmax-py_xmin}x{py_ymax-py_ymin} pixels")
 
         # ═══════════════════════════════════════
-        # Phase 3: Door placement
-        #   • Haqiqiy eshik rasmi  → deterministic OpenCV composite
-        #     (aynan o'sha eshik, AI yo'q, deformatsiya yo'q)
-        #   • Schematic/CAD chizma → Gemini inpainting
-        #     (AI chizmani photorealistic eshikka aylantiradi)
+        # Phase 3: Inpainting
         # ═══════════════════════════════════════
         print("\n🚪 3-BOSQICH: Eshikni joylashtiryapman...")
+        edit_prompt = """You are an expert interior design photo editor.
+Image 1: The original room where we need to install a new door.
+Image 2: REPLACEMENT MASK (white area). This shows EXACTLY where the modification MUST happen.
+Image 3: The NEW DOOR design.
 
+TASK:
+1. COMPLETELY REPLACE the pixels in the masked area of Image 1 with the door design from Image 3.
+2. The old door in Image 1 MUST be entirely covered and hidden.
+3. Align the new door design to the door frame's perspective and lighting.
+4. Ensure the shadows around the new frame look natural.
+5. DO NOT change anything outside the white masked area.
+
+Return ONLY the final edited room image."""
+        INPAINT_MODELS = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview', 'gemini-2.5-flash', 'gemini-2.0-flash']
+        
         final_img = None
         inp_model_used = None
-        edit_prompt = None               # faqat AI path'da to'ldiriladi
-        use_ai_inpaint = door_is_schematic   # schematic → har doim Gemini
-
-        # ── PATH A: Deterministik composite (haqiqiy eshik foto) ─────────────
-        if not use_ai_inpaint:
-            print("  🔩 Deterministik kompozitsiya: eshik AYNAN qo'yilmoqda (AI yo'q)...")
-            try:
-                # Xonani to'liq original o'lchamda yuklash
-                room_bgr_full = cv2.imread(room_image_path, cv2.IMREAD_COLOR)
-                if room_bgr_full is None:
-                    raise ValueError("cv2.imread returned None for room image")
-
-                # Detection box'ni send-space'dan original-space'ga scale qilish
-                scale_x = w_orig / max(w_send, 1)
-                scale_y = h_orig / max(h_send, 1)
-                orig_box = (
-                    int(py_xmin * scale_x),
-                    int(py_ymin * scale_y),
-                    int(py_xmax * scale_x),
-                    int(py_ymax * scale_y),
-                )
-                print(f"  📐 Box scale: send={box_coords} → orig={orig_box} ({scale_x:.2f}×{scale_y:.2f})")
-
-                # Eshikni background'siz RGBA sifatida yuklash
-                door_rgba_cv = load_best_door_rgba(product)
-
-                # OpenCV composite: aspect ratio saqlagan holda o'lchab joylashtirish
-                composited_bgr = overlay_door_into_room(room_bgr_full, door_rgba_cv, orig_box)
-
-                # BGR → RGB → PIL
-                composited_rgb = cv2.cvtColor(composited_bgr, cv2.COLOR_BGR2RGB)
-                final_img = PILImage.fromarray(composited_rgb)
-                inp_model_used = "opencv_deterministic"
-                print(f"  ✅ Deterministik kompozitsiya tayyor: {final_img.size}, box={orig_box}")
-
-            except Exception as comp_err:
-                print(f"  ⚠️ Deterministik kompozitsiya xato: {comp_err} — Gemini'ga o'tilmoqda...")
-                use_ai_inpaint = True
-
-        # ── PATH B: Gemini AI inpainting (schematic yoki fallback) ───────────
-        if use_ai_inpaint:
-            print("  🤖 Gemini inpainting (schematic eshik yoki fallback)...")
-
-            NO_DISTORTION = """
-CRITICAL DOOR CONSTRAINTS — MUST FOLLOW:
-- Keep the door's original aspect ratio (height-to-width ratio) UNCHANGED.
-- Do NOT stretch, squeeze, squish, or distort the door in any direction.
-- Scale the door proportionally: resize based on width OR height, never both independently.
-- If the opening is a different shape than the door, fit the door inside it while preserving proportions — do NOT warp it to fill the gap.
-- The door must look exactly as it appears in the reference image, only scaled and perspective-corrected.
-- A real door never changes its shape. Treat this door the same way."""
-
-            if is_closeup and door_is_schematic:
-                edit_prompt = (
-                    "You are an expert interior design visualizer.\n"
-                    "Image 1: A close-up photo of an existing door (fills almost entire frame).\n"
-                    "Image 2: A white mask (entire image).\n"
-                    "Image 3: A technical drawing / schematic of a new door design.\n\n"
-                    "TASK:\n"
-                    "1. Study the door STYLE, PROPORTIONS, and PANEL LAYOUT in Image 3.\n"
-                    "2. Render that design as a PHOTOREALISTIC door replacing Image 1.\n"
-                    "3. Keep exact camera angle, perspective, lighting, and surroundings.\n"
-                    "4. The result must look like a real photograph, NOT a drawing.\n"
-                    + NO_DISTORTION + "\nReturn ONLY the final photorealistic image."
-                )
-            elif is_closeup:
-                edit_prompt = (
-                    "You are an expert interior design photo editor.\n"
-                    "Image 1: Close-up photo of an existing door.\n"
-                    "Image 2: White mask (entire image — full replacement zone).\n"
-                    "Image 3: The NEW DOOR to install.\n\n"
-                    "TASK:\n"
-                    "1. Replace the existing door with the door from Image 3.\n"
-                    "2. Keep EXACTLY the same perspective, camera angle, walls, floor, lighting.\n"
-                    "3. Ensure natural shadows and reflections.\n"
-                    + NO_DISTORTION + "\nReturn ONLY the final edited image."
-                )
-            elif door_is_schematic:
-                edit_prompt = (
-                    "You are an expert interior design visualizer.\n"
-                    "Image 1: Room photo — existing door needs replacing.\n"
-                    "Image 2: REPLACEMENT MASK (white = door zone).\n"
-                    "Image 3: Technical drawing / schematic of new door design.\n\n"
-                    "TASK:\n"
-                    "1. Study panel layout, glass sections, frame style, proportions from Image 3.\n"
-                    "2. Render a PHOTOREALISTIC door inside the masked area of Image 1.\n"
-                    "3. DO NOT place the drawing literally — CREATE a photorealistic version.\n"
-                    "4. DO NOT change anything outside the masked area.\n"
-                    + NO_DISTORTION + "\nReturn ONLY the final edited room image."
-                )
+        
+        last_inpaint_error = "Noma'lum xato"
+        for client_label, client in clients:
+            if final_img: break
+            for model_name in INPAINT_MODELS:
+                try:
+                    print(f"  🤖 Trying {model_name} for inpainting ({client_label})...")
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=[
+                            types.Part.from_bytes(data=room_bytes, mime_type='image/png'),
+                            types.Part.from_bytes(data=mask_bytes, mime_type='image/png'),
+                            types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
+                            edit_prompt
+                        ],
+                        config=types.GenerateContentConfig(response_modalities=["IMAGE", "TEXT"])
+                    )
+                    
+                    if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                        for part in response.candidates[0].content.parts:
+                            if part.inline_data:
+                                final_img = PILImage.open(BytesIO(part.inline_data.data))
+                                inp_model_used = model_name
+                                print(f"  ✅ Inpaint success with {model_name}: {final_img.size}")
+                                break
+                    if final_img: break
+                except Exception as e:
+                    last_inpaint_error = str(e)
+                    print(f"  ❌ {model_name}: {str(e)[:200]}")
+                    if "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
+                        time.sleep(2)
+                        
+        if not final_img:
+            raise ValueError(f"Barcha inpainting modellar muvaffaqiyatsiz bo'ldi. Oxirgi xato: {last_inpaint_error}")
+        
+        # ── Aspect-ratio safe resize ──────────────────────────────────────────
+        # Gemini may return a different aspect ratio. Crop to match original first.
+        result_w, result_h = final_img.size
+        target_ratio = w_orig / h_orig
+        result_ratio = result_w / result_h
+        
+        if abs(target_ratio - result_ratio) > 0.01:
+            if result_ratio > target_ratio:
+                # Too wide → crop sides
+                new_w = int(result_h * target_ratio)
+                left = (result_w - new_w) // 2
+                final_img = final_img.crop((left, 0, left + new_w, result_h))
             else:
-                # Deterministik yo'l xato berdi, AI fallback
-                edit_prompt = (
-                    "You are an expert interior design photo editor.\n"
-                    "Image 1: The original room.\n"
-                    "Image 2: REPLACEMENT MASK (white = where to place the door).\n"
-                    "Image 3: The NEW DOOR design — use this EXACT door, do not invent a new style.\n\n"
-                    "TASK:\n"
-                    "1. Place the door from Image 3 EXACTLY into the masked area of Image 1.\n"
-                    "2. The old door MUST be fully covered.\n"
-                    "3. Match perspective and lighting naturally.\n"
-                    "4. DO NOT change anything outside the masked area.\n"
-                    + NO_DISTORTION + "\nReturn ONLY the final edited room image."
-                )
-
-            INPAINT_MODELS = [
-                'gemini-2.5-flash-image',
-                'gemini-3.1-flash-image-preview',
-                'gemini-2.5-flash',
-                'gemini-2.0-flash',
-            ]
-            last_inpaint_error = "Noma'lum xato"
-
-            for client_label, client in clients:
-                if final_img:
-                    break
-                for model_name in INPAINT_MODELS:
-                    try:
-                        print(f"    🤖 Trying {model_name} ({client_label})...")
-                        response = client.models.generate_content(
-                            model=model_name,
-                            contents=[
-                                types.Part.from_bytes(data=room_bytes, mime_type='image/png'),
-                                types.Part.from_bytes(data=mask_bytes, mime_type='image/png'),
-                                types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
-                                edit_prompt,
-                            ],
-                            config=types.GenerateContentConfig(response_modalities=["IMAGE", "TEXT"])
-                        )
-                        if (response.candidates
-                                and response.candidates[0].content
-                                and response.candidates[0].content.parts):
-                            for part in response.candidates[0].content.parts:
-                                if part.inline_data:
-                                    final_img = PILImage.open(BytesIO(part.inline_data.data))
-                                    inp_model_used = model_name
-                                    print(f"    ✅ Inpaint muvaffaqiyatli: {model_name} → {final_img.size}")
-                                    break
-                        if final_img:
-                            break
-                    except Exception as e:
-                        last_inpaint_error = str(e)
-                        print(f"    ❌ {model_name}: {str(e)[:200]}")
-                        if "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
-                            time.sleep(2)
-
-            if not final_img:
-                raise ValueError(
-                    f"Barcha inpainting modellar muvaffaqiyatsiz. Oxirgi xato: {last_inpaint_error}"
-                )
-
-            # Gemini boshqa aspect ratio qaytarishi mumkin — crop qilib tuzatish
-            result_w, result_h = final_img.size
-            target_ratio = w_orig / h_orig
-            result_ratio = result_w / result_h
-            if abs(target_ratio - result_ratio) > 0.01:
-                if result_ratio > target_ratio:
-                    new_w = int(result_h * target_ratio)
-                    lc = (result_w - new_w) // 2
-                    final_img = final_img.crop((lc, 0, lc + new_w, result_h))
-                else:
-                    new_h = int(result_w / target_ratio)
-                    tc = (result_h - new_h) // 2
-                    final_img = final_img.crop((0, tc, result_w, tc + new_h))
-                print(f"  📐 Aspect ratio tuzatildi: {result_w}×{result_h} → {final_img.size}")
-
-        # ── Natijani original o'lchamga resize qilish va saqlash ─────────────
+                # Too tall → crop top/bottom
+                new_h = int(result_w / target_ratio)
+                top = (result_h - new_h) // 2
+                final_img = final_img.crop((0, top, result_w, top + new_h))
+            print(f"  📐 Aspect ratio corrected: {result_w}×{result_h} → {final_img.size[0]}×{final_img.size[1]} (target {w_orig}×{h_orig})")
+            
         final_img = final_img.resize((w_orig, h_orig), PILImage.Resampling.LANCZOS)
         final_img.save(result_image_path, format="PNG")
-
+        
         save_visualization_metadata(result_image_path, {
-            "generation_prompt": edit_prompt or "deterministic_opencv",
+            "generation_prompt": edit_prompt,
             "generation_meta": {
                 "engine": "Nano Banana v2",
                 "detection_model": det_model_used,
@@ -2341,12 +2163,9 @@ CRITICAL DOOR CONSTRAINTS — MUST FOLLOW:
             },
             "pipeline": {
                 "version": "nano_banana_v2",
-                "mode": "deterministic_composite" if inp_model_used == "opencv_deterministic" else "gemini_direct_edit",
+                "mode": "gemini_direct_edit",
                 "annotation_box": list(box_coords),
-                "is_closeup": is_closeup,
-                "coverage_ratio": round(coverage_ratio, 3),
-                "door_is_schematic": door_is_schematic,
-                "post_processed": False,
+                "post_processed": False
             }
         })
         
@@ -2392,7 +2211,7 @@ CRITICAL DOOR CONSTRAINTS — MUST FOLLOW:
                 image_width,
                 image_height,
                 pad_x_ratio=0.10,
-                pad_top_ratio=0.45,  # Generous padding for arches and transoms
+                pad_top_ratio=0.35,  # Generous padding for arches
                 pad_bottom_ratio=0.03,
             )
 
@@ -2987,7 +2806,7 @@ CRITICAL DOOR CONSTRAINTS — MUST FOLLOW:
             w,
             h,
             pad_x_ratio=0.08,
-            pad_top_ratio=0.40,
+            pad_top_ratio=0.28,
             pad_bottom_ratio=0.02,
         )
         x1, y1, x2, y2 = master_box

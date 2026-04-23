@@ -2116,6 +2116,16 @@ class AIService:
         # ═══════════════════════════════════════
         print("\n🚪 3-BOSQICH: Eshikni joylashtiryapman...")
 
+        # ── Shared no-distortion constraint (appended to every prompt) ──────
+        NO_DISTORTION = """
+CRITICAL DOOR CONSTRAINTS — MUST FOLLOW:
+- Keep the door's original aspect ratio (height-to-width ratio) UNCHANGED.
+- Do NOT stretch, squeeze, squish, or distort the door in any direction.
+- Scale the door proportionally: resize based on width OR height, never both independently.
+- If the opening is a different shape than the door, fit the door inside it while preserving proportions — do NOT warp it to fill the gap.
+- The door must look exactly as it appears in the reference image, only scaled and perspective-corrected.
+- A real door never changes its shape. Treat this door the same way."""
+
         if is_closeup and door_is_schematic:
             # Close-up photo + schematic design
             edit_prompt = """You are an expert interior design visualizer.
@@ -2129,8 +2139,7 @@ TASK:
 3. Keep exactly the same camera angle, perspective, lighting, and wall/floor surroundings from Image 1.
 4. The new door must look like a real photograph, NOT a drawing.
 5. Match the frame width, door height-to-width ratio, and panel configuration from the schematic.
-
-Return ONLY the final photorealistic image."""
+""" + NO_DISTORTION + "\nReturn ONLY the final photorealistic image."
 
         elif is_closeup:
             # Close-up photo, real door product image
@@ -2142,11 +2151,10 @@ Image 3: The NEW DOOR to install.
 TASK:
 1. Replace the entire existing door in Image 1 with the door from Image 3.
 2. Keep EXACTLY the same perspective, camera angle, wall edges, floor, and lighting as Image 1.
-3. The new door must fit perfectly in the existing door frame — match the frame width and height.
+3. The new door must fit proportionally within the existing door frame — do NOT deform its shape.
 4. Ensure natural shadows and reflections around the new door.
 5. The result must look like a real photograph taken from the same position.
-
-Return ONLY the final edited image."""
+""" + NO_DISTORTION + "\nReturn ONLY the final edited image."
 
         elif door_is_schematic:
             # Normal wide-angle room photo, but schematic door product
@@ -2161,8 +2169,7 @@ TASK:
 3. The rendered door must look like a real door in the room — correct perspective, lighting, and shadows.
 4. DO NOT place the drawing literally; CREATE a photorealistic version of the design.
 5. DO NOT change anything outside the white masked area.
-
-Return ONLY the final edited room image."""
+""" + NO_DISTORTION + "\nReturn ONLY the final edited room image."
 
         else:
             # Normal case: wide-angle room photo + real door photo
@@ -2177,8 +2184,7 @@ TASK:
 3. Align the new door design to the door frame's perspective and lighting.
 4. Ensure the shadows around the new frame look natural.
 5. DO NOT change anything outside the white masked area.
-
-Return ONLY the final edited room image."""
+""" + NO_DISTORTION + "\nReturn ONLY the final edited room image."
         INPAINT_MODELS = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview', 'gemini-2.5-flash', 'gemini-2.0-flash']
         
         final_img = None

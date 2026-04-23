@@ -60,6 +60,13 @@ class Company(models.Model):
     instagram_link = models.CharField(max_length=255, blank=True, default='')
     youtube_link = models.CharField(max_length=255, blank=True, default='')
     logo = models.ImageField(upload_to="company_logos/", null=True, blank=True)
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("review", "In Review (Paid)"),
+        ("active", "Active"),
+        ("blocked", "Blocked"),
+    ]
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
     is_active = models.BooleanField(default=True)
     subscription_deadline = models.DateTimeField(null=True, blank=True)
     plan = models.ForeignKey(SubscriptionPlan, null=True, blank=True, on_delete=models.SET_NULL, related_name="companies")
@@ -69,6 +76,8 @@ class Company(models.Model):
     def is_currently_active(self):
         from django.utils import timezone
 
+        if self.status != "active":
+            return False
         if not self.is_active:
             return False
         if self.subscription_deadline and self.subscription_deadline < timezone.now():

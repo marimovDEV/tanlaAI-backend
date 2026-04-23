@@ -516,6 +516,10 @@ class ProductViewSet(viewsets.ModelViewSet):
             raise ValidationError(
                 {"detail": "Create a company profile before adding products."}
             )
+        if company.status != 'active':
+            raise PermissionDenied(
+                "Do'koningiz hali aktivlashtirilmagan. Mahsulot qo'shish uchun avval to'lovni tasdiqlang."
+            )
 
         subscription, _ = Subscription.objects.get_or_create(company=company)
         current_count = company.products.count()
@@ -1459,6 +1463,12 @@ class PaymentViewSet(viewsets.ModelViewSet):
         from ..notifications import NotificationService
 
         payment = serializer.save(company=company)
+        
+        # Update company status to review
+        if company.status == 'pending':
+            company.status = 'review'
+            company.save(update_fields=['status'])
+            
         NotificationService.notify_payment_submitted(payment)
 
 

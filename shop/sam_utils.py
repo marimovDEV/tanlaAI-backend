@@ -97,6 +97,12 @@ class SAMService:
         kernel = np.ones((5, 5), np.uint8)
         holes_mask = cv2.morphologyEx(holes_mask, cv2.MORPH_OPEN, kernel, iterations=1)
         
+        # Bridge gaps between panels (e.g. glass panels in a single door)
+        # Use a dynamic kernel based on image size
+        bridge_size = max(15, int(w * 0.06))
+        bridge_kernel = np.ones((bridge_size, bridge_size), np.uint8)
+        holes_mask = cv2.morphologyEx(holes_mask, cv2.MORPH_CLOSE, bridge_kernel)
+        
         # Find contours of holes
         contours, _ = cv2.findContours(holes_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         

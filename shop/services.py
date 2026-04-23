@@ -1789,7 +1789,8 @@ class AIService:
             f"Completely remove the existing door, its entire frame, and all decorative molding or arches from Reference 1 and replace them with the exact door design '{door_name}' from Reference 3.\n"
             "This is a precise replacement task. The goal is to make it look like the old door was uninstalled and the new one was professionally fitted.\n\n"
             "STRICT RULES:\n"
-            "- DESTROY the old structure: Completely overwrite the old door and its architectural frame within the mask.\n"
+            "- DESTROY the old structure: Completely overwrite the old door, its entire frame, and ALL decorative glass, molding, or arches within the mask. Do not leave any remnants of the original structure.\n"
+            "- IGNORE original design: Even if the original door has multiple panels or glass windows, replace the whole area with the solid new assembly from Reference 3.\n"
             "- USE Reference 3: Treat the reference door as a complete assembly (leaf + frame). Install it as-is.\n"
             "- EXTREMELY IMPORTANT: You MUST preserve the EXACT color, material, wood grain, and glass pattern of the door in Reference 3. DO NOT change its color to white or any other color. The final installed door must match the exact hue and material of Reference 3.\n"
             "- Keep the room exactly the same outside the white mask.\n"
@@ -2211,7 +2212,7 @@ Return ONLY the final edited room image."""
                 image_width,
                 image_height,
                 pad_x_ratio=0.10,
-                pad_top_ratio=0.35,  # Generous padding for arches
+                pad_top_ratio=0.45,  # Generous padding for arches and transoms
                 pad_bottom_ratio=0.03,
             )
 
@@ -2806,7 +2807,7 @@ Return ONLY the final edited room image."""
             w,
             h,
             pad_x_ratio=0.08,
-            pad_top_ratio=0.28,
+            pad_top_ratio=0.40,
             pad_bottom_ratio=0.02,
         )
         x1, y1, x2, y2 = master_box

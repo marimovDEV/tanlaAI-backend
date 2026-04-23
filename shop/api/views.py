@@ -406,6 +406,16 @@ class ProductViewSet(viewsets.ModelViewSet):
                 | models.Q(description__icontains=search)
             )
 
+        is_wishlisted = self.request.query_params.get("is_wishlisted")
+        if is_wishlisted:
+            is_wishlisted_bool = str(is_wishlisted).lower() in ("true", "1", "yes")
+            if is_wishlisted_bool:
+                tg_user_id = self.request.session.get('tg_user_id')
+                if tg_user_id:
+                    queryset = queryset.filter(wishlist__user_id=tg_user_id)
+                else:
+                    queryset = queryset.none()
+
         return queryset.order_by("-id")
 
     @action(detail=False, methods=["get"])

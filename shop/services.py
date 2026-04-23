@@ -2084,18 +2084,58 @@ class AIService:
         # than a real photograph.  Heuristic: real photos have high colour
         # saturation; schematics are mostly grey/white/black lines.
         def _is_schematic(img_bytes: bytes) -> bool:
+            """
+            Schematic/CAD chizmasini aniqlash.
+            Haqiqiy eshik rasmlari (oq bo'lsa ham) NOTO'G'RI aniqlanmasligi uchun:
+            - Alpha channel bor → transparent fon → haqiqiy mahsulot rasmi → False
+            - Oq piksellar > 60% VA qora piksellar > 3% → schematic (oq fon + qora chiziqlar)
+            - Faqat past saturation yetarli emas (oq eshiklar ham past saturationga ega)
+            """
             try:
                 from PIL import Image as _PIL
                 from io import BytesIO as _BytesIO
-                img = _PIL.open(_BytesIO(img_bytes)).convert("HSV")
-                pixels = list(img.getdata())
-                # HSV saturation is channel index 1 (0-255 in PIL HSV)
-                avg_sat = sum(p[1] for p in pixels) / max(len(pixels), 1)
-                return avg_sat < 30  # very low saturation → schematic
+                img = _PIL.open(_BytesIO(img_bytes))
+
+                # Alpha channel → haqiqiy mahsulot rasmi, schematic emas
+                if img.mode in ('RGBA', 'LA') or (
+                    img.mode == 'P' and 'transparency' in img.info
+                ):
+                    return False
+
+                # RGB sifatida tahlil qilish
+                rgb = img.convert("RGB")
+                pixels = list(rgb.getdata())
+                n = max(len(pixels), 1)
+
+                # Oq piksellar (r>220, g>220, b>220) va qora piksellar (r<35, g<35, b<35)
+                near_white = sum(1 for r, g, b in pixels if r > 220 and g > 220 and b > 220)
+                near_black = sum(1 for r, g, b in pixels if r < 35  and g < 35  and b < 35)
+                white_ratio = near_white / n
+                black_ratio = near_black / n
+
+                # Schematic: oq fon (>60%) + qora chiziqlar (>3%)
+                # Haqiqiy oq eshik: oq piksellar ko'p, lekin qora piksellar oz
+                is_sch = white_ratio > 0.60 and black_ratio > 0.03
+                print(f"  🔍 Schematic check: white={white_ratio:.0%}, black={black_ratio:.0%} → {'schematic' if is_sch else 'haqiqiy eshik'}")
+                return is_sch
             except Exception:
                 return False
 
         door_is_schematic = _is_schematic(door_bytes)
+        # Agar mahsulotda image_no_bg (transparent fon) mavjud bo'lsa →
+        # bu haqiqiy mahsulot rasmi, hech qachon schematic emas.
+        # (Transparent RGBA → schematic detection noto'g'ri positive beradi)
+        try:
+            from PIL import Image as _PILcheck
+            from io import BytesIO as _BIOcheck
+            _chk = _PILcheck.open(_BIOcheck(door_bytes))
+            if _chk.mode in ('RGBA', 'LA') or (
+                _chk.mode == 'P' and 'transparency' in _chk.info
+            ):
+                door_is_schematic = False
+                print("  🔍 Alpha channel aniqlandi → schematic emas (haqiqiy mahsulot rasmi)")
+        except Exception:
+            pass
         if door_is_schematic:
             print("  📐 Door image detected as schematic/CAD drawing — using design-interpretation mode")
 

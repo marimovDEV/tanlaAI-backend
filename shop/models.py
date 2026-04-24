@@ -72,6 +72,7 @@ class Company(models.Model):
     subscription_deadline = models.DateTimeField(null=True, blank=True)
     plan = models.ForeignKey(SubscriptionPlan, null=True, blank=True, on_delete=models.SET_NULL, related_name="companies")
     created_at = models.DateTimeField(auto_now_add=True)
+    is_vip = models.BooleanField(default=False, help_text="VIP partners ignore subscription deadlines.")
 
     @property
     def is_currently_active(self):
@@ -79,6 +80,8 @@ class Company(models.Model):
 
         if self.status != "active":
             return False
+        if self.is_vip:
+            return True
         if not self.is_active:
             return False
         if self.subscription_deadline and self.subscription_deadline < timezone.now():

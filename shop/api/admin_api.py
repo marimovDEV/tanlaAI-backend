@@ -338,6 +338,13 @@ class AdminCompanyViewSet(viewsets.ModelViewSet):
         company.save(update_fields=['is_active'])
         return Response(AdminCompanySerializer(company, context={'request': request}).data)
 
+    @action(detail=True, methods=['post'], url_path='toggle-vip')
+    def toggle_vip(self, request, pk=None):
+        company = self.get_object()
+        company.is_vip = not company.is_vip
+        company.save(update_fields=['is_vip'])
+        return Response(AdminCompanySerializer(company, context={'request': request}).data)
+
     @action(detail=True, methods=['post'], url_path='update-deadline')
     def update_deadline(self, request, pk=None):
         company = self.get_object()

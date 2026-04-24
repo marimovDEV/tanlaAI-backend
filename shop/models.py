@@ -78,12 +78,20 @@ class Company(models.Model):
     def is_currently_active(self):
         from django.utils import timezone
 
-        if self.status != "active":
+        # Blocked is blocked, even for VIP
+        if self.status == "blocked":
             return False
+            
+        # VIP is always active unless blocked
         if self.is_vip:
             return True
+            
+        if self.status != "active":
+            return False
+            
         if not self.is_active:
             return False
+            
         if self.subscription_deadline and self.subscription_deadline < timezone.now():
             return False
         return True

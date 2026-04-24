@@ -943,11 +943,14 @@ class CompanyViewSet(viewsets.ModelViewSet):
         now = timezone.now()
         companies = (
             Company.objects.filter(
-                is_active=True,
-                status='active'
+                ~models.Q(status='blocked')
             ).filter(
                 models.Q(is_vip=True)
-                | models.Q(subscription_deadline__gt=now)
+                | (
+                    models.Q(is_active=True)
+                    & models.Q(status='active')
+                    & models.Q(subscription_deadline__gt=now)
+                )
             ).annotate(
                 converted_leads=models.Count('leads', filter=models.Q(leads__status='converted')),
                 total_leads=models.Count('leads')

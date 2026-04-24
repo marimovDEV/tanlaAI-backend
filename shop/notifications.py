@@ -301,6 +301,28 @@ class NotificationService:
         if lead.company and lead.company.user and lead.company.user.telegram_id:
              NotificationService.send_telegram_message(message, chat_id=str(lead.company.user.telegram_id), reply_markup=reply_markup)
 
+    @staticmethod
+    def notify_company_created(company):
+        """Admin gets a ping when a new company is created."""
+        owner = company.user
+        owner_name = f"{owner.first_name or ''} {owner.last_name or ''}".strip()
+        
+        message = (
+            "🏢 <b>YANGI KAMPANIYA YARATILDI</b>\n\n"
+            f"🏷️ <b>Nomi:</b> {company.name}\n"
+            f"👤 <b>Egasi:</b> {owner_name}\n"
+            f"📞 <b>Telefon:</b> {company.phone or '—'}\n"
+            f"📍 <b>Manzil:</b> {company.location or '—'}\n\n"
+            "⏳ Status: <b>PENDING</b> (To'lov kutilmoqda)\n"
+        )
+        
+        message += (
+            f"\n🚀 <a href='https://tanla-ai.ardentsoft.uz/adminka/companies/"
+            f"{company.id}'>Admin panelda ko'rish</a>"
+        )
+        
+        NotificationService.send_telegram_message(message)
+
 
     # ── Payment notifications ───────────────────────────────
     # Each of these is called from PaymentViewSet / AdminPaymentViewSet.

@@ -915,10 +915,11 @@ class CompanyViewSet(viewsets.ModelViewSet):
             tg_user.role = "COMPANY"
             tg_user.save(update_fields=["role"])
 
-        # Ensure a default subscription exists
-        from ..models import Subscription
-
         Subscription.objects.get_or_create(company=company)
+
+        # Notify admin
+        from ..notifications import NotificationService
+        NotificationService.notify_company_created(company)
 
     def perform_update(self, serializer):
         ensure_company_owner(self.request, serializer.instance)
@@ -933,10 +934,19 @@ class CompanyViewSet(viewsets.ModelViewSet):
         """
         Returns top companies ranked by the number of successful conversions.
         """
-        companies = Company.objects.filter(is_active=True).annotate(
-            converted_leads=models.Count('leads', filter=models.Q(leads__status='converted')),
-            total_leads=models.Count('leads')
-        ).order_by('-converted_leads', '-total_leads')[:10]
+        now = timezone.now()
+        companies = (
+            Company.objects.filter(
+                is_active=True,
+                status='active'
+            ).filter(
+                models.Q(subscription_deadline__gt=now)
+                | models.Q(subscription_deadline__isnull=True)
+            ).annotate(
+                converted_leads=models.Count('leads', filter=models.Q(leads__status='converted')),
+                total_leads=models.Count('leads')
+            ).order_by('-converted_leads', '-total_leads')[:10]
+        )
         
         data = []
         for c in companies:

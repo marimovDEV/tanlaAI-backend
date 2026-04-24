@@ -4,6 +4,7 @@ import os
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 from django.db import models, transaction
+from django.utils import timezone
 from PIL import Image
 
 
@@ -159,6 +160,7 @@ class Product(models.Model):
         default=3,
         help_text="Necha kunda tayyor bo'ladi (kun)",
     )
+    created_at = models.DateTimeField(default=timezone.now)
 
     def __str__(self):
         return self.name

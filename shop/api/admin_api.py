@@ -187,8 +187,8 @@ class AdminDashboardApiView(views.APIView):
                 'monetization': {
                     'pending_payment': Company.objects.filter(status='pending_payment').count(),
                     'waiting_confirmation': Company.objects.filter(status='waiting_confirmation').count(),
-                    'active': Company.objects.filter(status='active').count(),
-                    'expired': Company.objects.filter(status='expired').count(),
+                    'active': Company.objects.filter(Q(status='active') | Q(is_vip=True)).count(),
+                    'expired': Company.objects.filter(status='expired', is_vip=False).count(),
                 },
                 'growth': growth,
                 'billing': billing,

@@ -1275,18 +1275,22 @@ class AdminBillingApiView(views.APIView):
     def get(self, request):
         self._check_admin(request)
         from ..models import SystemBilling
-        billing = SystemBilling.get_solo()
-        data = {}
-        for field in billing._meta.fields:
-            if field.name not in ["id", "updated_at"]:
-                val = getattr(billing, field.name)
-                # Convert date/decimal to serializable types
-                if hasattr(val, 'isoformat'):
-                    val = val.isoformat() if val else None
-                elif hasattr(val, 'as_tuple'):
-                    val = float(val)
-                data[field.name] = val
-        return Response(data)
+        try:
+            billing = SystemBilling.get_solo()
+            data = {}
+            for field in billing._meta.fields:
+                if field.name not in ["id", "updated_at"]:
+                    val = getattr(billing, field.name)
+                    # Convert date/decimal to serializable types
+                    if hasattr(val, 'isoformat'):
+                        val = val.isoformat() if val else None
+                    elif hasattr(val, 'as_tuple'):
+                        val = float(val)
+                    data[field.name] = val
+            return Response(data)
+        except Exception as e:
+            # Fallback for missing table/migrations
+            return Response({})
 
     def post(self, request):
         self._check_admin(request)

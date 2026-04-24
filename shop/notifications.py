@@ -396,6 +396,25 @@ class NotificationService:
         )
 
     @staticmethod
+    def notify_admin_payment_approved(payment):
+        """Admin gets a ping about the revenue milestone."""
+        from django.db.models import Sum
+        from .models import Payment
+        
+        total_revenue = Payment.objects.filter(status='approved').aggregate(Sum('amount'))['amount__sum'] or 0
+        rev_fmt = f"{float(total_revenue):,.0f}".replace(",", " ")
+        amount_fmt = f"{float(payment.amount):,.0f}".replace(",", " ")
+        
+        message = (
+            "💰 <b>YANGI TO'LOV TASDIQLANDI!</b>\n\n"
+            f"🏢 <b>Kompaniya:</b> {payment.company.name}\n"
+            f"💵 <b>Summa:</b> {amount_fmt} so'm\n"
+            "──────────────────\n"
+            f"📈 <b>Jami daromad:</b> {rev_fmt} so'm ✅"
+        )
+        NotificationService.send_telegram_message(message)
+
+    @staticmethod
     def notify_payment_rejected(payment):
         """Owner gets the rejection reason so they can resubmit."""
         company = payment.company

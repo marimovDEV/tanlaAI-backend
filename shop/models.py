@@ -408,14 +408,23 @@ class Payment(models.Model):
     mutating Subscription in place, because we want an audit trail of every
     payment (amount, screenshot, who approved, when).
     """
+    PAYMENT_TYPES = [
+        ("subscription", "Subscription (Obuna)"),
+        ("lead", "Lead (Lid)"),
+        ("other", "Other (Boshqa)"),
+    ]
+
     STATUS_CHOICES = [
         ("pending", "Pending Review"),
-        ("approved", "Approved"),
+        ("approved", "Approved (Paid)"),
         ("rejected", "Rejected"),
     ]
 
     company = models.ForeignKey(
         Company, on_delete=models.CASCADE, related_name="payments"
+    )
+    payment_type = models.CharField(
+        max_length=20, choices=PAYMENT_TYPES, default="subscription"
     )
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     months = models.PositiveSmallIntegerField(

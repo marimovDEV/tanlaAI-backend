@@ -2,7 +2,7 @@
 Admin-specific API views for the React admin panel.
 All views require Django staff authentication (session-based).
 """
-from django.db.models import Count, Q
+from django.db.models import Count, Q, Sum
 from django.utils import timezone
 from rest_framework import views, viewsets, permissions, status, parsers
 from rest_framework.decorators import action
@@ -120,43 +120,36 @@ class AdminDashboardApiView(views.APIView):
             }
 
             # ── Billing (SaaS cost tracking) ────────────────────────
-            from django.conf import settings as django_settings
+            from ..models import SystemBilling
+            sys_billing = SystemBilling.get_solo()
+
             ai_total_requests = AIResult.objects.count()
             ai_this_month = AIResult.objects.filter(created_at__gte=thirty_days_ago).count()
             ai_today = AIResult.objects.filter(created_at__date=now.date()).count()
-            cost_per_req_usd = float(getattr(django_settings, 'AI_COST_PER_REQUEST_USD', 0.003))
-            usd_to_uzs = float(getattr(django_settings, 'USD_TO_UZS_RATE', 12800))
+            
+            cost_per_req_usd = float(sys_billing.ai_cost_per_request)
+            usd_to_uzs = float(sys_billing.usd_to_uzs_rate)
             cost_per_req_uzs = round(cost_per_req_usd * usd_to_uzs, 2)
-            monthly_budget_uzs = float(getattr(django_settings, 'AI_MONTHLY_BUDGET_UZS', 500000))
+            monthly_budget_uzs = float(sys_billing.ai_monthly_budget_uzs)
 
-            # Server billing (configurable via settings or env)
-            server_due_date = getattr(django_settings, 'SERVER_DUE_DATE', None)
-            server_cost = int(getattr(django_settings, 'SERVER_MONTHLY_COST_UZS', 150000))
-            server_note = getattr(django_settings, 'SERVER_NOTE', 'Ardentsoft VPS')
+            server_due_date = sys_billing.server_due_date
+            server_cost = sys_billing.server_cost
+            server_note = sys_billing.server_note
             server_days_left = None
             if server_due_date:
-                try:
-                    due = dt.datetime.strptime(str(server_due_date), '%Y-%m-%d').date()
-                    server_days_left = (due - now.date()).days
-                except (ValueError, TypeError):
-                    pass
+                server_days_left = (server_due_date - now.date()).days
 
-            # AI billing due date
-            ai_due_date = getattr(django_settings, 'AI_DUE_DATE', None)
+            ai_due_date = sys_billing.ai_due_date
             ai_days_left = None
             if ai_due_date:
-                try:
-                    due = dt.datetime.strptime(str(ai_due_date), '%Y-%m-%d').date()
-                    ai_days_left = (due - now.date()).days
-                except (ValueError, TypeError):
-                    pass
+                ai_days_left = (ai_due_date - now.date()).days
 
             billing = {
-                'server_due_date': server_due_date,
+                'server_due_date': server_due_date.isoformat() if server_due_date else None,
                 'server_cost': server_cost,
                 'server_note': server_note,
                 'server_days_left': server_days_left,
-                'ai_due_date': ai_due_date,
+                'ai_due_date': ai_due_date.isoformat() if ai_due_date else None,
                 'ai_cost_per_request_usd': cost_per_req_usd,
                 'ai_cost_per_request_uzs': cost_per_req_uzs,
                 'usd_to_uzs_rate': usd_to_uzs,
@@ -167,6 +160,47 @@ class AdminDashboardApiView(views.APIView):
                 'ai_cost_today_uzs': round(ai_today * cost_per_req_uzs, 2),
                 'ai_days_left': ai_days_left,
             }
+
+            # ── Financials (Revenue & Profit) ───────────────────────
+            approved_payments = Payment.objects.filter(status='approved')
+            income_today = approved_payments.filter(created_at__date=now.date()).aggregate(Sum('amount'))['amount__sum'] or 0
+            income_month = approved_payments.filter(created_at__month=now.month, created_at__year=now.year).aggregate(Sum('amount'))['amount__sum'] or 0
+            income_total = approved_payments.aggregate(Sum('amount'))['amount__sum'] or 0
+
+            exp_ai_today = billing['ai_cost_today_uzs']
+            exp_ai_month = billing['ai_cost_this_month_uzs']
+            exp_ai_total = billing['ai_cost_total_uzs']
+            
+            exp_server_month = server_cost
+            exp_server_today = round(server_cost / 30, 2)
+            
+            profit_today = float(income_today) - float(exp_ai_today) - float(exp_server_today)
+            profit_month = float(income_month) - float(exp_ai_month) - float(exp_server_month)
+            profit_total = float(income_total) - float(exp_ai_total)
+
+            # Top Companies
+            top_companies = Company.objects.annotate(
+                total_paid=Sum('payments__amount', filter=Q(payments__status='approved'))
+            ).filter(total_paid__gt=0).order_by('-total_paid')[:5]
+            
+            top_companies_data = [
+                {
+                    'id': c.id,
+                    'name': c.name,
+                    'total_paid': float(c.total_paid or 0),
+                    'logo': c.logo.url if c.logo else None
+                } for c in top_companies
+            ]
+
+            # 7-day Chart Data
+            chart_data = []
+            for i in range(6, -1, -1):
+                day = now - timezone.timedelta(days=i)
+                day_income = approved_payments.filter(created_at__date=day.date()).aggregate(Sum('amount'))['amount__sum'] or 0
+                chart_data.append({
+                    'date': day.strftime('%d.%m'),
+                    'income': float(day_income)
+                })
 
             return Response({
                 'counts': {
@@ -189,6 +223,16 @@ class AdminDashboardApiView(views.APIView):
                     'waiting_confirmation': Company.objects.filter(status='waiting_confirmation').count(),
                     'active': Company.objects.filter(Q(status='active') | Q(is_vip=True)).count(),
                     'expired': Company.objects.filter(status='expired', is_vip=False).count(),
+                },
+                'financials': {
+                    'income_today': float(income_today),
+                    'income_month': float(income_month),
+                    'income_total': float(income_total),
+                    'profit_today': round(profit_today, 2),
+                    'profit_month': round(profit_month, 2),
+                    'profit_total': round(profit_total, 2),
+                    'top_companies': top_companies_data,
+                    'chart_data': chart_data,
                 },
                 'growth': growth,
                 'billing': billing,
@@ -634,6 +678,7 @@ class AdminPaymentViewSet(viewsets.ReadOnlyModelViewSet):
             payment.save(update_fields=["status", "reviewed_at", "reviewed_by"])
 
         NotificationService.notify_payment_approved(payment, reactivated_count=reactivated)
+        NotificationService.notify_admin_payment_approved(payment)
         return Response(PaymentSerializer(payment, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], permission_classes=[IsAdminUser])

@@ -370,16 +370,19 @@ class ProductViewSet(viewsets.ModelViewSet):
 
         if self.action == "list":
             # Show products that either have no company (system products)
-            # OR belong to an active company with a valid subscription.
-            # Also hide rows the owner has manually paused (is_active=False).
+            # OR belong to an active company (VIP or with a valid subscription).
+            # We filter out blocked companies.
             queryset = queryset.filter(is_active=True).filter(
                 models.Q(company__isnull=True)
                 | (
-                    models.Q(company__is_active=True)
-                    & models.Q(company__status='active')
+                    ~models.Q(company__status='blocked')
                     & (
                         models.Q(company__is_vip=True)
-                        | models.Q(company__subscription_deadline__gt=now)
+                        | (
+                            models.Q(company__is_active=True)
+                            & models.Q(company__status='active')
+                            & models.Q(company__subscription_deadline__gt=now)
+                        )
                     )
                 )
             )
@@ -871,11 +874,14 @@ class CompanyViewSet(viewsets.ModelViewSet):
             now = timezone.now()
             companies = (
                 Company.objects.filter(
-                    is_active=True, 
-                    status='active'
+                    ~models.Q(status='blocked')
                 ).filter(
                     models.Q(is_vip=True)
-                    | models.Q(subscription_deadline__gt=now)
+                    | (
+                        models.Q(is_active=True)
+                        & models.Q(status='active')
+                        & models.Q(subscription_deadline__gt=now)
+                    )
                 )
                 .annotate(
                     product_count=models.Count("products", distinct=True),

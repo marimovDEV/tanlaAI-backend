@@ -80,121 +80,133 @@ class AdminDashboardApiView(views.APIView):
     permission_classes = [IsAdminUser]
 
     def get(self, request):
-        import datetime as dt
-        now = timezone.now()
-        thirty_days_ago = now - dt.timedelta(days=30)
-        sixty_days_ago = now - dt.timedelta(days=60)
+        try:
+            import datetime as dt
+            now = timezone.now()
+            thirty_days_ago = now - dt.timedelta(days=30)
+            sixty_days_ago = now - dt.timedelta(days=60)
 
-        # AI Status breakdown
-        ai_stats = Product.objects.values('ai_status').annotate(count=Count('ai_status'))
-        ai_breakdown = {s: 0 for s, _ in Product._meta.get_field('ai_status').choices}
-        for item in ai_stats:
-            ai_breakdown[item['ai_status']] = item['count']
+            # AI Status breakdown
+            ai_stats = Product.objects.values('ai_status').annotate(count=Count('ai_status'))
+            ai_breakdown = {s: 0 for s, _ in Product._meta.get_field('ai_status').choices}
+            for item in ai_stats:
+                ai_breakdown[item['ai_status']] = item['count']
 
-        # Calculate success rate
-        total_ai_processed = ai_breakdown.get('completed', 0) + ai_breakdown.get('error', 0)
-        success_rate = round((ai_breakdown.get('completed', 0) / total_ai_processed * 100), 1) if total_ai_processed > 0 else 100
+            # Calculate success rate
+            total_ai_processed = ai_breakdown.get('completed', 0) + ai_breakdown.get('error', 0)
+            success_rate = round((ai_breakdown.get('completed', 0) / total_ai_processed * 100), 1) if total_ai_processed > 0 else 100
 
-        # Recent activity
-        recent_products = Product.objects.select_related('category').order_by('-id')[:5]
-        recent_ai = AIResult.objects.select_related('user', 'product').order_by('-created_at')[:5]
-        recent_leads = LeadRequest.objects.select_related('user', 'product').order_by('-created_at')[:5]
+            # Recent activity
+            recent_products = Product.objects.select_related('category').order_by('-id')[:5]
+            recent_ai = AIResult.objects.select_related('user', 'product').order_by('-created_at')[:5]
+            recent_leads = LeadRequest.objects.select_related('user', 'product').order_by('-created_at')[:5]
 
-        # ── Growth (month-over-month) ───────────────────────────
-        def calc_growth(model, date_field='created_at'):
-            this_month = model.objects.filter(**{f'{date_field}__gte': thirty_days_ago}).count()
-            last_month = model.objects.filter(
-                **{f'{date_field}__gte': sixty_days_ago, f'{date_field}__lt': thirty_days_ago}
-            ).count()
-            if last_month == 0:
-                return 100 if this_month > 0 else 0
-            return round((this_month - last_month) / last_month * 100, 1)
+            # ── Growth (month-over-month) ───────────────────────────
+            def calc_growth(model, date_field='created_at'):
+                this_month = model.objects.filter(**{f'{date_field}__gte': thirty_days_ago}).count()
+                last_month = model.objects.filter(
+                    **{f'{date_field}__gte': sixty_days_ago, f'{date_field}__lt': thirty_days_ago}
+                ).count()
+                if last_month == 0:
+                    return 100 if this_month > 0 else 0
+                return round((this_month - last_month) / last_month * 100, 1)
 
-        growth = {
-            'products': calc_growth(Product),
-            'companies': calc_growth(Company),
-            'users': calc_growth(TelegramUser),
-            'leads': calc_growth(LeadRequest),
-            'ai_results': calc_growth(AIResult),
-        }
+            growth = {
+                'products': calc_growth(Product),
+                'companies': calc_growth(Company),
+                'users': calc_growth(TelegramUser),
+                'leads': calc_growth(LeadRequest),
+                'ai_results': calc_growth(AIResult),
+            }
 
-        # ── Billing (SaaS cost tracking) ────────────────────────
-        from django.conf import settings as django_settings
-        ai_total_requests = AIResult.objects.count()
-        ai_this_month = AIResult.objects.filter(created_at__gte=thirty_days_ago).count()
-        ai_today = AIResult.objects.filter(created_at__date=now.date()).count()
-        cost_per_req_usd = float(getattr(django_settings, 'AI_COST_PER_REQUEST_USD', 0.003))
-        usd_to_uzs = float(getattr(django_settings, 'USD_TO_UZS_RATE', 12800))
-        cost_per_req_uzs = round(cost_per_req_usd * usd_to_uzs, 2)
-        monthly_budget_uzs = float(getattr(django_settings, 'AI_MONTHLY_BUDGET_UZS', 500000))
+            # ── Billing (SaaS cost tracking) ────────────────────────
+            from django.conf import settings as django_settings
+            ai_total_requests = AIResult.objects.count()
+            ai_this_month = AIResult.objects.filter(created_at__gte=thirty_days_ago).count()
+            ai_today = AIResult.objects.filter(created_at__date=now.date()).count()
+            cost_per_req_usd = float(getattr(django_settings, 'AI_COST_PER_REQUEST_USD', 0.003))
+            usd_to_uzs = float(getattr(django_settings, 'USD_TO_UZS_RATE', 12800))
+            cost_per_req_uzs = round(cost_per_req_usd * usd_to_uzs, 2)
+            monthly_budget_uzs = float(getattr(django_settings, 'AI_MONTHLY_BUDGET_UZS', 500000))
 
-        # Server billing (configurable via settings or env)
-        server_due_date = getattr(django_settings, 'SERVER_DUE_DATE', None)
-        server_cost = int(getattr(django_settings, 'SERVER_MONTHLY_COST_UZS', 150000))
-        server_note = getattr(django_settings, 'SERVER_NOTE', 'Ardentsoft VPS')
-        server_days_left = None
-        if server_due_date:
-            try:
-                due = dt.datetime.strptime(str(server_due_date), '%Y-%m-%d').date()
-                server_days_left = (due - now.date()).days
-            except (ValueError, TypeError):
-                pass
+            # Server billing (configurable via settings or env)
+            server_due_date = getattr(django_settings, 'SERVER_DUE_DATE', None)
+            server_cost = int(getattr(django_settings, 'SERVER_MONTHLY_COST_UZS', 150000))
+            server_note = getattr(django_settings, 'SERVER_NOTE', 'Ardentsoft VPS')
+            server_days_left = None
+            if server_due_date:
+                try:
+                    due = dt.datetime.strptime(str(server_due_date), '%Y-%m-%d').date()
+                    server_days_left = (due - now.date()).days
+                except (ValueError, TypeError):
+                    pass
 
-        # AI billing due date
-        ai_due_date = getattr(django_settings, 'AI_DUE_DATE', None)
-        ai_days_left = None
-        if ai_due_date:
-            try:
-                due = dt.datetime.strptime(str(ai_due_date), '%Y-%m-%d').date()
-                ai_days_left = (due - now.date()).days
-            except (ValueError, TypeError):
-                pass
+            # AI billing due date
+            ai_due_date = getattr(django_settings, 'AI_DUE_DATE', None)
+            ai_days_left = None
+            if ai_due_date:
+                try:
+                    due = dt.datetime.strptime(str(ai_due_date), '%Y-%m-%d').date()
+                    ai_days_left = (due - now.date()).days
+                except (ValueError, TypeError):
+                    pass
 
-        billing = {
-            'server_due_date': server_due_date,
-            'server_cost': server_cost,
-            'server_note': server_note,
-            'server_days_left': server_days_left,
-            'ai_due_date': ai_due_date,
-            'ai_cost_per_request_usd': cost_per_req_usd,
-            'ai_cost_per_request_uzs': cost_per_req_uzs,
-            'usd_to_uzs_rate': usd_to_uzs,
-            'ai_monthly_budget_uzs': monthly_budget_uzs,
-            'ai_total_requests': ai_total_requests,
-            'ai_cost_total_uzs': round(ai_total_requests * cost_per_req_uzs, 2),
-            'ai_cost_this_month_uzs': round(ai_this_month * cost_per_req_uzs, 2),
-            'ai_cost_today_uzs': round(ai_today * cost_per_req_uzs, 2),
-            'ai_days_left': ai_days_left,
-        }
+            billing = {
+                'server_due_date': server_due_date,
+                'server_cost': server_cost,
+                'server_note': server_note,
+                'server_days_left': server_days_left,
+                'ai_due_date': ai_due_date,
+                'ai_cost_per_request_usd': cost_per_req_usd,
+                'ai_cost_per_request_uzs': cost_per_req_uzs,
+                'usd_to_uzs_rate': usd_to_uzs,
+                'ai_monthly_budget_uzs': monthly_budget_uzs,
+                'ai_total_requests': ai_total_requests,
+                'ai_cost_total_uzs': round(ai_total_requests * cost_per_req_uzs, 2),
+                'ai_cost_this_month_uzs': round(ai_this_month * cost_per_req_uzs, 2),
+                'ai_cost_today_uzs': round(ai_today * cost_per_req_uzs, 2),
+                'ai_days_left': ai_days_left,
+            }
 
-        return Response({
-            'counts': {
-                'product_count': Product.objects.count(),
-                'category_count': Category.objects.count(),
-                'company_count': Company.objects.count(),
-                'user_count': TelegramUser.objects.count(),
-                'banner_count': HomeBanner.objects.count(),
-                'lead_count': LeadRequest.objects.count(),
-                'ai_result_count': AIResult.objects.count(),
-                'ai_error_count': Product.objects.filter(ai_status='error').count() + AIResult.objects.filter(status='error').count(),
-                'active_promotions': Product.objects.filter(
-                    is_on_sale=True
-                ).filter(
-                    Q(sale_end_date__gt=now) | Q(sale_end_date__isnull=True)
-                ).count(),
-            },
-            'growth': growth,
-            'billing': billing,
-            'today_performance': {
-                'leads': LeadRequest.objects.filter(created_at__date=now.date()).count(),
-                'converted': LeadRequest.objects.filter(created_at__date=now.date(), status='converted').count(),
-                'conversion_rate': round(
-                    (LeadRequest.objects.filter(created_at__date=now.date(), status='converted').count() /
-                     max(LeadRequest.objects.filter(created_at__date=now.date()).count(), 1) * 100), 1
-                )
-            },
-            'ai_status': ai_breakdown,
-            'ai_performance': {
+            return Response({
+                'counts': {
+                    'product_count': Product.objects.count(),
+                    'category_count': Category.objects.count(),
+                    'company_count': Company.objects.count(),
+                    'user_count': TelegramUser.objects.count(),
+                    'banner_count': HomeBanner.objects.count(),
+                    'lead_count': LeadRequest.objects.count(),
+                    'ai_result_count': AIResult.objects.count(),
+                    'ai_error_count': Product.objects.filter(ai_status='error').count() + AIResult.objects.filter(status='error').count(),
+                    'active_promotions': Product.objects.filter(
+                        is_on_sale=True
+                    ).filter(
+                        Q(sale_end_date__gt=now) | Q(sale_end_date__isnull=True)
+                    ).count(),
+                },
+                'growth': growth,
+                'billing': billing,
+                'today_performance': {
+                    'leads': LeadRequest.objects.filter(created_at__date=now.date()).count(),
+                    'converted': LeadRequest.objects.filter(created_at__date=now.date(), status='converted').count(),
+                    'conversion_rate': round(
+                        (LeadRequest.objects.filter(created_at__date=now.date(), status='converted').count() /
+                         max(LeadRequest.objects.filter(created_at__date=now.date()).count(), 1) * 100), 1
+                    )
+                },
+                'ai_status': ai_breakdown,
+                'ai_performance': {
+                    'success_rate': success_rate,
+                    'avg_time': 2.3,
+                },
+                'recent_activity': {
+                    'products': ProductSerializer(recent_products, many=True, context={'request': request}).data,
+                    'ai_results': AdminAIResultSerializer(recent_ai, many=True, context={'request': request}).data,
+                    'leads': AdminLeadRequestSerializer(recent_leads, many=True, context={'request': request}).data,
+                }
+            })
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
                 'success_rate': success_rate,
                 'avg_time': 2.3,
             },

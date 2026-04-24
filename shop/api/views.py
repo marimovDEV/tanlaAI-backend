@@ -376,6 +376,7 @@ class ProductViewSet(viewsets.ModelViewSet):
                 models.Q(company__isnull=True)
                 | (
                     models.Q(company__is_active=True)
+                    & models.Q(company__status='active')
                     & (
                         models.Q(company__subscription_deadline__gt=now)
                         | models.Q(company__subscription_deadline__isnull=True)
@@ -867,8 +868,15 @@ class CompanyViewSet(viewsets.ModelViewSet):
             query = self.request.query_params.get(
                 "search"
             ) or self.request.query_params.get("q")
+            now = timezone.now()
             companies = (
-                Company.objects.filter(is_active=True)
+                Company.objects.filter(
+                    is_active=True, 
+                    status='active'
+                ).filter(
+                    models.Q(subscription_deadline__gt=now)
+                    | models.Q(subscription_deadline__isnull=True)
+                )
                 .annotate(
                     product_count=models.Count("products", distinct=True),
                     ai_usage=models.Count("products__ai_visualizations", distinct=True),

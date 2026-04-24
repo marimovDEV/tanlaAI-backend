@@ -42,10 +42,12 @@ class CategorySerializer(serializers.ModelSerializer):
 class TelegramUserSerializer(serializers.ModelSerializer):
     has_company = serializers.SerializerMethodField()
     company_status = serializers.SerializerMethodField()
+    company_is_vip = serializers.SerializerMethodField()
+    company_id = serializers.SerializerMethodField()
 
     class Meta:
         model = TelegramUser
-        fields = ['id', 'telegram_id', 'first_name', 'last_name', 'username', 'role', 'photo_url', 'has_company', 'company_status', 'created_at']
+        fields = ['id', 'telegram_id', 'first_name', 'last_name', 'username', 'role', 'photo_url', 'has_company', 'company_status', 'company_is_vip', 'company_id', 'created_at']
 
     def get_has_company(self, obj):
         return hasattr(obj, 'company')
@@ -53,6 +55,16 @@ class TelegramUserSerializer(serializers.ModelSerializer):
     def get_company_status(self, obj):
         if hasattr(obj, 'company'):
             return obj.company.status
+        return None
+
+    def get_company_is_vip(self, obj):
+        if hasattr(obj, 'company'):
+            return obj.company.is_vip
+        return False
+
+    def get_company_id(self, obj):
+        if hasattr(obj, 'company'):
+            return obj.company.id
         return None
 
 class CompanySerializer(serializers.ModelSerializer):

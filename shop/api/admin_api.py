@@ -184,6 +184,12 @@ class AdminDashboardApiView(views.APIView):
                         Q(sale_end_date__gt=now) | Q(sale_end_date__isnull=True)
                     ).count(),
                 },
+                'monetization': {
+                    'pending_payment': Company.objects.filter(status='pending_payment').count(),
+                    'waiting_confirmation': Company.objects.filter(status='waiting_confirmation').count(),
+                    'active': Company.objects.filter(status='active').count(),
+                    'expired': Company.objects.filter(status='expired').count(),
+                },
                 'growth': growth,
                 'billing': billing,
                 'today_performance': {
@@ -574,7 +580,7 @@ class AdminPaymentViewSet(viewsets.ReadOnlyModelViewSet):
         from datetime import timedelta
         from django.db import transaction
 
-        from ..models import Subscription
+        from ..models import Subscription, SystemBilling
         from ..notifications import NotificationService
 
         payment = self.get_object()
@@ -586,16 +592,19 @@ class AdminPaymentViewSet(viewsets.ReadOnlyModelViewSet):
 
         now = timezone.now()
         company = payment.company
+        billing_config = SystemBilling.get_solo()
+        days_per_month = billing_config.subscription_days or 30
 
         with transaction.atomic():
             # Extend from LATER of (now, existing deadline) so early payments
             # stack instead of being eaten by an already-active subscription.
             current_deadline = company.subscription_deadline
             base = current_deadline if current_deadline and current_deadline > now else now
-            new_deadline = base + timedelta(days=30 * payment.months)
+            new_deadline = base + timedelta(days=days_per_month * payment.months)
             company.subscription_deadline = new_deadline
             company.is_active = True
-            company.save(update_fields=["subscription_deadline", "is_active"])
+            company.status = "active"
+            company.save(update_fields=["subscription_deadline", "is_active", "status"])
 
             # Keep the Subscription row roughly in sync. Not load-bearing for
             # listings (those read Company.subscription_deadline) but useful

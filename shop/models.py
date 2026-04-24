@@ -62,13 +62,14 @@ class Company(models.Model):
     youtube_link = models.CharField(max_length=255, blank=True, default='')
     logo = models.ImageField(upload_to="company_logos/", null=True, blank=True)
     STATUS_CHOICES = [
-        ("pending", "Pending"),
-        ("review", "In Review (Paid)"),
-        ("active", "Active"),
-        ("blocked", "Blocked"),
+        ("pending_payment", "Pending (To'lov kutilmoqda)"),
+        ("waiting_confirmation", "Waiting (Tasdiqlash kutilmoqda)"),
+        ("active", "Active (Faol)"),
+        ("expired", "Expired (Muddati tugagan)"),
+        ("blocked", "Blocked (Bloklangan)"),
     ]
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
-    is_active = models.BooleanField(default=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending_payment")
+    is_active = models.BooleanField(default=False)
     subscription_deadline = models.DateTimeField(null=True, blank=True)
     plan = models.ForeignKey(SubscriptionPlan, null=True, blank=True, on_delete=models.SET_NULL, related_name="companies")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -436,12 +437,12 @@ class Payment(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"{self.company.name} — {self.amount} ({self.get_status_display()})"
+        return f"{self.company.name} — {self.amount} so'm"
 
 
 class SystemSettings(models.Model):
     # --- General Settings ---
-    platform_name = models.CharField(max_length=100, default="Tanla")
+    platform_name = models.CharField(max_length=255, default="Tanla AI")
     default_language = models.CharField(max_length=10, default="uz")
     timezone = models.CharField(max_length=50, default="Asia/Tashkent")
     currency = models.CharField(max_length=20, default="UZS")
@@ -529,12 +530,21 @@ class SystemSettings(models.Model):
 class SystemBilling(models.Model):
     """Single-row billing config for server & AI cost tracking."""
 
-    # Server
+    # --- Monetization Settings ---
+    monthly_price = models.IntegerField(default=100000, help_text="Oylik obuna narxi (so'm)")
+    subscription_days = models.IntegerField(default=30, help_text="Obuna muddati (kun)")
+    
+    card_number = models.CharField(max_length=32, blank=True, default='', help_text="To'lov uchun karta raqami")
+    card_holder = models.CharField(max_length=100, blank=True, default='', help_text="Karta egasi")
+    
+    require_manual_approval = models.BooleanField(default=True, help_text="To'lovdan keyin admin tasdiqlashi shartmi?")
+
+    # Server tracking
     server_due_date  = models.DateField(null=True, blank=True)
     server_cost      = models.IntegerField(default=0, help_text="UZS / oy")
     server_note      = models.CharField(max_length=255, blank=True, default='')
 
-    # AI
+    # AI tracking
     ai_due_date           = models.DateField(null=True, blank=True)
     ai_cost_per_request   = models.DecimalField(
         max_digits=10, decimal_places=6, default=0.01,

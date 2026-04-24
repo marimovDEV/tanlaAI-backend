@@ -3,7 +3,7 @@ from rest_framework import serializers
 from ..models import (
     Category, TelegramUser, Company, Product, ProductImage,
     AIResult, HomeBanner, Wishlist, LeadRequest, Subscription, AITest, SharedDesign,
-    Payment,
+    Payment, SystemSettings, SystemBilling,
 )
 
 class AbsoluteImageField(serializers.ImageField):
@@ -78,6 +78,11 @@ class CompanySerializer(serializers.ModelSerializer):
         model = Company
         fields = '__all__'
         read_only_fields = ['user', 'is_active', 'subscription_deadline', 'created_at', 'is_currently_active', 'is_vip']
+
+class SystemBillingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SystemBilling
+        fields = '__all__'
 
 class ProductImageSerializer(serializers.ModelSerializer):
     image = AbsoluteImageField()

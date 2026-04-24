@@ -1483,11 +1483,26 @@ class PaymentViewSet(viewsets.ModelViewSet):
 
         payment = serializer.save(company=company)
         
-        # Update company status to review
-        if company.status == 'pending':
-            company.status = 'review'
+        # Update company status to waiting_confirmation
+        if company.status == 'pending_payment':
+            company.status = 'waiting_confirmation'
             company.save(update_fields=['status'])
             
         NotificationService.notify_payment_submitted(payment)
+
+
+class SystemBillingView(views.APIView):
+    """Public endpoint to get billing details (price, card) for the subscription page."""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        from ..models import SystemBilling
+        config = SystemBilling.get_solo()
+        return Response({
+            "monthly_price": config.monthly_price,
+            "subscription_days": config.subscription_days,
+            "card_number": config.card_number,
+            "card_holder": config.card_holder,
+        })
 
 

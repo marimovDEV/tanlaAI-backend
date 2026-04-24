@@ -304,8 +304,11 @@ class NotificationService:
     @staticmethod
     def notify_company_created(company):
         """Admin gets a ping when a new company is created."""
+        from .models import SystemBilling
         owner = company.user
         owner_name = f"{owner.first_name or ''} {owner.last_name or ''}".strip()
+        billing_config = SystemBilling.get_solo()
+        price_fmt = f"{float(billing_config.monthly_price):,.0f}".replace(",", " ")
         
         message = (
             "🏢 <b>YANGI KAMPANIYA YARATILDI</b>\n\n"
@@ -313,7 +316,8 @@ class NotificationService:
             f"👤 <b>Egasi:</b> {owner_name}\n"
             f"📞 <b>Telefon:</b> {company.phone or '—'}\n"
             f"📍 <b>Manzil:</b> {company.location or '—'}\n\n"
-            "⏳ Status: <b>PENDING</b> (To'lov kutilmoqda)\n"
+            f"💰 <b>To'lashi kerak:</b> {price_fmt} so'm\n"
+            "⏳ Status: <b>PENDING_PAYMENT</b>\n"
         )
         
         message += (
@@ -344,7 +348,7 @@ class NotificationService:
             amount_fmt = str(payment.amount)
 
         message = (
-            "💳 <b>YANGI TO'LOV TASDIQLASH SO'ROVI</b>\n\n"
+            "💳 <b>TO'LOV TASDIQLASH SO'ROVI</b>\n\n"
             f"🏢 <b>Kompaniya:</b> {company.name}\n"
             f"👤 <b>Egasi:</b> {owner_name}\n"
             f"💰 <b>Summa:</b> {amount_fmt} so'm\n"

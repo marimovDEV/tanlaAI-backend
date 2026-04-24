@@ -70,6 +70,9 @@ class TelegramUserSerializer(serializers.ModelSerializer):
 class CompanySerializer(serializers.ModelSerializer):
     is_currently_active = serializers.ReadOnlyField()
     logo = AbsoluteImageField(required=False, allow_null=True)
+    total_leads = serializers.IntegerField(read_only=True, default=0)
+    converted_leads = serializers.IntegerField(read_only=True, default=0)
+    ai_usage = serializers.IntegerField(read_only=True, default=0)
     
     class Meta:
         model = Company

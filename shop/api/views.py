@@ -952,22 +952,14 @@ class CompanyViewSet(viewsets.ModelViewSet):
                     & models.Q(subscription_deadline__gt=now)
                 )
             ).annotate(
-                converted_leads=models.Count('leads', filter=models.Q(leads__status='converted')),
-                total_leads=models.Count('leads')
-            ).order_by('-converted_leads', '-total_leads')[:10]
+                converted_leads=models.Count('leads', filter=models.Q(leads__status='converted'), distinct=True),
+                total_leads=models.Count('leads', distinct=True),
+                ai_usage=models.Count("products__ai_visualizations", distinct=True),
+            ).order_by('-converted_leads', '-total_leads')[:20]
         )
         
-        data = []
-        for c in companies:
-            data.append({
-                'id': c.id,
-                'name': c.name,
-                'logo': c.logo.url if c.logo else None,
-                'converted_leads': c.converted_leads,
-                'total_leads': c.total_leads,
-            })
-            
-        return Response(data)
+        serializer = CompanySerializer(companies, many=True, context={'request': request})
+        return Response(serializer.data)
 
     @action(detail=False, methods=["get", "post", "put", "patch"])
     def my(self, request):

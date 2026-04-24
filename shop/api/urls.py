@@ -8,6 +8,7 @@ from .views import (
     AdminSystemSettingsApiView, AdminRunActionApiView,
     AdminBillingApiView,
     PaymentViewSet, telegram_proxy_view, SystemBillingView,
+    TelegramWebhookView,
 )
 
 from .admin_api import (
@@ -60,6 +61,7 @@ urlpatterns = [
     path('admin/dashboard/', AdminDashboardApiView.as_view(), name='api_admin_dashboard'),
     path('system-billing/', SystemBillingView.as_view(), name='api_system_billing'),
     path('media/telegram/<str:file_id>/', telegram_proxy_view, name='api_telegram_proxy'),
+    path('bot/webhook/', TelegramWebhookView.as_view(), name='bot_webhook'),
     path('admin/', include(admin_router.urls)),
     path('', include(router.urls)),
 ]

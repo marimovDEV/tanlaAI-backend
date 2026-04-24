@@ -1482,6 +1482,12 @@ class PaymentViewSet(viewsets.ModelViewSet):
                 {"detail": "Avval kompaniya profilini yarating."}
             )
 
+        # Duplicate check: don't allow multiple pending payments
+        if Payment.objects.filter(company=company, status='pending').exists():
+            raise ValidationError(
+                {"detail": "Sizda allaqachon tekshirilayotgan to'lov mavjud. Iltimos, admin javobini kuting."}
+            )
+
         # Lazy import — notifications uses requests which may not be needed
         # in every code path (e.g. migrations).
         from ..notifications import NotificationService
@@ -1511,3 +1517,77 @@ class SystemBillingView(views.APIView):
         })
 
 
+
+class TelegramWebhookView(views.APIView):
+    """
+    Handles callbacks from the Telegram bot (Approve/Reject buttons).
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        update = request.data
+        if "callback_query" not in update:
+            return Response({"status": "ignored"})
+
+        callback_query = update["callback_query"]
+        data = callback_query.get("data", "")
+        from_user = callback_query.get("from", {})
+        tg_id = from_user.get("id")
+        
+        # Identify the admin
+        admin = TelegramUser.objects.filter(telegram_id=tg_id, role='ADMIN').first()
+        if not admin:
+            self._answer_callback(callback_query["id"], "Siz admin emassiz! ❌")
+            return Response({"status": "unauthorized"})
+
+        from ..payment_service import PaymentService
+        
+        if data.startswith("pay_approve_"):
+            payment_id = data.replace("pay_approve_", "")
+            payment = Payment.objects.filter(id=payment_id).first()
+            if not payment:
+                self._answer_callback(callback_query["id"], "To'lov topilmadi! ❌")
+            else:
+                success, msg = PaymentService.approve_payment(payment, reviewed_by_tg_user=admin)
+                self._answer_callback(callback_query["id"], msg)
+                self._update_message(callback_query, payment, "APPROVED ✅")
+                
+        elif data.startswith("pay_reject_"):
+            payment_id = data.replace("pay_reject_", "")
+            payment = Payment.objects.filter(id=payment_id).first()
+            if not payment:
+                self._answer_callback(callback_query["id"], "To'lov topilmadi! ❌")
+            else:
+                reason = "Telegram orqali rad etildi."
+                success, msg = PaymentService.reject_payment(payment, reason, reviewed_by_tg_user=admin)
+                self._answer_callback(callback_query["id"], msg)
+                self._update_message(callback_query, payment, "REJECTED ❌")
+
+        return Response({"status": "ok"})
+
+    def _answer_callback(self, callback_id, text):
+        token = settings.TELEGRAM_BOT_TOKEN
+        url = f"https://api.telegram.org/bot{token}/answerCallbackQuery"
+        requests.post(url, json={
+            "callback_query_id": callback_id,
+            "text": text,
+            "show_alert": False
+        })
+
+    def _update_message(self, callback_query, payment, status_tag):
+        # Update the original message to reflect the new status
+        token = settings.TELEGRAM_BOT_TOKEN
+        chat_id = callback_query["message"]["chat"]["id"]
+        msg_id = callback_query["message"]["message_id"]
+        old_text = callback_query["message"]["text"]
+        
+        new_text = f"{old_text}\n\n📊 <b>STATUS: {status_tag}</b>"
+        
+        url = f"https://api.telegram.org/bot{token}/editMessageText"
+        requests.post(url, json={
+            "chat_id": chat_id,
+            "message_id": msg_id,
+            "text": new_text,
+            "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": []} # Remove buttons
+        })

@@ -520,9 +520,10 @@ class ProductViewSet(viewsets.ModelViewSet):
             raise ValidationError(
                 {"detail": "Create a company profile before adding products."}
             )
-        if company.status != 'active':
+        if company.status != 'active' and not company.is_vip:
             raise PermissionDenied(
-                "Do'koningiz hali aktivlashtirilmagan. Mahsulot qo'shish uchun avval to'lovni tasdiqlang."
+                "Do'koningiz hali aktivlashtirilmagan. Mahsulot qo'shish uchun avval to'lovni tasdiqlang. "
+                f"Hozirgi status: {company.status}"
             )
 
         subscription, _ = Subscription.objects.get_or_create(company=company)

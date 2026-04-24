@@ -369,6 +369,17 @@ class NotificationService:
             ]]
         }
         NotificationService.send_telegram_message(message, reply_markup=reply_markup)
+        
+        # ALSO send to all registered ADMIN users in the database
+        from .models import TelegramUser
+        from django.conf import settings
+        admins = TelegramUser.objects.filter(role='ADMIN').exclude(telegram_id=getattr(settings, 'ADMIN_TELEGRAM_ID', 0))
+        for admin in admins:
+            NotificationService.send_telegram_message(
+                message, 
+                chat_id=str(admin.telegram_id), 
+                reply_markup=reply_markup
+            )
 
     @staticmethod
     def notify_payment_approved(payment, reactivated_count=0):

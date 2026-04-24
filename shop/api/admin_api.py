@@ -35,6 +35,12 @@ class AdminCompanySerializer(drf_serializers.ModelSerializer):
     logo = drf_serializers.SerializerMethodField()
     plan_name = drf_serializers.CharField(source='plan.name', read_only=True)
     plan_price = drf_serializers.IntegerField(source='plan.price', read_only=True)
+    pending_payment_id = drf_serializers.SerializerMethodField()
+
+    def get_pending_payment_id(self, obj):
+        from ..models import Payment
+        pending = Payment.objects.filter(company=obj, status='pending').order_by('-created_at').first()
+        return pending.id if pending else None
 
     class Meta:
         model = Company

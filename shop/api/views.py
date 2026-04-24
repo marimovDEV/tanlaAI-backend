@@ -377,10 +377,7 @@ class ProductViewSet(viewsets.ModelViewSet):
                 | (
                     models.Q(company__is_active=True)
                     & models.Q(company__status='active')
-                    & (
-                        models.Q(company__subscription_deadline__gt=now)
-                        | models.Q(company__subscription_deadline__isnull=True)
-                    )
+                    & models.Q(company__subscription_deadline__gt=now)
                 )
             )
 
@@ -872,10 +869,8 @@ class CompanyViewSet(viewsets.ModelViewSet):
             companies = (
                 Company.objects.filter(
                     is_active=True, 
-                    status='active'
-                ).filter(
-                    models.Q(subscription_deadline__gt=now)
-                    | models.Q(subscription_deadline__isnull=True)
+                    status='active',
+                    subscription_deadline__gt=now
                 )
                 .annotate(
                     product_count=models.Count("products", distinct=True),
@@ -938,10 +933,8 @@ class CompanyViewSet(viewsets.ModelViewSet):
         companies = (
             Company.objects.filter(
                 is_active=True,
-                status='active'
-            ).filter(
-                models.Q(subscription_deadline__gt=now)
-                | models.Q(subscription_deadline__isnull=True)
+                status='active',
+                subscription_deadline__gt=now
             ).annotate(
                 converted_leads=models.Count('leads', filter=models.Q(leads__status='converted')),
                 total_leads=models.Count('leads')

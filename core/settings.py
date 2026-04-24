@@ -232,6 +232,7 @@ CSRF_COOKIE_SECURE = True
 
 # Telegram Bot
 TELEGRAM_BOT_TOKEN = env('TELEGRAM_BOT_TOKEN')
+ADMIN_TELEGRAM_ID = env('ADMIN_TELEGRAM_ID', default='')
 
 # AI Settings
 GEMINI_API_KEY = env('GEMINI_API_KEY', default='')

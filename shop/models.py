@@ -97,6 +97,13 @@ class Company(models.Model):
             return False
         return True
 
+    def save(self, *args, **kwargs):
+        # Auto-activate VIPs
+        if self.is_vip:
+            self.status = "active"
+            self.is_active = True
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.name
 

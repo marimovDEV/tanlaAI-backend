@@ -411,9 +411,9 @@ class ProductViewSet(viewsets.ModelViewSet):
         if is_wishlisted:
             is_wishlisted_bool = str(is_wishlisted).lower() in ("true", "1", "yes")
             if is_wishlisted_bool:
-                tg_user_id = self.request.session.get('tg_user_id')
-                if tg_user_id:
-                    queryset = queryset.filter(wishlist__user_id=tg_user_id)
+                tg_user = get_tg_user(self.request)
+                if tg_user:
+                    queryset = queryset.filter(wishlisted_by__user_id=tg_user.id)
                 else:
                     queryset = queryset.none()
 

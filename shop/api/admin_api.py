@@ -442,7 +442,7 @@ class AdminCompanyViewSet(viewsets.ModelViewSet):
 class AdminPromotionViewSet(viewsets.ModelViewSet):
     serializer_class = ProductSerializer
     permission_classes = [IsAdminUser]
-    http_method_names = ['get', 'head', 'options', 'patch', 'delete']
+    http_method_names = ['get', 'post', 'head', 'options', 'patch', 'delete']
 
     def get_queryset(self):
         return Product.objects.filter(is_on_sale=True).select_related(

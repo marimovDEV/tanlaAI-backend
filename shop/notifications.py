@@ -46,6 +46,51 @@ class NotificationService:
             return False
 
     @staticmethod
+    def send_telegram_photo(photo_path: str, caption: str = None, chat_id: str = None, reply_markup: dict = None):
+        """
+        Sends a photo to a Telegram chat. 
+        If chat_id is not provided, broadcasts to all settings.ADMIN_TELEGRAM_IDS.
+        """
+        token = getattr(settings, 'TELEGRAM_BOT_TOKEN', None)
+        if not token:
+            return False
+
+        if chat_id:
+            return NotificationService._send_single_photo(token, chat_id, photo_path, caption, reply_markup)
+
+        admin_ids = getattr(settings, 'ADMIN_TELEGRAM_IDS', [])
+        success = False
+        for tid in admin_ids:
+            if tid:
+                if NotificationService._send_single_photo(token, str(tid), photo_path, caption, reply_markup):
+                    success = True
+        return success
+
+    @staticmethod
+    def _send_single_photo(token, chat_id, photo_path, caption=None, reply_markup=None):
+        url = f"https://api.telegram.org/bot{token}/sendPhoto"
+        
+        try:
+            with open(photo_path, 'rb') as photo_file:
+                files = {'photo': photo_file}
+                data = {
+                    'chat_id': chat_id,
+                    'parse_mode': 'HTML'
+                }
+                if caption:
+                    data['caption'] = caption
+                if reply_markup:
+                    import json
+                    data['reply_markup'] = json.dumps(reply_markup)
+                
+                response = requests.post(url, files=files, data=data, timeout=20)
+                response.raise_for_status()
+                return True
+        except Exception as e:
+            logger.error(f"Failed to send Telegram photo to {chat_id}: {e}")
+            return False
+
+    @staticmethod
     def send_telegram_location(latitude: float, longitude: float, chat_id: str = None):
         """
         Sends a native Telegram location pin (opens in built-in map).
@@ -376,18 +421,30 @@ class NotificationService:
                 {"text": "❌ Rad etish",  "callback_data": f"pay_reject_{payment.id}"},
             ]]
         }
-        NotificationService.send_telegram_message(message, reply_markup=reply_markup)
-        
-        # ALSO send to all registered ADMIN users in the database
+
+        # Send the receipt screenshot as a photo to all admins
         from .models import TelegramUser
-        from django.conf import settings
-        admins = TelegramUser.objects.filter(role='ADMIN').exclude(telegram_id=getattr(settings, 'ADMIN_TELEGRAM_ID', 0))
-        for admin in admins:
-            NotificationService.send_telegram_message(
-                message, 
-                chat_id=str(admin.telegram_id), 
-                reply_markup=reply_markup
-            )
+        db_admins = TelegramUser.objects.filter(role='ADMIN').values_list('telegram_id', flat=True)
+        
+        # Merge settings IDs and DB admin IDs for broadcasting
+        all_admin_ids = set(list(getattr(settings, 'ADMIN_TELEGRAM_IDS', [])) + list(db_admins))
+        
+        for tid in all_admin_ids:
+            if not tid: continue
+            
+            if payment.screenshot and hasattr(payment.screenshot, 'path'):
+                NotificationService.send_telegram_photo(
+                    photo_path=payment.screenshot.path,
+                    caption=message,
+                    chat_id=str(tid),
+                    reply_markup=reply_markup
+                )
+            else:
+                NotificationService.send_telegram_message(
+                    message, 
+                    chat_id=str(tid), 
+                    reply_markup=reply_markup
+                )
 
     @staticmethod
     def notify_payment_approved(payment, reactivated_count=0):

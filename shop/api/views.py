@@ -970,7 +970,11 @@ class CompanyViewSet(viewsets.ModelViewSet):
                 {"error": "Not authenticated"}, status=status.HTTP_401_UNAUTHORIZED
             )
 
-        company = Company.objects.filter(user_id=tg_user.id).first()
+        company = Company.objects.filter(user_id=tg_user.id).annotate(
+            total_leads=models.Count('leads', distinct=True),
+            converted_leads=models.Count('leads', filter=models.Q(leads__status='converted'), distinct=True),
+            ai_usage=models.Count("products__ai_visualizations", distinct=True),
+        ).first()
 
         if request.method == "GET":
             if not company:

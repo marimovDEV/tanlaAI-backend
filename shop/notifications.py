@@ -534,8 +534,8 @@ class NotificationService:
 
     # ── Promotion Broadcast ─────────────────────────────────
     @staticmethod
-    def send_telegram_photo(photo_url: str, caption: str, chat_id: str = None, reply_markup: dict = None):
-        """Sends a photo message to a Telegram chat."""
+    def send_telegram_photo_url(photo_url: str, caption: str, chat_id: str = None, reply_markup: dict = None):
+        """Sends a photo message to a Telegram chat using a URL."""
         token = getattr(settings, 'TELEGRAM_BOT_TOKEN', None)
         target_chat_id = chat_id or getattr(settings, 'ADMIN_TELEGRAM_ID', None)
         if not token or not target_chat_id:
@@ -549,13 +549,18 @@ class NotificationService:
             "parse_mode": "HTML",
         }
         if reply_markup:
-            payload["reply_markup"] = reply_markup
+            if isinstance(reply_markup, dict):
+                import json
+                payload["reply_markup"] = json.dumps(reply_markup)
+            else:
+                payload["reply_markup"] = reply_markup
+                
         try:
             response = requests.post(url, json=payload, timeout=15)
             response.raise_for_status()
             return True
         except Exception as e:
-            logger.error(f"Failed to send Telegram photo: {e}")
+            logger.error(f"Failed to send Telegram photo URL: {e}")
             return False
 
     @staticmethod
@@ -606,36 +611,28 @@ class NotificationService:
             "📲 Batafsil ko'rish uchun ilovani oching!"
         )
 
-        # Try to get absolute image URL
-        image_url = None
+        # Try to get absolute image PATH for reliable upload
+        image_path = None
         if product.image_no_bg:
-            img = product.image_no_bg.url
+            image_path = product.image_no_bg.path
         elif product.image:
-            img = product.image.url
-        else:
-            img = None
-
-        if img:
-            backend_url = getattr(settings, 'BACKEND_URL', 'https://tanla-ai.ardentsoft.uz').rstrip('/')
-            if img.startswith('http'):
-                image_url = img
-            else:
-                image_url = f"{backend_url}{img}"
+            image_path = product.image.path
 
         sent = 0
         failed = 0
         for tg_id in users:
             chat_id = str(tg_id)
             try:
-                if image_url:
-                    ok = NotificationService.send_telegram_photo(image_url, caption, chat_id=chat_id)
+                if image_path:
+                    ok = NotificationService.send_telegram_photo(image_path, caption, chat_id=chat_id)
                 else:
                     ok = NotificationService.send_telegram_message(caption, chat_id=chat_id)
                 if ok:
                     sent += 1
                 else:
                     failed += 1
-            except Exception:
+            except Exception as e:
+                logger.error(f"Broadcast error for {chat_id}: {e}")
                 failed += 1
 
         logger.info(f"Promotion broadcast: sent={sent}, failed={failed}, product={product.id}")

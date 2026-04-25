@@ -1112,11 +1112,19 @@ class LeadRequestViewSet(viewsets.ModelViewSet):
             except Exception:
                 calculated = None
 
-        serializer.save(
+        lead = serializer.save(
             user=tg_user,
             company=product.company,
             calculated_price=calculated,
         )
+        
+        # Notify Admin and Company Owner via Telegram
+        try:
+            from ..notifications import NotificationService
+            NotificationService.notify_new_lead(lead)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to send lead notification: {e}")
 
 
 class AIResultViewSet(viewsets.ModelViewSet):

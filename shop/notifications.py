@@ -9,32 +9,40 @@ class NotificationService:
     def send_telegram_message(message: str, chat_id: str = None, reply_markup: dict = None):
         """
         Sends a message to a Telegram chat. 
-        Defaults to settings.ADMIN_TELEGRAM_ID if chat_id is not provided.
+        If chat_id is not provided, broadcasts to all settings.ADMIN_TELEGRAM_IDS.
         """
         token = getattr(settings, 'TELEGRAM_BOT_TOKEN', None)
-        # Use a specific admin ID from settings OR fallback to a generic one
-        target_chat_id = chat_id or getattr(settings, 'ADMIN_TELEGRAM_ID', None)
-
-        if not token or not target_chat_id:
-            logger.warning("Telegram notification skipped: Token or Chat ID missing.")
+        if not token:
+            logger.warning("Telegram notification skipped: Bot Token missing.")
             return False
 
+        if chat_id:
+            return NotificationService._send_single_message(token, chat_id, message, reply_markup)
+
+        admin_ids = getattr(settings, 'ADMIN_TELEGRAM_IDS', [])
+        success = False
+        for tid in admin_ids:
+            if tid:
+                if NotificationService._send_single_message(token, str(tid), message, reply_markup):
+                    success = True
+        return success
+
+    @staticmethod
+    def _send_single_message(token, chat_id, message, reply_markup=None):
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {
-            "chat_id": target_chat_id,
+            "chat_id": chat_id,
             "text": message,
             "parse_mode": "HTML"
         }
-        
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
-
         try:
             response = requests.post(url, json=payload, timeout=10)
             response.raise_for_status()
             return True
         except Exception as e:
-            logger.error(f"Failed to send Telegram notification: {e}")
+            logger.error(f"Failed to send Telegram message to {chat_id}: {e}")
             return False
 
     @staticmethod

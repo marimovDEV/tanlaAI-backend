@@ -430,7 +430,9 @@ class ProductViewSet(viewsets.ModelViewSet):
                 {"error": "Not authenticated"}, status=status.HTTP_401_UNAUTHORIZED
             )
 
-        products = Product.objects.filter(owner_id=tg_user.id).select_related(
+        products = Product.objects.filter(
+            models.Q(owner_id=tg_user.id) | models.Q(company__user_id=tg_user.id)
+        ).distinct().select_related(
             "category", "company", "owner"
         )
         serializer = self.get_serializer(products, many=True)

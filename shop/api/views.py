@@ -152,20 +152,6 @@ def run_api_ai_background(
                     ai_result.telegram_file_id = file_ids[-1]
                     ai_result.save(update_fields=['telegram_file_id'])
 
-                # Automatically create a "soft" lead if enabled in system settings
-                from ..models import SystemSettings
-
-                if SystemSettings.get_solo().auto_create_lead:
-                    LeadRequest.objects.create(
-                        user=user,
-                        product=product,
-                        company=product.company,
-                        ai_result=ai_result,
-                        lead_type="visualize",
-                        status="new",
-                        phone=user.phone or "",
-                        message="Mijoz mahsulotni SI orqali vizualizatsiya qildi.",
-                    )
 
         data = session.get(session_data_key, {})
         data["status"] = "done"

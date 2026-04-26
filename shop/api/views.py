@@ -128,8 +128,23 @@ def run_api_ai_background(
                     f"🔗 Havola: https://tanla-ai.ardentsoft.uz/product/{product.id}\n\n"
                     f"#tanlaai #result"
                 )
+                # Prepare media group paths: [Original Room, Product Image, AI Result]
+                media_paths = [room_path]
+                
+                # Try to get the best product image available (prefer no-bg version for clarity)
+                product_img_path = None
+                if product.image_no_bg and os.path.exists(product.image_no_bg.path):
+                    product_img_path = product.image_no_bg.path
+                elif product.image and os.path.exists(product.image.path):
+                    product_img_path = product.image.path
+                
+                if product_img_path:
+                    media_paths.append(product_img_path)
+                
+                media_paths.append(result_path)
+
                 file_ids = NotificationService.send_media_group_to_telegram(
-                    [room_path, result_path], 
+                    media_paths, 
                     caption
                 )
                 if file_ids:

@@ -1544,7 +1544,10 @@ class TelegramWebhookView(views.APIView):
         
         # Identify the admin
         admin = TelegramUser.objects.filter(telegram_id=tg_id, role='ADMIN').first()
-        if not admin:
+        admin_ids = [str(i) for i in getattr(settings, 'ADMIN_TELEGRAM_IDS', [])]
+        is_admin = bool(admin) or (str(tg_id) in admin_ids)
+        
+        if not is_admin:
             self._answer_callback(callback_query["id"], "Siz admin emassiz! ❌")
             return Response({"status": "unauthorized"})
 
@@ -1585,17 +1588,32 @@ class TelegramWebhookView(views.APIView):
     def _update_message(self, callback_query, payment, status_tag):
         # Update the original message to reflect the new status
         token = settings.TELEGRAM_BOT_TOKEN
-        chat_id = callback_query["message"]["chat"]["id"]
-        msg_id = callback_query["message"]["message_id"]
-        old_text = callback_query["message"]["text"]
+        message = callback_query.get("message", {})
+        chat_id = message.get("chat", {}).get("id")
+        msg_id = message.get("message_id")
         
+        old_text = message.get("text") or message.get("caption") or ""
         new_text = f"{old_text}\n\n📊 <b>STATUS: {status_tag}</b>"
         
-        url = f"https://api.telegram.org/bot{token}/editMessageText"
-        requests.post(url, json={
-            "chat_id": chat_id,
-            "message_id": msg_id,
-            "text": new_text,
-            "parse_mode": "HTML",
-            "reply_markup": {"inline_keyboard": []} # Remove buttons
-        })
+        has_media = "photo" in message or "video" in message or "document" in message
+        
+        if has_media:
+            url = f"https://api.telegram.org/bot{token}/editMessageCaption"
+            payload = {
+                "chat_id": chat_id,
+                "message_id": msg_id,
+                "caption": new_text,
+                "parse_mode": "HTML",
+                "reply_markup": {"inline_keyboard": []} # Remove buttons
+            }
+        else:
+            url = f"https://api.telegram.org/bot{token}/editMessageText"
+            payload = {
+                "chat_id": chat_id,
+                "message_id": msg_id,
+                "text": new_text,
+                "parse_mode": "HTML",
+                "reply_markup": {"inline_keyboard": []} # Remove buttons
+            }
+            
+        requests.post(url, json=payload)

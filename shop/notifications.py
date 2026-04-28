@@ -479,7 +479,7 @@ class NotificationService:
         
         total_revenue = Payment.objects.filter(status='approved').aggregate(Sum('amount'))['amount__sum'] or 0
         rev_fmt = f"{float(total_revenue):,.0f}".replace(",", " ")
-        amount_fmt = f"{float(payment.amount):,.0f}".replace(",", " ")
+        amount_fmt = f"{float(payment.amount or 0):,.0f}".replace(",", " ")
         
         message = (
             "💰 <b>YANGI TO'LOV TASDIQLANDI!</b>\n\n"

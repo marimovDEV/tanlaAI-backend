@@ -326,18 +326,21 @@ class TelegramAuthView(views.APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
-        # Return currently authenticated session user (used as session-based refresh)
+        # Return currently authenticated session user (session-based refresh)
         tg_user = get_tg_user(request)
         if tg_user is not None:
             from ..serializers import TelegramUserSerializer
             return Response({"user": TelegramUserSerializer(tg_user, context={"request": request}).data})
-        if settings.DEBUG:
+        # Browser / non-Telegram access: auto-login as dev test user
+        # Controlled by BROWSER_DEV_LOGIN env var (set to "true" to enable)
+        import os
+        if settings.DEBUG or os.environ.get("BROWSER_DEV_LOGIN", "").lower() == "true":
             user_data = {
                 "id": 123456789,
                 "first_name": "Test",
                 "last_name": "User",
                 "username": "testuser",
-                "photo_url": "https://via.placeholder.com/150",
+                "photo_url": "",
             }
             return self._process_user(request, user_data)
         return Response({"error": "Not authenticated"}, status=status.HTTP_401_UNAUTHORIZED)

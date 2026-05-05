@@ -82,9 +82,9 @@ def _auto_bg_removal(product):
         worker.start()
         worker.join(timeout=180)  # 3-minute hard cap
         if worker.is_alive():
-            # Still running after 3 min — mark error so UI doesn't hang forever
             try:
-                p = _Product.objects.get(pk=product_id)
+                from shop.models import Product as _Prod
+                p = _Prod.objects.get(pk=product_id)
                 if p.ai_status == "processing":
                     p.ai_status = "error"
                     p.ai_error = "Processing timeout (>180s). Try reprocess."

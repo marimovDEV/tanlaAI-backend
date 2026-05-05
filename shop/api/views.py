@@ -326,8 +326,12 @@ class TelegramAuthView(views.APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
+        # Return currently authenticated session user (used as session-based refresh)
+        tg_user = get_tg_user(request)
+        if tg_user is not None:
+            from ..serializers import TelegramUserSerializer
+            return Response({"user": TelegramUserSerializer(tg_user, context={"request": request}).data})
         if settings.DEBUG:
-            # Mock login for local browser testing
             user_data = {
                 "id": 123456789,
                 "first_name": "Test",
@@ -336,9 +340,7 @@ class TelegramAuthView(views.APIView):
                 "photo_url": "https://via.placeholder.com/150",
             }
             return self._process_user(request, user_data)
-        return Response(
-            {"error": "Method not allowed"}, status=status.HTTP_405_METHOD_NOT_ALLOWED
-        )
+        return Response({"error": "Not authenticated"}, status=status.HTTP_401_UNAUTHORIZED)
 
     def post(self, request):
         init_data = request.data.get("initData")

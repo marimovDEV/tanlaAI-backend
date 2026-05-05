@@ -2507,31 +2507,27 @@ Return ONLY the final edited room image."""
             output_image_bytes = None
             method_used = "none"
 
-            # === TIER 1: PHOTOROOM ===
+            # === TIER 1: PHOTOROOM (only if API key is configured) ===
             output_image_bytes = AIService.photoroom_segmentation(input_bytes_cleaned)
             if output_image_bytes:
                 method_used = "photoroom"
 
-            # === TIER 2: GEMINI ===
+            # === TIER 2: REMBG (fast local, u2net default model) ===
             if not output_image_bytes:
                 try:
-                    client = AIService.get_gemini_client()
-                    output_image_bytes = AIService.gemini_background_removal(
-                        input_bytes_cleaned, client
-                    )
-                    if output_image_bytes:
-                        method_used = "gemini"
-                except:
-                    pass
+                    from rembg import remove as rembg_remove
+                    print(f"DEBUG: [AI Service] Using rembg u2net for product {product.id}...")
+                    output_image_bytes = rembg_remove(input_bytes_cleaned)
+                    method_used = "rembg"
+                    print(f"DEBUG: [AI Service] rembg completed for product {product.id}")
+                except Exception as rembg_err:
+                    print(f"WARNING: [AI Service] rembg failed: {rembg_err}")
 
-            # === TIER 3: REMBG (Deterministic Fallback) ===
+            # If everything failed, use original image as-is
             if not output_image_bytes:
-                from rembg import new_session, remove
-
-                print(f"DEBUG: [AI Service] Falling back to local rembg...")
-                session = new_session("isnet-general-use")
-                output_image_bytes = remove(input_bytes_cleaned, session=session)
-                method_used = "rembg"
+                print(f"WARNING: [AI Service] All BG removal methods failed for {product.id}, using original")
+                output_image_bytes = input_bytes_cleaned
+                method_used = "original"
 
             # === REFINEMENT & TEXTURE PRESERVATION ===
             import cv2

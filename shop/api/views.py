@@ -957,21 +957,22 @@ class CompanyViewSet(viewsets.ModelViewSet):
         if hasattr(tg_user, "company"):
             raise ValidationError({"detail": "You already have a company profile."})
 
-        # Create company
         try:
             company = serializer.save(user=tg_user)
         except Exception as e:
             print(f"DEBUG: Company creation error: {e}")
             raise
 
-        # Upgrade user role to COMPANY automatically
+        # Start 5-day free trial immediately
+        company.start_trial()
+
+        # Upgrade user role to COMPANY
         if tg_user.role != "COMPANY":
             tg_user.role = "COMPANY"
             tg_user.save(update_fields=["role"])
 
         Subscription.objects.get_or_create(company=company)
 
-        # Notify admin
         from ..notifications import NotificationService
         NotificationService.notify_company_created(company)
 

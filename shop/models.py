@@ -61,41 +61,64 @@ class Company(models.Model):
     instagram_link = models.CharField(max_length=255, blank=True, default='')
     youtube_link = models.CharField(max_length=255, blank=True, default='')
     logo = models.ImageField(upload_to="company_logos/", null=True, blank=True)
+    TRIAL_DAYS = 5
     STATUS_CHOICES = [
+        ("trial", "Trial (Bepul sinov)"),
         ("pending_payment", "Pending (To'lov kutilmoqda)"),
         ("waiting_confirmation", "Waiting (Tasdiqlash kutilmoqda)"),
         ("active", "Active (Faol)"),
         ("expired", "Expired (Muddati tugagan)"),
         ("blocked", "Blocked (Bloklangan)"),
     ]
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending_payment")
-    is_active = models.BooleanField(default=False)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="trial")
+    is_active = models.BooleanField(default=True)
+    trial_ends_at = models.DateTimeField(null=True, blank=True)
     subscription_deadline = models.DateTimeField(null=True, blank=True)
     plan = models.ForeignKey(SubscriptionPlan, null=True, blank=True, on_delete=models.SET_NULL, related_name="companies")
     created_at = models.DateTimeField(auto_now_add=True)
     is_vip = models.BooleanField(default=False, help_text="VIP partners ignore subscription deadlines.")
 
     @property
+    def trial_days_left(self):
+        from django.utils import timezone
+        if self.status != "trial" or not self.trial_ends_at:
+            return 0
+        delta = self.trial_ends_at - timezone.now()
+        return max(0, delta.days)
+
+    @property
     def is_currently_active(self):
         from django.utils import timezone
 
-        # Blocked is blocked, even for VIP
         if self.status == "blocked":
             return False
-            
-        # VIP is always active unless blocked
+
         if self.is_vip:
             return True
-            
+
+        # Active trial
+        if self.status == "trial":
+            if self.trial_ends_at and self.trial_ends_at > timezone.now():
+                return True
+            return False
+
         if self.status != "active":
             return False
-            
+
         if not self.is_active:
             return False
-            
+
         if self.subscription_deadline and self.subscription_deadline < timezone.now():
             return False
         return True
+
+    def start_trial(self):
+        from django.utils import timezone
+        from datetime import timedelta
+        self.status = "trial"
+        self.is_active = True
+        self.trial_ends_at = timezone.now() + timedelta(days=self.TRIAL_DAYS)
+        self.save(update_fields=["status", "is_active", "trial_ends_at"])
 
     def save(self, *args, **kwargs):
         # Auto-activate VIPs

@@ -61,6 +61,21 @@ def format_generation_error(error):
     return short_message[:300]
 
 
+def _auto_bg_removal(product):
+    """Trigger background removal automatically after product create/update."""
+    if not (product.image or product.original_image):
+        return
+    import threading
+    from ..services import AIService
+    product.ai_status = "processing"
+    product.save(update_fields=["ai_status"])
+    threading.Thread(
+        target=AIService.process_product_background,
+        args=(product,),
+        daemon=True,
+    ).start()
+
+
 def run_api_ai_background(
     session_key, session_data_key, product_id, room_path, result_path, tg_user_id, request_id=""
 ):
@@ -523,7 +538,7 @@ class ProductViewSet(viewsets.ModelViewSet):
             raise ValidationError(
                 {"detail": "Create a company profile before adding products."}
             )
-        if company.status != 'active' and not company.is_vip:
+        if company.status not in ('active', 'trial') and not company.is_vip:
             raise PermissionDenied(
                 "Do'koningiz hali aktivlashtirilmagan. Mahsulot qo'shish uchun avval to'lovni tasdiqlang. "
                 f"Hozirgi status: {company.status}"
@@ -549,11 +564,16 @@ class ProductViewSet(viewsets.ModelViewSet):
 
         product = serializer.save(owner=tg_user, company=company, is_active=True)
         self._sync_product_gallery(self.request, product)
+        _auto_bg_removal(product)
 
     def perform_update(self, serializer):
         ensure_product_owner(self.request, serializer.instance)
+        old_image = serializer.instance.image.name if serializer.instance.image else None
         product = serializer.save()
         self._sync_product_gallery(self.request, product)
+        new_image = product.image.name if product.image else None
+        if new_image and new_image != old_image:
+            _auto_bg_removal(product)
 
     def perform_destroy(self, instance):
         ensure_product_owner(self.request, instance)

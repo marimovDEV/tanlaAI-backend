@@ -2423,21 +2423,25 @@ Return ONLY the final edited room image."""
 
             prompt = "Isolate this door object from its background completely. Place it on a solid, flat, uniform #00FF00 green background. Do not alter the door's texture, frame, or details."
 
-            response = client.models.edit_image(
-                model="imagen-3.0-capability-001",
-                prompt=prompt,
-                reference_images=[
-                    types.RawReferenceImage(
-                        reference_image=types.Image(image_bytes=image_bytes),
-                        reference_id=0,
-                    )
-                ],
-                config=types.EditImageConfig(
-                    edit_mode=types.EditMode.EDIT_MODE_BGSWAP,
-                    number_of_images=1,
-                    output_mime_type="image/png",
-                ),
-            )
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    client.models.edit_image,
+                    model="imagen-3.0-capability-001",
+                    prompt=prompt,
+                    reference_images=[
+                        types.RawReferenceImage(
+                            reference_image=types.Image(image_bytes=image_bytes),
+                            reference_id=0,
+                        )
+                    ],
+                    config=types.EditImageConfig(
+                        edit_mode=types.EditMode.EDIT_MODE_BGSWAP,
+                        number_of_images=1,
+                        output_mime_type="image/png",
+                    ),
+                )
+                response = future.result(timeout=60)
 
             if response.generated_images:
                 # If we used green screen, we might need to extract.

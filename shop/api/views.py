@@ -62,18 +62,37 @@ def format_generation_error(error):
 
 
 def _auto_bg_removal(product):
-    """Trigger background removal automatically after product create/update."""
+    """Trigger background removal automatically. Marks error if it takes > 3 minutes."""
     if not (product.image or product.original_image):
         return
     import threading
     from ..services import AIService
+    from .models import Product as _Product
+
     product.ai_status = "processing"
     product.save(update_fields=["ai_status"])
-    threading.Thread(
-        target=AIService.process_product_background,
-        args=(product,),
-        daemon=True,
-    ).start()
+    product_id = product.id
+
+    def _run():
+        worker = threading.Thread(
+            target=AIService.process_product_background,
+            args=(product,),
+            daemon=True,
+        )
+        worker.start()
+        worker.join(timeout=180)  # 3-minute hard cap
+        if worker.is_alive():
+            # Still running after 3 min — mark error so UI doesn't hang forever
+            try:
+                p = _Product.objects.get(pk=product_id)
+                if p.ai_status == "processing":
+                    p.ai_status = "error"
+                    p.ai_error = "Processing timeout (>180s). Try reprocess."
+                    p.save(update_fields=["ai_status", "ai_error"])
+            except Exception:
+                pass
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def run_api_ai_background(

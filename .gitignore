@@ -1,6 +1,9 @@
 *.pyc
 __pycache__/
 db.sqlite3
+db.sqlite3-shm
+db.sqlite3-wal
+db.sqlite3.*
 .env
 .pytest_cache/
 media/
@@ -11,3 +14,8 @@ static/*
 google-cloud-key.json
 models/
 cache/
+venv/
+scratch/
+samples/
+*.bak*
+ai_debug.log

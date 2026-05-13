@@ -1,0 +1,15 @@
+[Unit]
+Description=TanlaAI Telegram Bot
+After=network.target
+
+[Service]
+User=root
+Group=root
+WorkingDirectory=/var/www/tanlaAI-backend
+Environment="PYTHONPATH=/var/www/tanlaAI-backend"
+ExecStart=/var/www/tanlaAI-backend/venv/bin/python3 bot/run_bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

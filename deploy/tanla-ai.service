@@ -1,0 +1,13 @@
+[Unit]
+Description=Tanla AI Django Gunicorn
+After=network.target
+
+[Service]
+User=root
+Group=www-data
+WorkingDirectory=/var/www/tanlaAI-backend
+Environment="PATH=/var/www/tanlaAI-backend/venv/bin"
+ExecStart=/var/www/tanlaAI-backend/venv/bin/gunicorn --workers 4 --timeout 120 --bind unix:/var/www/tanlaAI-backend/tanlaai.sock core.wsgi:application
+
+[Install]
+WantedBy=multi-user.target

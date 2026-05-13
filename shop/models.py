@@ -198,6 +198,8 @@ class Product(models.Model):
     sale_end_date = models.DateTimeField(null=True, blank=True)
 
     # Lead time (ready-by duration, in days)
+    has_frame = models.BooleanField(default=False)
+    has_crown = models.BooleanField(default=False)
     lead_time_days = models.PositiveIntegerField(
         default=3,
         help_text="Necha kunda tayyor bo'ladi (kun)",
@@ -283,6 +285,9 @@ class AIResult(models.Model):
     input_image = models.ImageField(upload_to="ai_inputs/", null=True, blank=True)
     image = models.ImageField(upload_to="ai_results/", null=True, blank=True)
     telegram_file_id = models.CharField(max_length=255, blank=True, default='')
+    placement_mode = models.CharField(max_length=20, default="center", blank=True)
+    progress_step = models.IntegerField(default=0)
+    status_text = models.CharField(max_length=100, default="", blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="done")
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -385,6 +390,7 @@ class LeadRequest(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     is_processed = models.BooleanField(default=False)  # Keep for compatibility
     is_paid = models.BooleanField(default=False)
+    waiting_for_tg_location = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["-created_at"]

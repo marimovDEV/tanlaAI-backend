@@ -67,7 +67,6 @@ def _auto_bg_removal(product):
         return
     import threading
     from ..services import AIService
-    from .models import Product as _Product
 
     product.ai_status = "processing"
     product.save(update_fields=["ai_status"])
@@ -329,7 +328,6 @@ class TelegramAuthView(views.APIView):
         # Return currently authenticated session user (session-based refresh)
         tg_user = get_tg_user(request)
         if tg_user is not None:
-            from ..serializers import TelegramUserSerializer
             return Response({"user": TelegramUserSerializer(tg_user, context={"request": request}).data})
         # Browser / non-Telegram access: auto-login as dev test user
         # Controlled by BROWSER_DEV_LOGIN env var (set to "true" to enable)
@@ -1180,6 +1178,21 @@ class AIResultViewSet(viewsets.ModelViewSet):
             .order_by("-created_at")
         )
 
+    def get_object(self):
+        pk = self.kwargs.get(self.lookup_field)
+        qs = self.get_queryset()
+        # Try integer id
+        try:
+            return qs.get(pk=int(pk))
+        except (ValueError, TypeError, AIResult.DoesNotExist):
+            pass
+        # Try by image filename UUID
+        obj = qs.filter(image__icontains=str(pk)).first()
+        if obj:
+            return obj
+        from rest_framework.exceptions import NotFound
+        raise NotFound("AIResult topilmadi")
+
     @action(detail=True, methods=["post"], url_path="convert-to-lead")
     def convert_to_lead(self, request, pk=None):
         ai_result = self.get_object()
@@ -1226,6 +1239,120 @@ class AIResultViewSet(viewsets.ModelViewSet):
         response = FileResponse(file_handle, content_type='image/png')
         response['Content-Disposition'] = f'attachment; filename="{filename}"'
         return response
+
+
+    @action(detail=True, methods=["post"], url_path="send-to-bot")
+    def send_to_bot(self, request, pk=None):
+        import os, json, requests as _req
+        from django.conf import settings as _s
+
+        ai_result = self.get_object()
+        tg_user = ai_result.user
+        chat_id = str(tg_user.telegram_id)
+        token = getattr(_s, 'TELEGRAM_BOT_TOKEN', None)
+        if not token or not chat_id:
+            return Response({"error": "Bot token yoki chat_id topilmadi"}, status=400)
+
+        photos = []
+        if ai_result.input_image and ai_result.input_image.name:
+            try:
+                p = ai_result.input_image.path
+                if os.path.exists(p): photos.append(("room", p))
+            except Exception: pass
+
+        product = ai_result.product
+        for attr in ("original_image", "image", "image_no_bg"):
+            field = getattr(product, attr, None)
+            if field and field.name:
+                try:
+                    p = field.path
+                    if os.path.exists(p): photos.append(("door", p)); break
+                except Exception: pass
+
+        if ai_result.image and ai_result.image.name:
+            try:
+                p = ai_result.image.path
+                if os.path.exists(p): photos.append(("result", p))
+            except Exception: pass
+
+        if not photos:
+            return Response({"error": "Rasmlar topilmadi"}, status=404)
+
+        url = f"https://api.telegram.org/bot{token}/sendMediaGroup"
+        captions = {
+            "room": "Asl xona rasmi",
+            "door": "Yangi eshik (mahsulot)",
+            "result": f"Natija — {product.name}\n\nTanla.ai vizualizatsiyasi",
+        }
+        media = []
+        files = {}
+        opened = []
+        try:
+            for i, (label, fpath) in enumerate(photos):
+                key = f"photo{i}"
+                f = open(fpath, "rb")
+                opened.append(f)
+                files[key] = f
+                item = {"type": "photo", "media": f"attach://{key}"}
+                if label in captions:
+                    item["caption"] = captions[label]
+                media.append(item)
+            resp = _req.post(url, data={"chat_id": chat_id, "media": json.dumps(media)}, files=files, timeout=60)
+            data = resp.json()
+        finally:
+            for f in opened:
+                try: f.close()
+                except Exception: pass
+
+        if data.get("ok"):
+            return Response({"status": "ok", "sent": len(photos)})
+        return Response({"error": data.get("description", "Telegram xatosi")}, status=400)
+
+    @action(detail=True, methods=["post"], url_path="create-share")
+    def create_share(self, request, pk=None):
+        import shutil as _sh, os, uuid as _uuid
+        from django.conf import settings as _s
+        from ..models import SharedDesign
+
+        ai_result = self.get_object()
+        if not ai_result.image or not ai_result.image.name:
+            return Response({"error": "Natija rasmi topilmadi"}, status=404)
+
+        share_id = _uuid.uuid4()
+        image_name = ai_result.image.name  # fallback
+
+        # Copy result image to shared_designs/
+        try:
+            src = ai_result.image.path
+            dst_dir = os.path.join(_s.MEDIA_ROOT, "shared_designs")
+            os.makedirs(dst_dir, exist_ok=True)
+            dst_name = "shared_designs/{}.png".format(share_id)
+            _sh.copy2(src, os.path.join(_s.MEDIA_ROOT, dst_name))
+            image_name = dst_name
+        except Exception:
+            pass
+
+        # Copy original room image
+        orig_name = None
+        if ai_result.input_image and ai_result.input_image.name:
+            try:
+                src2 = ai_result.input_image.path
+                orig_dir = os.path.join(_s.MEDIA_ROOT, "shared_designs", "originals")
+                os.makedirs(orig_dir, exist_ok=True)
+                orig_fname = "shared_designs/originals/{}_orig.png".format(share_id)
+                _sh.copy2(src2, os.path.join(_s.MEDIA_ROOT, orig_fname))
+                orig_name = orig_fname
+            except Exception:
+                pass
+
+        shared = SharedDesign.objects.create(
+            id=share_id,
+            product=ai_result.product,
+            image=image_name,
+            original_image=orig_name,
+        )
+        share_url = "https://t.me/tanlaAI_bot?start=share_{}".format(shared.id)
+        return Response({"status": "ok", "id": str(shared.id), "share_url": share_url})
 
 
 class AdminLoginApiView(views.APIView):

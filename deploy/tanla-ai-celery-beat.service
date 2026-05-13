@@ -1,0 +1,15 @@
+[Unit]
+Description=TanlaAI Celery Beat
+After=network.target redis-server.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/var/www/tanlaAI-backend
+EnvironmentFile=/var/www/tanlaAI-backend/.env
+ExecStart=/var/www/tanlaAI-backend/venv/bin/celery -A core beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

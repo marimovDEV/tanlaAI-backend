@@ -1823,7 +1823,7 @@ class AIService:
 
     @staticmethod
     def detect_door_box_with_gemini(
-        room_image_bytes, client, image_width, image_height, model_name="gemini-1.5-pro"
+        room_image_bytes, client, image_width, image_height, model_name="gemini-2.0-flash"
     ):
         """Phase 1: AI Detector - Use Gemini to find the optimal door placement in JSON format."""
         import json
@@ -1832,16 +1832,21 @@ class AIService:
         from google.genai import types
 
         prompt = (
-            "Analyze this room image for a door installation.\n"
-            "Return ONLY a JSON object with the bounding box where a new door should be placed.\n"
-            "Focus on finding an empty wall or replacing an existing door.\n\n"
-            'Format: {"ymin": 0-1000, "xmin": 0-1000, "ymax": 0-1000, "xmax": 0-1000}\n'
-            "Use normalized coordinates (0 to 1000)."
+            "Analyze this room photo carefully. You are an expert door installer.\n"
+            "Your task is to find the EXACT INNER OPENING where a new door will be installed.\n\n"
+            "CRITICAL INSTRUCTIONS:\n"
+            "1. Identify the EXISTING door or door opening.\n"
+            "2. Find the INNER boundary of the opening (inside the decorative wall frame/architrave).\n"
+            "3. Include the full height from the floor threshold to the very top inner edge.\n"
+            "4. Include the full width from left inner jamb to right inner jamb.\n"
+            "5. If there is a transom window above the door, include it in the box if it should be replaced.\n\n"
+            "Return ONLY a JSON object with normalized coordinates (0-1000):\n"
+            '{"ymin": ..., "xmin": ..., "ymax": ..., "xmax": ...}'
         )
 
         try:
             print(
-                f"DEBUG: [Gemini Detection] Requesting spatial analysis ({model_name})..."
+                f"DEBUG: [Gemini Detection] Requesting expert spatial analysis ({model_name})..."
             )
             response = client.models.generate_content(
                 model=model_name,
@@ -1855,10 +1860,10 @@ class AIService:
             )
 
             coords = json.loads(response.text)
-            ymin = int(coords.get("ymin", 200))
-            xmin = int(coords.get("xmin", 300))
-            ymax = int(coords.get("ymax", 800))
-            xmax = int(coords.get("xmax", 700))
+            ymin = float(coords.get("ymin", 200))
+            xmin = float(coords.get("xmin", 300))
+            ymax = float(coords.get("ymax", 800))
+            xmax = float(coords.get("xmax", 700))
 
             box_1000 = [ymin, xmin, ymax, xmax]
             return box_1000_to_pixels(box_1000, image_width, image_height)
@@ -1917,259 +1922,260 @@ class AIService:
     @staticmethod
     def generate_with_gemini_direct(product, room_image_path, result_image_path):
         """
-        Gemini Direct Image Editing — Nano Banana 2 Phase (Detector + Editor)
+        Pipeline v7: AI-first door replacement
+        STEP 1 — Detect door box (Gemini)
+        STEP 2 — Build white mask
+        STEP 3 — Imagen/Gemini inpaint with exact door reference
+        STEP 4 — PIL+seamlessClone fallback
         """
-        import time
+        import json, re, os
         from io import BytesIO
         import cv2
         import numpy as np
         from google.genai import types
-        from PIL import Image as PILImage, ImageDraw
-        import json
-        import re
-        import os
+        from PIL import Image as PILImage, ImageOps, ImageFilter, ImageDraw
         from .ai_utils import save_visualization_metadata
 
-        from PIL import ImageOps
-        # ── Load original room ────────────────────────────────────────────────
+        # ── Load room ──────────────────────────────────────────
         room_pil = PILImage.open(room_image_path)
         room_pil = ImageOps.exif_transpose(room_pil).convert("RGB")
         w_orig, h_orig = room_pil.size
-        
         GEMINI_MAX = 1024
-        long_side = max(w_orig, h_orig)
-        if long_side > GEMINI_MAX:
-            scale = GEMINI_MAX / long_side
-            new_w = max(1, int(w_orig * scale))
-            new_h = max(1, int(h_orig * scale))
-            room_pil = room_pil.resize((new_w, new_h), PILImage.Resampling.LANCZOS)
-            
+        ls = max(w_orig, h_orig)
+        if ls > GEMINI_MAX:
+            sc = GEMINI_MAX / ls
+            room_pil = room_pil.resize((max(1,int(w_orig*sc)), max(1,int(h_orig*sc))), PILImage.Resampling.LANCZOS)
         w_send, h_send = room_pil.size
-        
-        room_buf = BytesIO()
-        room_pil.save(room_buf, format="PNG")
-        room_bytes = room_buf.getvalue()
+        room_bgr = cv2.cvtColor(np.array(room_pil), cv2.COLOR_RGB2BGR)
+        print(f"  Room: {w_orig}x{h_orig} -> {w_send}x{h_send}")
 
-        print(f"DEBUG: [Gemini Direct / Nano Banana] Original size: {w_orig}×{h_orig}, Send size: {w_send}×{h_send}")
+        # ── Load door (no-bg for PIL fallback) ─────────────────
+        door_rgba_cv = load_best_door_rgba(product)
+        if door_rgba_cv is not None:
+            door_rgba_pil = PILImage.fromarray(cv2.cvtColor(door_rgba_cv, cv2.COLOR_BGRA2RGBA))
+        else:
+            _dp = None
+            for _a in ("image_no_bg", "original_image", "image"):
+                _f = getattr(product, _a, None)
+                if _f and _f.name:
+                    try:
+                        _p = _f.path
+                        if os.path.exists(_p): _dp = _p; break
+                    except Exception: pass
+            if not _dp: raise ValueError("Mahsulot rasmi topilmadi")
+            door_rgba_pil = PILImage.open(_dp).convert("RGBA")
+            try:
+                from rembg import remove as _rmb; door_rgba_pil = _rmb(door_rgba_pil)
+            except Exception: pass
 
-        # ── Find door image ───────────────────────────────────────────────────
-        door_image_path = None
-        for attr in ("image_no_bg", "original_image", "image"):
-            field = getattr(product, attr, None)
-            if field and field.name:
+        # ── Load door reference (with BG for Gemini) ───────────
+        door_ref_path = None
+        for _a in ("original_image", "image", "image_no_bg"):
+            _f = getattr(product, _a, None)
+            if _f and _f.name:
                 try:
-                    p = field.path
-                    if os.path.exists(p):
-                        door_image_path = p
-                        break
-                except Exception:
-                    pass
-        if not door_image_path:
-            raise ValueError("Mahsulot rasmi topilmadi")
-
-        door_ext = os.path.splitext(door_image_path)[1].lower()
-        if door_ext == ".png": door_mime = "image/png"
-        elif door_ext in (".jpg", ".jpeg"): door_mime = "image/jpeg"
-        elif door_ext == ".webp": door_mime = "image/webp"
-        else: door_mime = "image/png"
-
-        with open(door_image_path, "rb") as f:
-            door_bytes = f.read()
+                    _p = _f.path
+                    if os.path.exists(_p): door_ref_path = _p; break
+                except Exception: pass
+        door_ref_pil = PILImage.open(door_ref_path).convert("RGB") if door_ref_path else door_rgba_pil.convert("RGB")
+        door_name = getattr(product, "name", "new door")
 
         clients = AIService.build_gemini_visual_clients()
-        if not clients:
-            raise ValueError("No Gemini clients configured")
+        if not clients: raise ValueError("No Gemini clients")
 
-        # ═══════════════════════════════════════
-        # Phase 1: AI Detection
-        # ═══════════════════════════════════════
-        print("\n🔍 1-BOSQICH: Devorni analiz qilyapman...")
-        detection_prompt = (
-            "Analyze this room image. I need to install a new door.\n"
-            "Find the NEAREST door opening facing the camera — this could be:\n"
-            "  - An open doorway/passage (no door installed, you can see through to another room)\n"
-            "  - An existing door that needs replacing\n"
-            "  - An empty wall section suitable for a door\n\n"
-            "Return ONLY the bounding box of the door frame edges (left jamb, right jamb, top header, floor threshold).\n"
-            "The box must tightly fit the door FRAME, not the room behind it.\n\n"
-            'Format: {"ymin": 0-1000, "xmin": 0-1000, "ymax": 0-1000, "xmax": 0-1000}\n'
-            "Use normalized coordinates (0 to 1000)."
+        # ════════════════════════════════════════════════════════
+        # STEP 1: Detect door box + panel
+        # ════════════════════════════════════════════════════════
+        print("\n--- STEP 1: Detection ---")
+        _rb = BytesIO(); room_pil.save(_rb, format="PNG"); room_bytes = _rb.getvalue()
+
+        det_prompt = (
+            "Find the main door in this room photo. Return ONLY valid JSON:\n"
+            '{"box":{"ymin":int,"xmin":int,"ymax":int,"xmax":int},'
+            '"panel":{"ymin":int,"xmin":int,"ymax":int,"xmax":int}}\n'
+            "box = full door assembly including crown/cornice/frame. "
+            "panel = ONLY the swinging door leaf(ves). "
+            "For double doors: both leaves in both box and panel. Normalize 0-1000."
         )
-        DETECTION_MODELS = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.0-flash-exp']
-        
-        box_coords = None
-        det_model_used = None
-        
-        for client_label, client in clients:
+
+        box_coords = None; panel_coords = None; det_model = "fallback"
+        for _cl, _c in clients:
             if box_coords: break
-            for model_name in DETECTION_MODELS:
+            for _m in ["gemini-2.5-flash", "gemini-2.0-flash"]:
                 try:
-                    print(f"  🤖 Trying {model_name} for detection ({client_label})...")
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=[
-                            types.Part.from_bytes(data=room_bytes, mime_type='image/png'),
-                            detection_prompt
-                        ],
-                        config=types.GenerateContentConfig(response_mime_type='application/json')
+                    _r = _c.models.generate_content(
+                        model=_m,
+                        contents=[types.Part.from_bytes(data=room_bytes, mime_type="image/png"), det_prompt],
+                        config=types.GenerateContentConfig(response_mime_type="application/json"),
                     )
-                    text = response.text.strip()
-                    json_match = re.search(r'\{[^}]+\}', text)
-                    if json_match: text = json_match.group(0)
-                    coords = json.loads(text)
-                    ymin = float(coords.get('ymin', 200))
-                    xmin = float(coords.get('xmin', 300))
-                    ymax = float(coords.get('ymax', 800))
-                    xmax = float(coords.get('xmax', 700))
-                    
-                    if max(ymin, xmin, ymax, xmax) <= 1.5:
-                        ymin *= 1000
-                        xmin *= 1000
-                        ymax *= 1000
-                        xmax *= 1000
-                        
-                    py_ymin = int(ymin * h_send / 1000)
-                    py_xmin = int(xmin * w_send / 1000)
-                    py_ymax = int(ymax * h_send / 1000)
-                    py_xmax = int(xmax * w_send / 1000)
-                    
-                    if py_xmax <= py_xmin or py_ymax <= py_ymin:
-                        raise ValueError("Invalid bounding box detected.")
-                    
-                    box_coords = (py_xmin, py_ymin, py_xmax, py_ymax)
-                    det_model_used = model_name
-                    print(f"  ✅ Detection success with {model_name}: {box_coords}")
-                    break
-                except Exception as e:
-                    print(f"  ❌ {model_name}: {str(e)[:200]}")
-        
+                    _raw = re.search(r"\{.*\}", _r.text.strip(), re.DOTALL)
+                    if not _raw: continue
+                    _d = json.loads(_raw.group(0))
+                    def _pb(d, W, H):
+                        yn,xn,yx,xx = float(d.get("ymin",0)),float(d.get("xmin",0)),float(d.get("ymax",1000)),float(d.get("xmax",1000))
+                        if max(yn,xn,yx,xx)<=1.5: yn,xn,yx,xx=yn*1000,xn*1000,yx*1000,xx*1000
+                        return (int(xn*W/1000),int(yn*H/1000),int(xx*W/1000),int(yx*H/1000))
+                    _bx = _pb(_d.get("box",_d), w_send, h_send)
+                    if _bx[2]>_bx[0] and _bx[3]>_bx[1]:
+                        box_coords = _bx; det_model = _m
+                        if "panel" in _d:
+                            _px = _pb(_d["panel"], w_send, h_send)
+                            if _px[2]>_px[0] and _px[3]>_px[1]: panel_coords = _px
+                        print(f"  box={box_coords}, panel={panel_coords} ({_m})"); break
+                except Exception as _e: print(f"  {_m}: {str(_e)[:80]}")
         if not box_coords:
-            print("  ⚠️ All detections failed, using center fallback")
-            fx = int(w_send * 0.25)
-            fy = int(h_send * 0.15)
-            fw = int(w_send * 0.5)
-            fh = int(h_send * 0.75)
-            box_coords = (fx, fy, fx + fw, fy + fh)
-            det_model_used = 'fallback-center'
+            _fx,_fy = int(w_send*0.2),int(h_send*0.05)
+            box_coords = (_fx,_fy,_fx+int(w_send*0.6),_fy+int(h_send*0.85))
 
-        py_xmin, py_ymin, py_xmax, py_ymax = box_coords
+        x1,y1,x2,y2 = box_coords
+        bw,bh = x2-x1, y2-y1
+        px1,py1,px2,py2 = panel_coords if panel_coords else (x1,y1+int(bh*0.12),x2,y2)
+        pw,ph = px2-px1, py2-py1
 
-        # Expand detected box slightly (5% each side) to ensure full coverage of old door frames/edges
-        dw = py_xmax - py_xmin
-        dh = py_ymax - py_ymin
-        py_xmin = max(0, py_xmin - int(dw * 0.05))
-        py_ymin = max(0, py_ymin - int(dh * 0.05))
-        py_xmax = min(w_send, py_xmax + int(dw * 0.05))
-        py_ymax = min(h_send, py_ymax + int(dh * 0.05))
-        
-        box_coords = (py_xmin, py_ymin, py_xmax, py_ymax)
+        # ════════════════════════════════════════════════════════
+        # STEP 2: Build white mask
+        # ════════════════════════════════════════════════════════
+        print("\n--- STEP 2: Build mask ---")
+        mask_pil = PILImage.new("RGB", (w_send, h_send), (0,0,0))
+        ImageDraw.Draw(mask_pil).rectangle([x1,y1,x2,y2], fill=(255,255,255))
 
-        # ═══════════════════════════════════════
-        # Phase 2: Auto Masking
-        # ═══════════════════════════════════════
-        print("\n🎨 2-BOSQICH: Maskani chizyapman...")
-        mask = PILImage.new('L', (w_send, h_send), 0)
-        draw = ImageDraw.Draw(mask)
-        draw.rectangle([py_xmin, py_ymin, py_xmax, py_ymax], fill=255)
-        mask_buf = BytesIO()
-        mask.save(mask_buf, format='PNG')
-        mask_bytes = mask_buf.getvalue()
-        print(f"✅ Mask created: {py_xmax-py_xmin}x{py_ymax-py_ymin} pixels")
+        _rb2 = BytesIO(); room_pil.save(_rb2, format="PNG")
+        _mb  = BytesIO(); mask_pil.save(_mb, format="PNG")
+        _db  = BytesIO(); door_ref_pil.save(_db, format="PNG")
 
-        # ═══════════════════════════════════════
-        # Phase 3: Inpainting
-        # ═══════════════════════════════════════
-        print("\n🚪 3-BOSQICH: Eshikni joylashtiryapman...")
-        edit_prompt = """You are an expert interior design photo editor.
-Image 1: The original room where we need to install a new door.
-Image 2: REPLACEMENT MASK (white area). This shows EXACTLY where the modification MUST happen.
-Image 3: The NEW DOOR design.
+        edit_prompt = (
+            f"You are a professional interior photo editor. Task: door replacement.\n\n"
+            f"IMAGE 1 (room photo): The room where the door must be replaced.\n"
+            f"IMAGE 2 (white mask): The white area shows EXACTLY where to edit. Black areas = DO NOT TOUCH.\n"
+            f"IMAGE 3 (new door): The EXACT door model '{door_name}' to install. Copy it 100%.\n\n"
+            f"STRICT RULES:\n"
+            f"1. Remove the existing door completely from the white mask area.\n"
+            f"2. Install the door from IMAGE 3 in that exact location — same color, panels, proportions, decorations. ZERO changes.\n"
+            f"3. DO NOT change ANYTHING outside the white mask.\n"
+            f"4. The door must fit the opening naturally with correct perspective, scale, lighting, shadows.\n"
+            f"5. Result must look like a REAL PHOTOGRAPH — no blur, no artifacts.\n"
+            f"6. DO NOT redesign the door. DO NOT mix old and new door styles.\n\n"
+            f"Return ONLY the final edited room image."
+        )
 
-TASK:
-1. COMPLETELY REPLACE the pixels in the masked area of Image 1 with the door design from Image 3.
-2. The old door in Image 1 MUST be entirely covered and hidden.
-3. Align the new door design to the door frame's perspective and lighting.
-4. Ensure the shadows around the new frame look natural.
-5. DO NOT change anything outside the white masked area.
+        # ════════════════════════════════════════════════════════
+        # STEP 3: AI editing (Imagen → Gemini image models)
+        # ════════════════════════════════════════════════════════
+        print("\n--- STEP 3: AI image editing ---")
+        ai_success = False; final_img = None; inp_model_used = "PIL-fallback"
 
-Return ONLY the final edited room image."""
-        INPAINT_MODELS = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview', 'gemini-2.5-flash', 'gemini-2.0-flash']
-        
-        final_img = None
-        inp_model_used = None
-        
-        last_inpaint_error = "Noma'lum xato"
-        for client_label, client in clients:
-            if final_img: break
-            for model_name in INPAINT_MODELS:
-                try:
-                    print(f"  🤖 Trying {model_name} for inpainting ({client_label})...")
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=[
-                            types.Part.from_bytes(data=room_bytes, mime_type='image/png'),
-                            types.Part.from_bytes(data=mask_bytes, mime_type='image/png'),
-                            types.Part.from_bytes(data=door_bytes, mime_type=door_mime),
-                            edit_prompt
-                        ],
-                        config=types.GenerateContentConfig(response_modalities=["IMAGE", "TEXT"])
+        # 3a: Try Imagen 3 edit_image
+        _room_ref = types.RawReferenceImage(reference_image=types.Image(image_bytes=_rb2.getvalue()), reference_id=0)
+        _mask_ref = types.MaskReferenceImage(
+            reference_image=types.Image(image_bytes=_mb.getvalue()), reference_id=1,
+            config=types.MaskReferenceConfig(mask_mode=types.MaskReferenceMode.MASK_MODE_USER_PROVIDED)
+        )
+        _door_ref = types.RawReferenceImage(reference_image=types.Image(image_bytes=_db.getvalue()), reference_id=2)
+
+        for _cl, _c in clients:
+            if ai_success: break
+            try:
+                print(f"  Imagen ({_cl})...")
+                _resp = _c.models.edit_image(
+                    model="imagen-3.0-capability-001",
+                    prompt=edit_prompt,
+                    reference_images=[_room_ref, _mask_ref, _door_ref],
+                    config=types.EditImageConfig(
+                        edit_mode=types.EditMode.EDIT_MODE_INPAINT_INSERTION,
+                        number_of_images=1, output_mime_type="image/png",
                     )
-                    
-                    if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
-                        for part in response.candidates[0].content.parts:
-                            if part.inline_data:
-                                final_img = PILImage.open(BytesIO(part.inline_data.data))
-                                inp_model_used = model_name
-                                print(f"  ✅ Inpaint success with {model_name}: {final_img.size}")
-                                break
-                    if final_img: break
-                except Exception as e:
-                    last_inpaint_error = str(e)
-                    print(f"  ❌ {model_name}: {str(e)[:200]}")
-                    if "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
-                        time.sleep(2)
-                        
-        if not final_img:
-            raise ValueError(f"Barcha inpainting modellar muvaffaqiyatsiz bo'ldi. Oxirgi xato: {last_inpaint_error}")
-        
-        # ── Aspect-ratio safe resize ──────────────────────────────────────────
-        # Gemini may return a different aspect ratio. Crop to match original first.
-        result_w, result_h = final_img.size
-        target_ratio = w_orig / h_orig
-        result_ratio = result_w / result_h
-        
-        if abs(target_ratio - result_ratio) > 0.01:
-            if result_ratio > target_ratio:
-                # Too wide → crop sides
-                new_w = int(result_h * target_ratio)
-                left = (result_w - new_w) // 2
-                final_img = final_img.crop((left, 0, left + new_w, result_h))
-            else:
-                # Too tall → crop top/bottom
-                new_h = int(result_w / target_ratio)
-                top = (result_h - new_h) // 2
-                final_img = final_img.crop((0, top, result_w, top + new_h))
-            print(f"  📐 Aspect ratio corrected: {result_w}×{result_h} → {final_img.size[0]}×{final_img.size[1]} (target {w_orig}×{h_orig})")
-            
-        final_img = final_img.resize((w_orig, h_orig), PILImage.Resampling.LANCZOS)
+                )
+                if _resp.generated_images:
+                    _bgr = AIService.decode_gemini_image_bytes(_resp.generated_images[0].image.image_bytes, w_send, h_send)
+                    final_img = PILImage.fromarray(cv2.cvtColor(_bgr, cv2.COLOR_BGR2RGB))
+                    ai_success = True; inp_model_used = "imagen-3.0"
+                    print("  Imagen OK!")
+            except Exception as _e:
+                print(f"  Imagen fail: {str(_e)[:100]}")
+
+        # 3b: Try Gemini generate_content with image output
+        if not ai_success:
+            _gc_models = ["gemini-3.1-flash-image-preview", "gemini-3-pro-image-preview", "gemini-2.5-flash-image", "gemini-3-flash-preview"]
+            for _cl, _c in clients:
+                if ai_success: break
+                for _m in _gc_models:
+                    try:
+                        print(f"  {_m} ({_cl})...")
+                        _resp = _c.models.generate_content(
+                            model=_m,
+                            contents=[
+                                types.Part.from_bytes(data=_rb2.getvalue(), mime_type="image/png"),
+                                types.Part.from_bytes(data=_mb.getvalue(), mime_type="image/png"),
+                                types.Part.from_bytes(data=_db.getvalue(), mime_type="image/png"),
+                                edit_prompt,
+                            ],
+                            config=types.GenerateContentConfig(response_modalities=["IMAGE","TEXT"]),
+                        )
+                        for _part in (_resp.candidates or [{}])[0].content.parts:
+                            if hasattr(_part,"inline_data") and _part.inline_data and "image" in (_part.inline_data.mime_type or ""):
+                                _bgr = AIService.decode_gemini_image_bytes(_part.inline_data.data, w_send, h_send)
+                                final_img = PILImage.fromarray(cv2.cvtColor(_bgr, cv2.COLOR_BGR2RGB))
+                                ai_success = True; inp_model_used = _m
+                                print(f"  {_m} OK!"); break
+                        if ai_success: break
+                    except Exception as _e:
+                        print(f"  {_m} fail: {str(_e)[:100]}")
+
+        # ════════════════════════════════════════════════════════
+        # STEP 4: PIL + seamlessClone fallback
+        # ════════════════════════════════════════════════════════
+        if not ai_success:
+            print("\n--- STEP 4: PIL fallback ---")
+            # Sample wall color from right of door
+            _ws = []; _my1=y1+bh//4; _my2=y2-bh//4
+            for _sx1,_sx2 in [(min(w_send-5,x2+5),min(w_send,x2+60)),(max(0,x1-60),max(0,x1-5))]:
+                if _sx2>_sx1+5 and _my2>_my1:
+                    _s=room_bgr[_my1:_my2,_sx1:_sx2]
+                    if _s.size>150: _ws.append(_s.reshape(-1,3))
+            _fc = tuple(int(v) for v in (np.median(np.vstack(_ws),axis=0) if _ws else [195,190,185]))
+            clean_bgr = room_bgr.copy(); clean_bgr[max(0,py1-5):min(h_send,py2+5), max(0,px1-5):min(w_send,px2+5)] = _fc
+
+            _arr=np.array(door_rgba_pil); _al=_arr[:,:,3]
+            _rr=np.any(_al>10,axis=1); _cc=np.any(_al>10,axis=0)
+            if _rr.any() and _cc.any():
+                r0,r1=np.where(_rr)[0][[0,-1]]; c0,c1=np.where(_cc)[0][[0,-1]]
+                door_rgba_pil=door_rgba_pil.crop((c0,r0,c1+1,r1+1))
+            dw,dh=door_rgba_pil.size
+            sc=min(pw/max(dw,1),ph/max(dh,1))
+            fw,fh=int(dw*sc),int(dh*sc)
+            door_sc=door_rgba_pil.resize((fw,fh),PILImage.Resampling.LANCZOS)
+            px_off,py_off=(pw-fw)//2,(ph-fh)//2
+            psx,psy=px1+px_off,py1+py_off
+            r_,g_,b_,a_=door_sc.split(); a_=a_.filter(ImageFilter.GaussianBlur(radius=2))
+            door_sc=PILImage.merge("RGBA",(r_,g_,b_,a_))
+            comp=PILImage.fromarray(cv2.cvtColor(clean_bgr,cv2.COLOR_BGR2RGB)).convert("RGBA")
+            comp.paste(door_sc,(psx,psy),door_sc)
+            comp_rgb=comp.convert("RGB")
+            comp_bgr=cv2.cvtColor(np.array(comp_rgb),cv2.COLOR_RGB2BGR)
+            _da=np.zeros((h_send,w_send),dtype=np.uint8)
+            _a2=np.array(door_sc.split()[3])
+            _r1,_r2,_c1,_c2=max(0,psy),min(h_send,psy+fh),max(0,psx),min(w_send,psx+fw)
+            _da[_r1:_r2,_c1:_c2]=_a2[:_r2-_r1,:_c2-_c1]
+            _da=(_da>30).astype(np.uint8)*255
+            _da=cv2.erode(_da,np.ones((5,5),np.uint8),iterations=1)
+            _ctr=(psx+fw//2,psy+fh//2)
+            try:
+                if _da.sum()>0:
+                    _res=cv2.seamlessClone(comp_bgr,clean_bgr,_da,_ctr,cv2.NORMAL_CLONE)
+                    final_img=PILImage.fromarray(cv2.cvtColor(_res,cv2.COLOR_BGR2RGB))
+                    inp_model_used="PIL+seamlessClone"
+                else: raise ValueError("empty mask")
+            except:
+                final_img=comp_rgb; inp_model_used="PIL-only"
+
+        # Save
+        final_img = final_img.resize((w_orig,h_orig), PILImage.Resampling.LANCZOS)
         final_img.save(result_image_path, format="PNG")
-        
         save_visualization_metadata(result_image_path, {
-            "generation_prompt": edit_prompt,
-            "generation_meta": {
-                "engine": "Nano Banana v2",
-                "detection_model": det_model_used,
-                "inpaint_model": inp_model_used,
-            },
-            "pipeline": {
-                "version": "nano_banana_v2",
-                "mode": "gemini_direct_edit",
-                "annotation_box": list(box_coords),
-                "post_processed": False
-            }
+            "generation_meta": {"engine":"v7 AI-first","detection_model":det_model,"inpaint_model":inp_model_used},
+            "pipeline": {"version":"v7","box":list(box_coords),"panel":list(panel_coords) if panel_coords else None},
         })
-        
-        print(f"\n🎉 TAYYOR! '{result_image_path}' saqlandi.")
+        print(f"\n=== DONE ({inp_model_used}): '{result_image_path}' ===")
         return result_image_path
 
     @staticmethod
@@ -2724,40 +2730,18 @@ Return ONLY the final edited room image."""
         provider = AIService.get_visualization_provider(default="hybrid")
         gemini_full_edit_error = None
 
-        if provider in ("gemini_direct", "gemini"):
-            print(f"DEBUG: [Pipeline] Using Gemini Direct for product {product.id}...")
-            return AIService.generate_with_gemini_direct(
-                product, room_image_path, result_image_path
-            )
-
-        if provider == "nano_banana":
-            print(
-                f"DEBUG: [Pipeline] Using Nano Banana (Auto-Edit) for product {product.id}..."
-            )
+        if provider in ("gemini_direct", "gemini", "nano_banana"):
+            print(f"DEBUG: [Pipeline] Using Gemini Direct / Nano Banana for product {product.id}...")
             try:
-                return AIService.generate_room_preview_nano_banana(
+                return AIService.generate_with_gemini_direct(
                     product, room_image_path, result_image_path
                 )
             except Exception as e:
                 gemini_full_edit_error = str(e)[:500]
                 print(
-                    f"WARNING: [Pipeline] Nano Banana failed, falling back to hybrid: {e}"
+                    f"WARNING: [Pipeline] Gemini Direct failed, falling back to hybrid: {e}"
                 )
                 provider = "hybrid"
-
-        if provider == "gemini":
-            print(
-                f"DEBUG: [Pipeline] Using Gemini full-scene editor for product {product.id}..."
-            )
-            try:
-                return AIService.generate_room_preview_with_gemini(
-                    product, room_image_path, result_image_path
-                )
-            except Exception as e:
-                gemini_full_edit_error = str(e)[:500]
-                print(
-                    f"WARNING: [Pipeline] Gemini full-scene edit unavailable, falling back to locked-scene pipeline: {e}"
-                )
 
         print(
             f"DEBUG: [Pipeline] Starting production pipeline for product {product.id}..."

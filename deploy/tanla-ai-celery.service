@@ -1,0 +1,15 @@
+[Unit]
+Description=TanlaAI Celery Worker
+After=network.target redis-server.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/var/www/tanlaAI-backend
+EnvironmentFile=/var/www/tanlaAI-backend/.env
+ExecStart=/var/www/tanlaAI-backend/venv/bin/celery -A core worker -l info --queues=default,ai_queue,notify_queue --concurrency 1
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

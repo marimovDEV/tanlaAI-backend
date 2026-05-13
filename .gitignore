@@ -20,3 +20,19 @@ samples/
 *.bak*
 ai_debug.log
 scripts/ad_hoc/
+scripts/test_*
+# Root darajadagi test/debug fayllar
+test_*.py
+test_*.png
+list_gemini_models.py
+repair_ai.py
+scratch_check_vip.py
+dummy*.png
+res.png
+*_result.png
+*_result.png.json
+requirements_new.txt
+requirements_utf8.txt
+tanla-ai-bot.service
+*.sock
+

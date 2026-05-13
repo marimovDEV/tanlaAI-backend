@@ -19,3 +19,4 @@ scratch/
 samples/
 *.bak*
 ai_debug.log
+scripts/ad_hoc/
